@@ -2,6 +2,7 @@ package com.fitnessapp.summary.health
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.permission.HealthPermission
@@ -95,12 +96,32 @@ class HealthConnectManager(private val context: Context) {
     fun requestPermissionsContract() = PermissionController.createRequestPermissionResultContract()
 
     /**
-     * Opens Health Connect's own settings screen, where the user can grant
+     * Opens Health Connect's permission screen for this app, where the user can grant
      * permissions they previously denied. Needed because after two denials the
-     * permission sheet stops appearing and the settings screen is the only route left.
+     * permission sheet stops appearing and this is the only route left.
+     *
+     * The correct intent differs by Android version because Health Connect itself is
+     * a different thing on each side of Android 14. Before it, Health Connect is the
+     * standalone app (package [HEALTH_CONNECT_PACKAGE]) and only answers to its own
+     * `androidx.health.*` action; from Android 14 on, Health Connect is a platform
+     * module and that action is no longer registered by anything - it only answers to
+     * `android.health.connect.action.MANAGE_HEALTH_PERMISSIONS`, which conveniently
+     * also goes straight to *this app's* permission screen (via [Intent.EXTRA_PACKAGE_NAME])
+     * rather than a generic Health Connect home screen.
+     *
+     * Firing the wrong one for the running Android version throws
+     * `ActivityNotFoundException` - nothing on that side registers to handle it -
+     * which is exactly the bug this version-branch fixes: this used to always fire the
+     * pre-14 action, so the button silently failed on every Android 14+ device.
      */
-    fun settingsIntent(): Intent = Intent(ACTION_HEALTH_CONNECT_SETTINGS).apply {
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    fun settingsIntent(context: Context): Intent {
+        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            Intent(ACTION_MANAGE_HEALTH_PERMISSIONS)
+                .putExtra(Intent.EXTRA_PACKAGE_NAME, context.packageName)
+        } else {
+            Intent(ACTION_HEALTH_CONNECT_SETTINGS)
+        }
+        return intent.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
     }
 
     /** Play Store page for the standalone Health Connect app (Android 13 and below). */
@@ -114,6 +135,17 @@ class HealthConnectManager(private val context: Context) {
 
     companion object {
         const val HEALTH_CONNECT_PACKAGE = "com.google.android.apps.healthdata"
+
+        /** Android 13 and below: broadcast-handled by the standalone Health Connect app. */
         const val ACTION_HEALTH_CONNECT_SETTINGS = "androidx.health.ACTION_HEALTH_CONNECT_SETTINGS"
+
+        /**
+         * Android 14+: android.health.connect.HealthConnectManager.ACTION_MANAGE_HEALTH_PERMISSIONS,
+         * a platform (not Jetpack) constant. Hardcoded as a string rather than referencing
+         * that class directly so this file doesn't need @RequiresApi(34) plumbing for what
+         * is, at the call site, already a Build.VERSION.SDK_INT-guarded branch - verified
+         * against the actual compileSdk 36 platform android.jar, not guessed.
+         */
+        const val ACTION_MANAGE_HEALTH_PERMISSIONS = "android.health.connect.action.MANAGE_HEALTH_PERMISSIONS"
     }
 }

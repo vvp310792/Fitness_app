@@ -181,7 +181,7 @@ private fun HealthConnectSection(app: FitnessSummaryApp) {
                 TextButton(
                     onClick = {
                         try {
-                            context.startActivity(app.healthConnect.settingsIntent())
+                            context.startActivity(app.healthConnect.settingsIntent(context))
                         } catch (e: ActivityNotFoundException) {
                             Toast.makeText(
                                 context,

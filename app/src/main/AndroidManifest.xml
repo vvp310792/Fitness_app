@@ -37,8 +37,20 @@
     -->
     <queries>
         <package android:name="com.google.android.apps.healthdata" />
+        <!--
+          The two actual actions health/HealthConnectManager.kt#settingsIntent() can fire
+          (branched on Build.VERSION.SDK_INT there) - both must be declared here or
+          startActivity() throws ActivityNotFoundException even though a handler exists,
+          because of package-visibility filtering. This previously declared a third,
+          nonexistent action ("...ACTION_SHOW_HEALTH_CONNECT_SETTINGS", never fired by any
+          code here) instead of the one Kotlin actually used - a copy-paste-shaped bug that
+          broke the settings button on every device, since neither side matched.
+        -->
         <intent>
-            <action android:name="androidx.health.ACTION_SHOW_HEALTH_CONNECT_SETTINGS" />
+            <action android:name="androidx.health.ACTION_HEALTH_CONNECT_SETTINGS" />
+        </intent>
+        <intent>
+            <action android:name="android.health.connect.action.MANAGE_HEALTH_PERMISSIONS" />
         </intent>
     </queries>
 
