@@ -16,12 +16,19 @@ import java.time.LocalDate
  * re-auth, an unofficial endpoint that can change shape without notice) that a user who
  * never sets this up should never be affected by.
  *
- * Every section is fetched and stored independently, in the same spirit as
- * HealthConnectReader.runCatchingRead: a watch with no HRV sensor 204s on hrv-service, a
- * user without a scale has no weight, a day with no workout has no readiness recompute -
- * none of that should stop the sleep or stress for the same day from landing. Each
- * section's failure is logged with its name, so "part of the Garmin data is missing" is
- * diagnosable from Я -> Логи instead of a guess.
+ * Every section is fetched independently, in the same spirit as
+ * HealthConnectReader.runCatchingRead: a watch with no HRV sensor gets nothing from
+ * hrv-service, a user without a scale has no weight, a day with no workout has no
+ * readiness recompute - none of that should stop the sleep or stress for the same day
+ * from landing.
+ *
+ * What each section produced is COUNTED, not just logged as a total, split three ways
+ * (stored / Garmin said no data / the call failed) - see [GarminFetch]. That distinction
+ * is the whole reason this exists in this shape: a release once shipped with sleep, HRV
+ * and readiness silently returning nothing for 14 days straight, and a summary line
+ * saying only "14 days written" could not tell that from working correctly. The counts
+ * reach both the log and the "Я" tab, so the next "not everything syncs" is answerable
+ * without asking for a log file at all.
  *
  * Nothing here is pushed to Firestore - see the header comment in data/GarminEntities.kt.
  */
@@ -29,10 +36,26 @@ class GarminSyncManager(
     private val apiClient: GarminApiClient,
     private val database: AppDatabase
 ) {
+    /** How one section of the sync went. [label] is what the UI shows. */
+    data class SectionOutcome(
+        val label: String,
+        val stored: Int,
+        val noData: Int,
+        val failed: Int
+    ) {
+        /** Garmin answered every time and had nothing - the watch or account doesn't produce this. */
+        val isEmptyFromGarmin: Boolean get() = stored == 0 && noData > 0 && failed == 0
+        val hasProblem: Boolean get() = failed > 0
+    }
+
     sealed class State {
         data object Idle : State()
         data class Running(val done: Int, val total: Int) : State()
-        data class Success(val daysWritten: Int, val atMillis: Long) : State()
+        data class Success(
+            val daysWritten: Int,
+            val atMillis: Long,
+            val sections: List<SectionOutcome>
+        ) : State()
         data class Failed(val reason: String) : State()
     }
 
@@ -55,15 +78,13 @@ class GarminSyncManager(
         AppLog.i("GarminSyncManager", "Синк Garmin $from..$to начат")
         val totalDays = (to.toEpochDay() - from.toEpochDay() + 1).toInt().coerceAtLeast(1)
         _state.value = State.Running(0, totalDays)
+        val run = RunState()
 
         // Range-shaped endpoints first, one call per window instead of one per day. Their
         // results are folded into the per-day summary row below.
-        val stressZones = section("стресс по зонам") { apiClient.stressZones(from, to) } ?: emptyMap()
-        val intensityGoals = section("цель интенсивных минут") { apiClient.intensityMinutesGoal(from, to) } ?: emptyMap()
-        val hydration = section("гидратация") { apiClient.hydration(from, to) } ?: emptyMap()
-
-        val counts = SectionCounts()
-        var daysWritten = 0
+        val stressZones = run.take(run.ranges) { apiClient.stressZones(from, to) } ?: emptyMap()
+        val intensityGoals = run.take(run.ranges) { apiClient.intensityMinutesGoal(from, to) } ?: emptyMap()
+        val hydration = run.take(run.ranges) { apiClient.hydration(from, to) } ?: emptyMap()
 
         var date = from
         var index = 0
@@ -72,7 +93,7 @@ class GarminSyncManager(
             val epochDay = date.toEpochDay()
             var wroteSomething = false
 
-            section("сводка дня $date") { apiClient.dailySummary(date) }?.let { summary ->
+            run.take(run.summary) { apiClient.dailySummary(date) }?.let { summary ->
                 val zones = stressZones[epochDay]
                 val hydrationDay = hydration[epochDay]
                 val merged = summary.copy(
@@ -86,106 +107,160 @@ class GarminSyncManager(
                 )
                 if (!merged.isEmpty) {
                     database.garminDailyExtraDao().upsert(merged)
-                    counts.summary++
+                    run.summary.stored++
                     wroteSomething = true
                 }
             }
 
-            section("сон $date") { apiClient.sleep(date) }?.let { sleep ->
+            run.take(run.sleep) { apiClient.sleep(date) }?.let { sleep ->
                 if (!sleep.isEmpty) {
                     database.garminSleepDao().upsert(sleep)
-                    counts.sleep++
+                    run.sleep.stored++
                     wroteSomething = true
                 }
             }
 
-            section("ВСР $date") { apiClient.hrv(date) }?.let { hrv ->
+            run.take(run.hrv) { apiClient.hrv(date) }?.let { hrv ->
                 if (!hrv.isEmpty) {
                     database.garminHrvDao().upsert(hrv)
-                    counts.hrv++
+                    run.hrv.stored++
                     wroteSomething = true
                 }
             }
 
-            section("готовность $date") { apiClient.readiness(date) }?.let { readiness ->
+            run.take(run.readiness) { apiClient.readiness(date) }?.let { readiness ->
                 if (!readiness.isEmpty) {
                     database.garminReadinessDao().upsert(readiness)
-                    counts.readiness++
+                    run.readiness.stored++
                     wroteSomething = true
                 }
             }
 
-            section("статус тренировок $date") { apiClient.training(date) }?.let { training ->
+            run.take(run.training) { apiClient.training(date) }?.let { training ->
                 if (!training.isEmpty) {
                     database.garminTrainingDao().upsert(training)
-                    counts.training++
+                    run.training.stored++
                     wroteSomething = true
                 }
             }
 
-            if (wroteSomething) daysWritten++
+            if (wroteSomething) run.daysWritten++
+
+            // A backfill that outlives the phone's connectivity used to grind through
+            // hundreds of doomed requests - 64 identical DNS failures per endpoint in one
+            // real log - and still report success. One day's worth of consecutive network
+            // failures is enough to conclude the network is gone, not the data.
+            if (run.networkLost) {
+                AppLog.w("GarminSyncManager", "Сеть пропала на $date - синк прерван, загружено дней=${run.daysWritten}")
+                break
+            }
+
             date = date.plusDays(1)
             index++
         }
 
-        section("вес и состав тела") { apiClient.bodyComposition(from, to) }?.let { rows ->
-            val real = rows.filter { !it.isEmpty }
-            if (real.isNotEmpty()) {
-                database.garminBodyCompositionDao().upsertAll(real)
-                counts.weight = real.size
+        if (!run.networkLost) {
+            run.take(run.weight) { apiClient.bodyComposition(from, to) }?.let { rows ->
+                val real = rows.filter { !it.isEmpty }
+                if (real.isNotEmpty()) {
+                    database.garminBodyCompositionDao().upsertAll(real)
+                    run.weight.stored = real.size
+                }
+            }
+
+            run.take(run.activities) { apiClient.activities(from, to) }?.let { activities ->
+                if (activities.isNotEmpty()) {
+                    database.garminActivityDao().upsertAll(activities)
+                    run.activities.stored = activities.size
+                }
             }
         }
 
-        section("тренировки Garmin") { apiClient.activities(from, to) }?.let { activities ->
-            if (activities.isNotEmpty()) {
-                database.garminActivityDao().upsertAll(activities)
-                counts.activities = activities.size
-            }
-        }
-
+        val sections = run.sections()
         AppLog.i(
             "GarminSyncManager",
-            "Синк Garmin завершён: дней с данными=$daysWritten из $totalDays; " +
-                "сводка=${counts.summary} сон=${counts.sleep} ВСР=${counts.hrv} " +
-                "готовность=${counts.readiness} статус=${counts.training} " +
-                "взвешиваний=${counts.weight} тренировок=${counts.activities}"
+            "Синк Garmin завершён: дней с данными=${run.daysWritten} из $totalDays; " +
+                sections.joinToString(" ") { "${it.label}=${it.stored}/нд${it.noData}/ош${it.failed}" }
         )
 
-        // A whole run with nothing at all is worth surfacing as a failure rather than
-        // "0 days written": with a valid login that means the token has died or Garmin
-        // changed the protocol - both of which the user needs to know about.
-        if (daysWritten == 0 && counts.activities == 0 && counts.weight == 0) {
-            AppLog.w("GarminSyncManager", "Ни один раздел не вернул данных - проверьте вход в Garmin")
-            return State.Failed("Garmin ничего не вернул. Возможно, нужно войти заново.").also { _state.value = it }
-        }
-        return State.Success(daysWritten, System.currentTimeMillis()).also { _state.value = it }
+        return when {
+            run.networkLost -> State.Failed(
+                "Соединение пропало во время синхронизации. Загружено дней: ${run.daysWritten} из $totalDays — повторите позже."
+            )
+            run.daysWritten == 0 && sections.any { it.hasProblem } -> State.Failed(
+                "Garmin не отдал данные (${sections.filter { it.hasProblem }.joinToString { it.label }}). Возможно, нужно войти заново."
+            )
+            else -> State.Success(run.daysWritten, System.currentTimeMillis(), sections)
+        }.also { _state.value = it }
     }
 
-    /**
-     * Runs one fetch, turning any failure into a logged null. The client itself already
-     * logs HTTP-level detail; this catches everything else (a JSON shape change, a parse
-     * error) with the section's name so the log says WHICH part broke.
-     */
-    private suspend fun <T> section(name: String, block: suspend () -> T?): T? =
-        try {
-            block()
-        } catch (e: Exception) {
-            AppLog.w("GarminSyncManager", "Раздел не прочитался: $name", e)
-            null
-        }
+    /** Per-run tallies. Mutable and single-threaded - one sync at a time, by construction. */
+    private class RunState {
+        val summary = Counter("Сводка")
+        val sleep = Counter("Сон")
+        val hrv = Counter("ВСР")
+        val readiness = Counter("Готовность")
+        val training = Counter("Статус тренировок")
+        val weight = Counter("Вес")
+        val activities = Counter("Тренировки")
 
-    private class SectionCounts {
-        var summary = 0
-        var sleep = 0
-        var hrv = 0
-        var readiness = 0
-        var training = 0
-        var weight = 0
-        var activities = 0
+        /**
+         * The three range endpoints (stress zones, intensity goal, hydration) are folded
+         * into the summary row rather than being sections of their own - most people never
+         * log water, so counting their silence against "Сводка" would permanently show a
+         * problem that isn't one. They still run through [take] so a network drop during
+         * them aborts the sync like any other call.
+         */
+        val ranges = Counter("Диапазоны")
+
+        var daysWritten = 0
+        private var consecutiveNetworkFailures = 0
+
+        val networkLost: Boolean get() = consecutiveNetworkFailures >= NETWORK_FAILURE_LIMIT
+
+        /**
+         * Runs one fetch and files its outcome under [counter]. Returns the value, or null
+         * for both "no data" and "failed" - the caller doesn't need to care which, the
+         * counter already recorded the difference.
+         */
+        suspend fun <T> take(counter: Counter, block: suspend () -> GarminFetch<T>): T? =
+            when (val fetch = block()) {
+                is GarminFetch.Ok -> {
+                    consecutiveNetworkFailures = 0
+                    fetch.value
+                }
+                GarminFetch.NoData -> {
+                    consecutiveNetworkFailures = 0
+                    counter.noData++
+                    null
+                }
+                is GarminFetch.Failed -> {
+                    counter.failed++
+                    if (fetch.isNetwork) consecutiveNetworkFailures++ else consecutiveNetworkFailures = 0
+                    null
+                }
+            }
+
+        fun sections(): List<SectionOutcome> =
+            listOf(summary, sleep, hrv, readiness, training, weight, activities).map {
+                SectionOutcome(it.label, it.stored, it.noData, it.failed)
+            }
+    }
+
+    private class Counter(val label: String) {
+        var stored = 0
+        var noData = 0
+        var failed = 0
     }
 
     companion object {
         const val DEFAULT_RECENT_DAYS = 14
         const val DEFAULT_BACKFILL_DAYS = 90
+
+        /**
+         * Consecutive network-level failures that mean "the phone is offline", not "this
+         * endpoint is unhappy" - roughly one day's worth of section calls.
+         */
+        private const val NETWORK_FAILURE_LIMIT = 6
     }
 }

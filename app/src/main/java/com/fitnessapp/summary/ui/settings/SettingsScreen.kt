@@ -445,6 +445,27 @@ private fun GarminSection(app: FitnessSummaryApp) {
                             color = metricPalette().distance,
                             modifier = Modifier.padding(top = 6.dp)
                         )
+                        // Which sections came back empty, and whether that was Garmin
+                        // saying "nothing here" or a call that failed. Without this the
+                        // only symptom of a dead endpoint is a screen that quietly lacks
+                        // a card, which is indistinguishable from "you slept badly".
+                        val quiet = state.sections.filter { it.stored == 0 && (it.noData > 0 || it.failed > 0) }
+                        quiet.forEach { section ->
+                            Text(
+                                text = if (section.hasProblem) {
+                                    "${section.label} — не удалось прочитать (${section.failed})"
+                                } else {
+                                    "${section.label} — Garmin не отдаёт эти данные для вашего аккаунта"
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (section.hasProblem) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
                     }
                     is GarminSyncManager.State.Failed -> {
                         Text(

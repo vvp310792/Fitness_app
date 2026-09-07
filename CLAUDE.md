@@ -118,6 +118,13 @@ Connect, но на реальном устройстве пользовател�
 4. Дальше — просто `Authorization: Bearer <token>` на все data-запросы.
    **OAuth1-токен живёт ~год** — пароль после первого входа больше не нужен,
    новый OAuth2 Bearer перевыпускается тем же одним подписанным запросом (п.3)
+5. **User-Agent на data-запросах — `GCM-iOS-5.22.1.4`**, как в сессии `garth`
+   (`http.py: USER_AGENT`). `com.garmin.android.apps.connectmobile` (garth
+   `OAUTH_USER_AGENT`) — **только** на OAuth-обмен (пп. 2–3). Это не
+   косметика: с андроидным UA на data-запросах Garmin отдавал 204/404 ровно
+   на новых эндпоинтах восстановления (сон, ВСР, готовность), а старые
+   (сводка дня, статус тренировок, вес, активности) отвечали нормально —
+   см. «Грабли»
 
 **Данные — какой эндпоинт что отдаёт** (все из `garth`, `src/garth/data` и
 `src/garth/stats`; JSON-ключи восстановлены из snake_case-полей `garth` его же
@@ -130,16 +137,34 @@ Connect, но на реальном устройстве пользовател�
 | → те же строки | `usersummary-service/stats/stress/daily/{start}/{end}` — секунды в 4 зонах стресса (rest/low/medium/high) | `DailyStress` |
 | → те же строки | `usersummary-service/stats/im/daily/{start}/{end}` — `weeklyGoal` интенсивных минут | `DailyIntensityMinutes` |
 | → те же строки | `usersummary-service/stats/hydration/daily/{start}/{end}` | `DailyHydration` |
-| `garmin_sleep` | `sleep-service/sleep/dailySleepData?date=` — стадии, Sleep Score + оценки компонентов (`qualifierKey`), Sleep Need (`baseline`/`actual`), SpO2/дыхание/стресс за ночь, пульс покоя, `bodyBatteryChange`, температура кожи. Выбран вместо `wellness-service/.../dailySleepData/{username}` — не требует username и богаче | `DailySleepData` |
+| `garmin_sleep` | `sleep-service/sleep/dailySleepData?date=` — стадии, Sleep Score + оценки компонентов (`qualifierKey`), Sleep Need (`baseline`/`actual`), SpO2/дыхание/стресс за ночь, пульс покоя, `bodyBatteryChange`, температура кожи. Если пусто — фолбэк на `wellness-service/wellness/dailySleepData/{userName}?nonSleepBufferMinutes=60&date=` (второй сон-эндпоинт `garth`, `userName` из `userprofile-service/socialProfile`). Оба заворачивают ночь в один и тот же `dailySleepDTO`, парсер общий | `DailySleepData`, `SleepData` |
 | `garmin_hrv` | `hrv-service/hrv/{date}` → `hrvSummary` (weeklyAvg, lastNightAvg, baseline, status) | `HRVData` |
 | `garmin_readiness` | `metrics-service/metrics/trainingreadiness/{date}` — **список** (пересчитывается в течение дня), берётся последний по `timestamp` | `TrainingReadinessData` |
 | `garmin_training` | `mobile-gateway/usersummary/trainingstatus/latest/{date}` → `mostRecentTrainingStatus.payload.latestTrainingStatusData.<deviceId>` + вложенный `acuteTrainingLoadDTO`; `metrics-service/metrics/hillscore?calendarDate=` (тут же `vo2Max`); `metrics-service/metrics/endurancescore?calendarDate=` | `DailyTrainingStatus`, `GarminScoresData` |
 | `garmin_body_composition` | `weight-service/weight/range/{start}/{end}?includeAll=true` → `dailyWeightSummaries[].allWeightMetrics[]` | `WeightData` |
 | `garmin_activities` | `activitylist-service/activities/search/activities?limit=&start=` (страницами, пока не старше окна) + `activity-service/activity/{id}` → `summaryDTO` (Training Effect, нагрузка, мощность, каденс, Body Battery за сессию) | `Activity`, `Summary` |
 
+**Три исхода вместо `null` — `garmin/GarminFetch.kt`.** Каждый вызов
+возвращает `Ok` / `NoData` (204, 404 или пустое тело — Garmin ответил, но
+данных нет) / `Failed(reason, isNetwork)`. Схлопывать первые два в `null`
+нельзя: именно так первая версия спрятала три мёртвых эндпоинта на целый
+релиз — сон/ВСР/готовность возвращали пусто 14 дней подряд, и **ни одной
+строки в логе**, потому что 204/404 глушились молча. `GarminSyncManager`
+считает исходы по каждому разделу (записано / нет данных / ошибок) и пишет
+их и в лог, и во вкладку «Я» — «Сон — Garmin не отдаёт эти данные для вашего
+аккаунта» отличимо от «не удалось прочитать».
+
+**Прерывание при потере сети.** `isNetwork`-сбои считаются подряд; после 6
+(примерно один день запросов) синк прерывается с честным «Загружено дней N
+из M». Без этого бэкфилл, переживший потерю DNS, молотил ещё ~450 обречённых
+запросов, заливал лог 64 одинаковыми предупреждениями на эндпоинт и
+рапортовал «27 из 91» как успех.
+
 Стресс-зоны, цель интенсивных минут и гидратация — range-эндпоинты (один
 вызов на окно, страницы по 28 дней), их результат вливается в строку
-`garmin_daily_extra` того же дня. Полный таймлайн Body Battery
+`garmin_daily_extra` того же дня. Считаются отдельным счётчиком, не
+«Сводкой»: воду почти никто не логирует, и её молчание не должно выглядеть
+как поломка сводки. Полный таймлайн Body Battery
 (`wellness-service/wellness/bodyBattery/events/{date}`) по-прежнему не читается
 — дневной сводки достаточно для уровня детализации экрана «День».
 
@@ -438,6 +463,15 @@ FileProvider-паттерн, что и `export/DataExporter`)/«Очистить
   комментарий и даёт «Unclosed comment» в конце файла, а следом — сотню
   «Unresolved reference» во всех файлах, которые на этот класс ссылаются.
   Первая ошибка в списке — единственная настоящая
+- **User-Agent решает, какие эндпоинты Garmin вообще отвечают.** С
+  `com.garmin.android.apps.connectmobile` на data-запросах сон, ВСР и
+  готовность отдавали 204/404, а сводка дня, статус тренировок, вес и
+  активности работали. Лечится ровно тем, что делает `garth`: сессионный
+  `GCM-iOS-5.22.1.4` на данные, андроидный агент — только на OAuth-обмен
+- **Глушить 204/404 без записи в лог — та же дыра, что `catch { null }`.**
+  Три эндпоинта молчали целый релиз, и в логе не было ничего: «нет данных»
+  и «запрос не ушёл» выглядели одинаково. Любой проглоченный «пустой» ответ
+  обязан оставлять след (`GarminFetch.NoData` + DEBUG-строка с путём)
 - **`Cookie.matches()` и JSON-ключи Garmin** — см. «Прямой доступ к Garmin»:
   регулярка `garth` для snake_case не инвертируется однозначно для ключей с
   заглавной аббревиатурой перед цифрой (`averageSpO2Value`), поэтому такие
