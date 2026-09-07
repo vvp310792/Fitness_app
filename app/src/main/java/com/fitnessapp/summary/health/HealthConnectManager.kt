@@ -100,22 +100,24 @@ class HealthConnectManager(private val context: Context) {
      * permissions they previously denied. Needed because after two denials the
      * permission sheet stops appearing and this is the only route left.
      *
-     * The correct intent differs by Android version because Health Connect itself is
-     * a different thing on each side of Android 14. Before it, Health Connect is the
-     * standalone app (package [HEALTH_CONNECT_PACKAGE]) and only answers to its own
-     * `androidx.health.*` action; from Android 14 on, Health Connect is a platform
-     * module and that action is no longer registered by anything - it only answers to
-     * `android.health.connect.action.MANAGE_HEALTH_PERMISSIONS`, which conveniently
-     * also goes straight to *this app's* permission screen (via [Intent.EXTRA_PACKAGE_NAME])
-     * rather than a generic Health Connect home screen.
-     *
-     * Firing the wrong one for the running Android version throws
-     * `ActivityNotFoundException` - nothing on that side registers to handle it -
-     * which is exactly the bug this version-branch fixes: this used to always fire the
-     * pre-14 action, so the button silently failed on every Android 14+ device.
+     * Tries an explicit package launch FIRST, deliberately ahead of the "correct"
+     * platform action. Confirmed against a real Xiaomi HyperOS device: some OEM ROMs
+     * silently reroute an implicit intent with no registered handler to a browser web
+     * search instead of throwing `ActivityNotFoundException` - which
+     * `android.health.connect.action.MANAGE_HEALTH_PERMISSIONS` (Android 14+) and
+     * `androidx.health.ACTION_HEALTH_CONNECT_SETTINGS` (below it) are both implicit
+     * actions vulnerable to, on those builds, even though they're the platform-correct
+     * ones and work fine on stock/Samsung devices. `getLaunchIntentForPackage` is
+     * explicit - it names the installed package directly - so there is no "no match"
+     * step for that OEM behaviour to hijack: either Health Connect's own launcher
+     * activity exists and this opens it, or it returns null and the action-based
+     * intent is used as before. The cost when it succeeds is one extra tap (landing on
+     * Health Connect's own home screen rather than straight at this app's permission
+     * row); that beats ending up in a browser.
      */
     fun settingsIntent(context: Context): Intent {
-        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        val explicit = context.packageManager.getLaunchIntentForPackage(HEALTH_CONNECT_PACKAGE)
+        val intent = explicit ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             Intent(ACTION_MANAGE_HEALTH_PERMISSIONS)
                 .putExtra(Intent.EXTRA_PACKAGE_NAME, context.packageName)
         } else {
