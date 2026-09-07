@@ -72,6 +72,11 @@ class GarminAuthClient(private val tokenStore: GarminTokenStore) {
     suspend fun login(email: String, password: String): GarminLoginResult = withContext(Dispatchers.IO) {
         pendingEmail = email
         try {
+            // garth's first move, before any credentials go anywhere: a plain GET to the
+            // sign-in page. It's not there for its HTML - it's what seeds the session
+            // cookies the login POST right after (and, transitively, the ticket exchange)
+            // gets validated against.
+            visitSignInPage()
             val json = postSso("/mobile/api/login") {
                 put("username", email)
                 put("password", password)
@@ -136,6 +141,7 @@ class GarminAuthClient(private val tokenStore: GarminTokenStore) {
                     return GarminLoginResult.Failed("Ответ SSO без serviceTicketId")
                 }
                 pendingMfaMethod = null
+                visitEmbedPage()
                 exchangeTicketAndPersist(ticket, email)
                 GarminLoginResult.Success
             }
@@ -169,23 +175,71 @@ class GarminAuthClient(private val tokenStore: GarminTokenStore) {
         val request = Request.Builder()
             .url(url)
             .post(json.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-            .header("User-Agent", SSO_USER_AGENT)
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-            .header("Accept-Language", "en-US,en;q=0.9")
+            .ssoPageHeaders()
             .build()
 
         client.newCall(request).execute().use { response ->
             val text = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                throw IllegalStateException("SSO HTTP ${response.code}")
+                throw IllegalStateException("SSO HTTP ${response.code}: $text")
             }
             return JSONObject(text)
         }
     }
 
+    /**
+     * garth's very first request of the whole login flow, before any credentials are
+     * sent - see [login]. A plain page visit; its own response body is irrelevant, only
+     * the cookies it sets matter.
+     */
+    private fun visitSignInPage() {
+        val url = HttpUrl.Builder()
+            .scheme("https").host("sso.$DOMAIN").addPathSegments("mobile/sso/en/sign-in")
+            .addQueryParameter("clientId", CLIENT_ID)
+            .build()
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .ssoPageHeaders(mapOf("Sec-Fetch-Site" to "none"))
+            .build()
+        client.newCall(request).execute().close()
+    }
+
+    /**
+     * garth visits this page right after SSO reports success, before exchanging the
+     * ticket - and explicitly swallows a failure here (its own `except GarthException:
+     * pass`), because it's there for session state, not its response. This step (or the
+     * cookies it leaves behind) going missing is exactly what "Обмен тикета вернул HTTP
+     * 400" looked like: the account's SSO login succeeded, but the very next call -
+     * unsigned and without this page's cookies - had nothing valid to present.
+     */
+    private fun visitEmbedPage() {
+        try {
+            val request = Request.Builder()
+                .url("https://sso.$DOMAIN/portal/sso/embed")
+                .get()
+                .ssoPageHeaders(mapOf("Sec-Fetch-Site" to "same-origin"))
+                .build()
+            client.newCall(request).execute().close()
+        } catch (e: Exception) {
+            AppLog.w("GarminAuthClient", "Переход на portal/sso/embed не удался (не критично)", e)
+        }
+    }
+
+    private fun Request.Builder.ssoPageHeaders(extra: Map<String, String> = emptyMap()): Request.Builder {
+        header("User-Agent", SSO_USER_AGENT)
+        header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        header("Accept-Language", "en-US,en;q=0.9")
+        header("Sec-Fetch-Mode", "navigate")
+        header("Sec-Fetch-Dest", "document")
+        extra.forEach { (key, value) -> header(key, value) }
+        return this
+    }
+
     // ---- OAuth1/OAuth2 exchange ------------------------------------------------
 
     private fun exchangeTicketAndPersist(ticket: String, email: String) {
+        val consumer = consumerCredentials()
         val url = HttpUrl.Builder()
             .scheme("https").host("connectapi.$DOMAIN")
             .addPathSegments("oauth-service/oauth/preauthorized")
@@ -194,16 +248,29 @@ class GarminAuthClient(private val tokenStore: GarminTokenStore) {
             .addQueryParameter("accepts-mfa-tokens", "true")
             .build()
 
+        // garth signs this call too, even though there's no user OAuth1 token yet -
+        // that's what this call produces. Its `GarminOAuth1Session` is still an
+        // OAuth1Session regardless, so it still attaches a consumer-only ("two-legged")
+        // Authorization header (see GarminOAuth1Signer's tokenKey/tokenSecret defaults).
+        // An unsigned request here is exactly what "Обмен тикета вернул HTTP 400" was.
+        val authHeader = GarminOAuth1Signer.authorizationHeader(
+            method = "GET",
+            url = url.toString(),
+            consumerKey = consumer.consumerKey,
+            consumerSecret = consumer.consumerSecret
+        )
+
         val request = Request.Builder()
             .url(url)
             .get()
             .header("User-Agent", OAUTH_USER_AGENT)
+            .header("Authorization", authHeader)
             .build()
 
         val oauth1 = client.newCall(request).execute().use { response ->
             val text = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                throw IllegalStateException("Обмен тикета вернул HTTP ${response.code}")
+                throw IllegalStateException("Обмен тикета вернул HTTP ${response.code}: $text")
             }
             // Response is a plain application/x-www-form-urlencoded body, not JSON -
             // "oauth_token=...&oauth_token_secret=...".
@@ -307,17 +374,28 @@ class GarminAuthClient(private val tokenStore: GarminTokenStore) {
 
 /**
  * A bare in-memory cookie jar, scoped to one [GarminAuthClient]'s [OkHttpClient]. Needed
- * because the SSO login and the follow-up MFA verification are two separate requests
- * tied together only by a session cookie - OkHttp does not persist cookies across calls
- * by default, and without this the MFA step would silently hit a fresh, unauthenticated
- * session.
+ * because the whole login flow - sign-in page, login POST, MFA verify, the post-login
+ * embed-page visit, and (per [okhttp3.Cookie.matches]) even the ticket exchange on a
+ * *different* host (`connectapi.$DOMAIN` vs `sso.$DOMAIN`) - is tied together only by
+ * session cookies. OkHttp does not persist cookies across calls by default.
+ *
+ * Matching is by [Cookie.matches], not by exact response host: Garmin's SSO sets cookies
+ * scoped to the whole `.garmin.com` domain, meant to carry over to `connectapi.$DOMAIN`
+ * too. An earlier, naive version of this jar kept cookies keyed by the exact host that
+ * set them, which silently dropped every domain-wide cookie the moment a request moved
+ * to a different subdomain - part of why the ticket exchange was failing.
  */
 private class InMemoryCookieJar : CookieJar {
-    private val store = mutableMapOf<String, List<Cookie>>()
+    private val cookies = mutableListOf<Cookie>()
 
+    @Synchronized
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-        store[url.host] = cookies
+        for (cookie in cookies) {
+            this.cookies.removeAll { it.name == cookie.name && it.domain == cookie.domain && it.path == cookie.path }
+            this.cookies.add(cookie)
+        }
     }
 
-    override fun loadForRequest(url: HttpUrl): List<Cookie> = store[url.host].orEmpty()
+    @Synchronized
+    override fun loadForRequest(url: HttpUrl): List<Cookie> = cookies.filter { it.matches(url) }
 }

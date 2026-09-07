@@ -1,5 +1,6 @@
 package com.fitnessapp.summary.garmin
 
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.security.SecureRandom
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -26,10 +27,18 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 object GarminOAuth1Signer {
 
     /**
-     * Builds the `Authorization` header value for a POST to [url] with the given
+     * Builds the `Authorization` header value for a request to [url] with the given
      * form-urlencoded [bodyParams], signed with [consumerKey]/[consumerSecret] (the
-     * app-level OAuth1 credentials - see [GarminConsumerCredentials]) and
-     * [tokenKey]/[tokenSecret] (the user's own OAuth1 token from the SSO exchange).
+     * app-level OAuth1 credentials - see [GarminConsumerCredentials]).
+     *
+     * [tokenKey]/[tokenSecret] are the user's own OAuth1 token from the SSO exchange -
+     * but they're optional, defaulting to none. Garmin's ticket-exchange call
+     * (`oauth/preauthorized`, see [GarminAuthClient.exchangeTicketAndPersist]) has no
+     * user token yet - that's what it produces - and still needs a *consumer-only*
+     * ("two-legged") signature: garth signs it with the same `OAuth1Session` class it
+     * uses everywhere else, just constructed without a resource owner key/secret. Per
+     * RFC 5849, that means `oauth_token` is omitted entirely (not sent as ""), and the
+     * signing key's token-secret half is empty.
      */
     @OptIn(ExperimentalEncodingApi::class)
     fun authorizationHeader(
@@ -37,24 +46,34 @@ object GarminOAuth1Signer {
         url: String,
         consumerKey: String,
         consumerSecret: String,
-        tokenKey: String,
-        tokenSecret: String,
-        bodyParams: Map<String, String>
+        tokenKey: String = "",
+        tokenSecret: String = "",
+        bodyParams: Map<String, String> = emptyMap()
     ): String {
         val oauthParams = mutableMapOf(
             "oauth_consumer_key" to consumerKey,
-            "oauth_token" to tokenKey,
             "oauth_signature_method" to "HMAC-SHA1",
             "oauth_timestamp" to (System.currentTimeMillis() / 1000).toString(),
             "oauth_nonce" to nonce(),
             "oauth_version" to "1.0"
         )
+        if (tokenKey.isNotEmpty()) {
+            oauthParams["oauth_token"] = tokenKey
+        }
 
-        // RFC 5849 3.4.1.3: the base string covers oauth_* params AND the request's own
-        // form-urlencoded body params together, sorted as one set - not just the oauth_*
-        // ones. Skipping the body params here would produce a signature the server
+        // RFC 5849 3.4.1.3: the base string covers oauth_* params, the request's own
+        // form-urlencoded body params, AND any query-string params on [url] together,
+        // sorted as one set - not just the oauth_* ones. The ticket-exchange GET is the
+        // one call here that actually has query params (ticket/login-url/accepts-mfa-
+        // tokens); skipping them - or the body params - produces a signature the server
         // recomputes differently and rejects.
-        val allParams = (oauthParams + bodyParams).toSortedMap()
+        val queryParams = mutableMapOf<String, String>()
+        val parsedUrl = url.toHttpUrl()
+        for (i in 0 until parsedUrl.querySize) {
+            queryParams[parsedUrl.queryParameterName(i)] = parsedUrl.queryParameterValue(i).orEmpty()
+        }
+
+        val allParams = (oauthParams + queryParams + bodyParams).toSortedMap()
         val paramString = allParams.entries.joinToString("&") { (k, v) ->
             "${percentEncode(k)}=${percentEncode(v)}"
         }
