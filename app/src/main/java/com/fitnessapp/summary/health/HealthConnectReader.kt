@@ -14,6 +14,7 @@ import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import com.fitnessapp.summary.data.DailySummary
 import com.fitnessapp.summary.data.Workout
+import com.fitnessapp.summary.debug.AppLog
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -49,7 +50,10 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
     private val zone: ZoneId get() = ZoneId.systemDefault()
 
     suspend fun readDay(date: LocalDate): DayReadResult? {
-        val client = manager.clientOrNull() ?: return null
+        val client = manager.clientOrNull() ?: run {
+            AppLog.w("HealthConnectReader", "Health Connect недоступен, день $date не читаю")
+            return null
+        }
 
         val dayStart = date.atStartOfDay(zone).toInstant()
         val dayEnd = date.plusDays(1).atStartOfDay(zone).toInstant()
@@ -77,6 +81,18 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
             workoutCount = workouts.size,
             workoutMinutes = workouts.sumOf { it.durationMinutes }
         )
+
+        // Presence/absence only, never the actual values - this is what turns "many
+        // things don't come through" from a guess into something diagnosable: it says
+        // exactly which categories were empty for this day, correlated by timestamp
+        // with any "Не удалось прочитать" warning just above it in the log.
+        AppLog.d(
+            "HealthConnectReader",
+            "$date: шаги=${movement.steps > 0} дистанция=${movement.distanceMeters > 0} " +
+                "калории=${movement.activeKcal > 0} пульс=${heart.avg > 0} " +
+                "пульс_покоя=${heart.resting > 0} сон=${sleep.totalMinutes > 0} " +
+                "тренировок=${workouts.size}"
+        )
         return DayReadResult(summary, workouts)
     }
 
@@ -93,7 +109,7 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
         client: HealthConnectClient,
         start: Instant,
         end: Instant
-    ): Movement = runCatchingRead {
+    ): Movement = runCatchingRead("шаги/дистанция/калории") {
         val result = client.aggregate(
             AggregateRequest(
                 metrics = setOf(
@@ -131,7 +147,7 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
     ): Heart {
         val range = TimeRangeFilter.between(start, end)
 
-        val beats = runCatchingRead {
+        val beats = runCatchingRead("пульс (avg/min/max)") {
             val result = client.aggregate(
                 AggregateRequest(
                     metrics = setOf(HeartRateRecord.BPM_AVG, HeartRateRecord.BPM_MIN, HeartRateRecord.BPM_MAX),
@@ -147,7 +163,7 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
 
         // Resting HR is its own record type, aggregated separately: Garmin writes one
         // value per day, and averaging it in with continuous HR would destroy it.
-        val resting = runCatchingRead {
+        val resting = runCatchingRead("пульс покоя") {
             val result = client.aggregate(
                 AggregateRequest(
                     metrics = setOf(RestingHeartRateRecord.BPM_AVG),
@@ -175,7 +191,7 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
      * then keeps only the sessions that *ended* on [date] - see the class comment.
      */
     private suspend fun readSleepEndingOn(client: HealthConnectClient, date: LocalDate): Sleep =
-        runCatchingRead {
+        runCatchingRead("сон за $date") {
             val windowStart = date.minusDays(1).atStartOfDay(zone).toInstant()
             val windowEnd = date.plusDays(1).atStartOfDay(zone).toInstant()
 
@@ -234,7 +250,7 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
         date: LocalDate,
         dayStart: Instant,
         dayEnd: Instant
-    ): List<Workout> = runCatchingRead {
+    ): List<Workout> = runCatchingRead("тренировки за $date") {
         val sessions = client.readRecords(
             ReadRecordsRequest(
                 recordType = ExerciseSessionRecord::class,
@@ -249,7 +265,7 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
             // record streams that happen to overlap it, so each session needs its own
             // aggregate over its own time span. One extra call per workout, and there
             // are only ever a handful of workouts in a day.
-            val metrics = runCatchingRead {
+            val metrics = runCatchingRead("метрики тренировки ${session.metadata.id}") {
                 client.aggregate(
                     AggregateRequest(
                         metrics = setOf(
@@ -286,10 +302,18 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
      * whole family of ordinary, non-exceptional situations - a permission the user
      * revoked, a record type the provider has never written, the provider being
      * mid-update - and none of them should abort the other sections of the day.
+     *
+     * The swallow is still deliberate and still correct (see class comment), but it
+     * used to leave zero trace anywhere - the exact bug pattern behind "Garmin data
+     * doesn't come through, no idea why". Every catch here now logs [section] and the
+     * exception's own class+message (never any data), so a genuine failure - a
+     * specific record type not permitted, a provider error - shows up in the log the
+     * user can share instead of just quietly becoming a 0 on screen.
      */
-    private inline fun <T> runCatchingRead(block: () -> T): T? = try {
+    private inline fun <T> runCatchingRead(section: String, block: () -> T): T? = try {
         block()
     } catch (e: Exception) {
+        AppLog.w("HealthConnectReader", "Не удалось прочитать: $section", e)
         null
     }
 }

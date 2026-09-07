@@ -3,6 +3,7 @@ package com.fitnessapp.summary.health
 import android.content.Context
 import com.fitnessapp.summary.data.SummaryRepository
 import com.fitnessapp.summary.data.WorkoutRepository
+import com.fitnessapp.summary.debug.AppLog
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -69,19 +70,33 @@ class HealthSyncManager(
     }
 
     suspend fun syncRange(from: LocalDate, to: LocalDate): State {
+        AppLog.i("HealthSyncManager", "Синк $from..$to начат")
+
         if (!healthConnect.isAvailable) {
+            AppLog.w("HealthSyncManager", "Health Connect недоступен (${healthConnect.availability()})")
             return State.Failed("Health Connect недоступен на этом устройстве").also { _state.value = it }
         }
-        if (!healthConnect.hasAllPermissions()) {
-            // Not fatal - a partial grant still reads what it's allowed to - but the
-            // user should know why some cards stay empty.
-            if (healthConnect.grantedPermissions().isEmpty()) {
-                return State.Failed("Нет разрешений на чтение данных").also { _state.value = it }
-            }
+
+        val granted = healthConnect.grantedPermissions()
+        val missing = healthConnect.permissions - granted
+        if (missing.isNotEmpty()) {
+            // Not fatal when partial - a partial grant still reads what it's allowed
+            // to - but this is the single most likely explanation for "some data
+            // doesn't come through": one or two permission types silently denied
+            // while the rest were granted. Logging exactly which ones turns that from
+            // a guess into a fact.
+            AppLog.w(
+                "HealthSyncManager",
+                "Не выданы разрешения: ${missing.joinToString { it.substringAfterLast('.') }}"
+            )
+        }
+        if (granted.isEmpty()) {
+            return State.Failed("Нет разрешений на чтение данных").also { _state.value = it }
         }
 
         val totalDays = (to.toEpochDay() - from.toEpochDay() + 1).toInt().coerceAtLeast(1)
         var written = 0
+        var emptyDays = 0
 
         return try {
             var date = from
@@ -98,14 +113,21 @@ class HealthSyncManager(
                     // than treating silence as a deletion.
                     workoutRepository.replaceDay(date, result.workouts)
                     written++
+                } else {
+                    emptyDays++
                 }
 
                 date = date.plusDays(1)
                 index++
             }
             lastSyncMillis = System.currentTimeMillis()
+            AppLog.i(
+                "HealthSyncManager",
+                "Синк завершён: записано дней=$written, пустых=$emptyDays, всего=$totalDays"
+            )
             State.Success(written, lastSyncMillis).also { _state.value = it }
         } catch (e: Exception) {
+            AppLog.e("HealthSyncManager", "Синк $from..$to упал", e)
             State.Failed(e.message ?: "Не удалось прочитать данные").also { _state.value = it }
         }
     }

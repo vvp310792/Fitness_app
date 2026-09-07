@@ -2,6 +2,7 @@ package com.fitnessapp.summary
 
 import android.app.Application
 import com.fitnessapp.summary.data.AppDatabase
+import com.fitnessapp.summary.debug.AppLog
 import com.fitnessapp.summary.data.SummaryRepository
 import com.fitnessapp.summary.data.WorkoutRepository
 import com.fitnessapp.summary.health.HealthConnectManager
@@ -81,14 +82,19 @@ class FitnessSummaryApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        AppLog.init(this)
 
         // Without a real Firebase project there's no cloud to listen to - skip the
         // auth wiring entirely rather than letting it fail repeatedly in the background.
-        if (!FirebaseSetup.isConfigured) return
+        if (!FirebaseSetup.isConfigured) {
+            AppLog.i("FitnessSummaryApp", "Firebase не настроен (заглушка google-services.json) - облако выключено")
+            return
+        }
 
         appScope.launch {
             authManager.authStateFlow().collect { user ->
                 if (user != null) {
+                    AppLog.i("FitnessSummaryApp", "Вход выполнен (uid=${user.uid.take(6)}...), запускаю Firestore-синк")
                     syncManager.start(user.uid)
                     if (!didInitialPush) {
                         didInitialPush = true
@@ -97,6 +103,7 @@ class FitnessSummaryApp : Application() {
                         syncManager.pushAll(user.uid)
                     }
                 } else {
+                    AppLog.i("FitnessSummaryApp", "Вышли из аккаунта, останавливаю Firestore-синк")
                     syncManager.stop()
                     didInitialPush = false
                 }

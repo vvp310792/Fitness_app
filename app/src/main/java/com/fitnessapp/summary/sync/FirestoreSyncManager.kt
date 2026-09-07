@@ -3,6 +3,7 @@ package com.fitnessapp.summary.sync
 import com.fitnessapp.summary.data.AppDatabase
 import com.fitnessapp.summary.data.DailySummary
 import com.fitnessapp.summary.data.Workout
+import com.fitnessapp.summary.debug.AppLog
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
@@ -44,11 +45,25 @@ class FirestoreSyncManager(private val database: AppDatabase) {
     /** Attaches realtime listeners for [uid]'s data. Call on sign-in. Safe to call again. */
     fun start(uid: String) {
         stop()
-        summariesListener = summariesRef(uid).addSnapshotListener { snapshot, _ ->
+        AppLog.i("FirestoreSyncManager", "Слушатели Firestore подключены")
+        summariesListener = summariesRef(uid).addSnapshotListener { snapshot, error ->
+            // error was previously discarded here - a permission-denied rules failure
+            // or a dropped listener would fail completely silently, no different from
+            // "nothing changed". This is very much a live suspect for "cloud data
+            // doesn't come through": firestore.rules requires request.auth.uid == uid,
+            // so anything wrong with the signed-in user's token shows up exactly here.
+            if (error != null) {
+                AppLog.e("FirestoreSyncManager", "Слушатель dailySummaries упал", error)
+                return@addSnapshotListener
+            }
             val changes = snapshot?.documentChanges ?: return@addSnapshotListener
             scope.launch { mergeSummaryChanges(changes) }
         }
-        workoutsListener = workoutsRef(uid).addSnapshotListener { snapshot, _ ->
+        workoutsListener = workoutsRef(uid).addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                AppLog.e("FirestoreSyncManager", "Слушатель workouts упал", error)
+                return@addSnapshotListener
+            }
             val changes = snapshot?.documentChanges ?: return@addSnapshotListener
             scope.launch { mergeWorkoutChanges(changes) }
         }
@@ -86,6 +101,9 @@ class FirestoreSyncManager(private val database: AppDatabase) {
         )
         summariesRef(uid).document(summary.dateEpochDay.toString())
             .set(data, SetOptions.merge())
+            .addOnFailureListener { e ->
+                AppLog.e("FirestoreSyncManager", "Не удалось отправить сводку за ${summary.dateEpochDay}", e)
+            }
     }
 
     fun pushWorkout(uid: String, workout: Workout) {
@@ -105,6 +123,9 @@ class FirestoreSyncManager(private val database: AppDatabase) {
         )
         workoutsRef(uid).document(sanitizeDocId(workout.recordId))
             .set(data, SetOptions.merge())
+            .addOnFailureListener { e ->
+                AppLog.e("FirestoreSyncManager", "Не удалось отправить тренировку ${workout.recordId}", e)
+            }
     }
 
     /** One-shot upload of everything held locally. Used right after a first sign-in. */

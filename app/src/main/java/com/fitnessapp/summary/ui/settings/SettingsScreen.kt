@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.fitnessapp.summary.BuildConfig
 import com.fitnessapp.summary.FitnessSummaryApp
+import com.fitnessapp.summary.debug.AppLog
 import com.fitnessapp.summary.export.DataExporter
 import com.fitnessapp.summary.health.HealthConnectManager
 import com.fitnessapp.summary.health.HealthSyncManager
@@ -43,6 +44,7 @@ import com.fitnessapp.summary.ui.theme.metricPalette
 import com.fitnessapp.summary.update.ApkInstaller
 import com.fitnessapp.summary.update.UpdateCheckResult
 import com.fitnessapp.summary.update.UpdateChecker
+import com.fitnessapp.summary.util.formatTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -62,6 +64,7 @@ fun SettingsScreen(app: FitnessSummaryApp) {
     ) {
         item { HealthConnectSection(app) }
         item { SyncSection(app) }
+        item { LogsSection() }
         item { AccountSection(app) }
         item { ExportSection(app) }
         item { UpdateSection() }
@@ -282,6 +285,91 @@ private fun SyncSection(app: FitnessSummaryApp) {
             modifier = Modifier.padding(top = 8.dp)
         )
     }
+}
+
+/**
+ * Surfaces AppLog (see debug/AppLog.kt) directly on the Я tab. Exists specifically so
+ * "Garmin data doesn't come through" stops being a screenshot-and-guess conversation:
+ * several read/write paths deliberately swallow exceptions rather than crash (a denied
+ * Health Connect permission, a Firestore write rejected by the rules), and this is
+ * where those now actually get recorded. "Поделиться логами" hands over the whole file.
+ */
+@Composable
+private fun LogsSection() {
+    val context = LocalContext.current
+    var refreshKey by remember { mutableIntStateOf(0) }
+    val entries = remember(refreshKey) { AppLog.recentEntries().take(20) }
+
+    InfoCard(title = "Логи") {
+        Text(
+            text = "Что реально произошло при последней синхронизации Health Connect и " +
+                "Firestore. Если какие-то данные Garmin не приходят - нажми «Поделиться " +
+                "логами» и пришли файл, по нему видна точная причина, а не только симптом.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        if (entries.isEmpty()) {
+            Text(
+                text = "Пока пусто - выполните синхронизацию, чтобы здесь что-то появилось.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        } else {
+            Column(modifier = Modifier.padding(top = 8.dp)) {
+                entries.forEach { entry -> LogEntryLine(entry) }
+            }
+        }
+
+        Row(
+            modifier = Modifier.padding(top = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(onClick = { refreshKey++ }) {
+                Text("Обновить")
+            }
+            Button(
+                onClick = {
+                    val intent = AppLog.shareIntent(context)
+                    if (intent == null) {
+                        Toast.makeText(context, "Логов пока нет", Toast.LENGTH_SHORT).show()
+                    } else {
+                        context.startActivity(intent)
+                    }
+                }
+            ) {
+                Text("Поделиться логами")
+            }
+            TextButton(
+                onClick = {
+                    AppLog.clear()
+                    refreshKey++
+                }
+            ) {
+                Text("Очистить")
+            }
+        }
+    }
+}
+
+@Composable
+private fun LogEntryLine(entry: AppLog.Entry) {
+    val palette = metricPalette()
+    val color = when (entry.level) {
+        AppLog.Level.ERROR -> MaterialTheme.colorScheme.error
+        AppLog.Level.WARN -> palette.calories
+        AppLog.Level.INFO -> MaterialTheme.colorScheme.onSurface
+        AppLog.Level.DEBUG -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Text(
+        text = "${formatTime(entry.timestampMillis)}  [${entry.tag}] ${entry.message}" +
+            (entry.detail?.let { " — $it" } ?: ""),
+        style = MaterialTheme.typography.labelMedium,
+        color = color,
+        maxLines = 2,
+        modifier = Modifier.padding(vertical = 2.dp)
+    )
 }
 
 @Composable
