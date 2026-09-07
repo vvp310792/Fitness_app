@@ -28,9 +28,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GarminReadiness::class,
         GarminTraining::class,
         GarminBodyComposition::class,
-        GarminActivity::class
+        GarminActivity::class,
+        GarminSyncMark::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -44,6 +45,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun garminTrainingDao(): GarminTrainingDao
     abstract fun garminBodyCompositionDao(): GarminBodyCompositionDao
     abstract fun garminActivityDao(): GarminActivityDao
+    abstract fun garminSyncMarkDao(): GarminSyncMarkDao
 
     companion object {
         @Volatile
@@ -271,6 +273,32 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v3 -> v4: makes the Garmin sync incremental. `garmin_sync_marks` remembers which
+         * day/section pairs are already settled (data stored, or Garmin saying "nothing
+         * here") so a later sync skips them instead of asking again - see
+         * [GarminSyncMark]. `detailsLoaded` on garmin_activities does the same for the
+         * per-activity detail call. Both default to "not known yet", so the first sync
+         * after the update behaves exactly as before and fills the marks in as it goes.
+         */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS garmin_sync_marks (
+                        dateEpochDay INTEGER NOT NULL,
+                        section TEXT NOT NULL,
+                        hasData INTEGER NOT NULL DEFAULT 0,
+                        logicVersion INTEGER NOT NULL DEFAULT 0,
+                        updatedAtMillis INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(dateEpochDay, section)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("ALTER TABLE garmin_activities ADD COLUMN detailsLoaded INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -278,7 +306,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "fitness_summary.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                 INSTANCE = instance
                 instance

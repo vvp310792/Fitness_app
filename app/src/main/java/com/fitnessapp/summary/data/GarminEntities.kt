@@ -283,6 +283,13 @@ data class GarminActivity(
     val vigorousIntensityMinutes: Int = 0,
     /** Body Battery change over the session (negative = drained). */
     val bodyBatteryDiff: Int = 0,
+    /**
+     * True once the per-activity detail call (`activity-service/activity/{id}`) has been
+     * made for this row. Stored rather than inferred from the detail fields being
+     * non-zero, because a legitimately detail-less session (a strength set with no
+     * Training Effect) would otherwise be re-fetched on every single sync forever.
+     */
+    val detailsLoaded: Boolean = false,
     val updatedAtMillis: Long = System.currentTimeMillis()
 ) {
     val durationMinutes: Int get() = durationSeconds / 60
@@ -384,4 +391,62 @@ interface GarminActivityDao {
 
     @Query("SELECT * FROM garmin_activities ORDER BY startTimeMillis ASC")
     suspend fun getAllOnce(): List<GarminActivity>
+
+    /** Ids already enriched with their detail call - see [GarminActivity.detailsLoaded]. */
+    @Query("SELECT activityId FROM garmin_activities WHERE dateEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND detailsLoaded = 1")
+    suspend fun detailedIdsInRange(fromEpochDay: Long, toEpochDay: Long): List<Long>
+}
+
+/**
+ * One "we already asked Garmin about this day and section" note, so a later sync doesn't
+ * ask again.
+ *
+ * Written for both outcomes that settle a question - data stored, and Garmin answering
+ * "nothing here" - but deliberately NOT for a failure: a day whose call failed has no
+ * mark, so it is exactly what the next run retries. That is what makes an interrupted
+ * 90-day backfill resumable instead of starting over, and what stops a watch that has no
+ * HRV at all from being asked 90 times about it on every sync.
+ *
+ * [logicVersion] stamps the marks with the sync logic that wrote them. When a fix changes
+ * what a call would return - as the User-Agent fix did, turning three permanently silent
+ * endpoints into working ones - bumping the constant invalidates every old mark at once,
+ * so nobody is left with "no data" cached from a version that was asking wrongly. That is
+ * the alternative to a "re-read everything" button the user would have to know to press.
+ *
+ * Recent days are never skipped regardless of their marks (see
+ * [GarminSyncManager.ALWAYS_REFRESH_DAYS]): Garmin revises the last few days as the watch
+ * syncs late, the same reason the Health Connect window is wider than one day.
+ */
+@Entity(tableName = "garmin_sync_marks", primaryKeys = ["dateEpochDay", "section"])
+data class GarminSyncMark(
+    val dateEpochDay: Long,
+    /** One of [GarminSyncMark.SECTION_SUMMARY] etc. */
+    val section: String,
+    /** True when the day produced a stored row; false when Garmin answered "nothing here". */
+    val hasData: Boolean,
+    val logicVersion: Int,
+    val updatedAtMillis: Long = System.currentTimeMillis()
+) {
+    companion object {
+        const val SECTION_SUMMARY = "summary"
+        const val SECTION_SLEEP = "sleep"
+        const val SECTION_HRV = "hrv"
+        const val SECTION_READINESS = "readiness"
+        const val SECTION_TRAINING = "training"
+    }
+}
+
+@Dao
+interface GarminSyncMarkDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(marks: List<GarminSyncMark>)
+
+    @Query(
+        "SELECT * FROM garmin_sync_marks WHERE dateEpochDay BETWEEN :fromEpochDay AND :toEpochDay " +
+            "AND logicVersion = :logicVersion"
+    )
+    suspend fun marksInRange(fromEpochDay: Long, toEpochDay: Long, logicVersion: Int): List<GarminSyncMark>
+
+    @Query("DELETE FROM garmin_sync_marks")
+    suspend fun clear()
 }

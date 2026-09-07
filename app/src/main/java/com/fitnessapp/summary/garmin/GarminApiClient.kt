@@ -119,25 +119,27 @@ class GarminApiClient(private val auth: GarminAuthClient) {
      */
     suspend fun sleep(date: LocalDate): GarminFetch<GarminSleep> = withContext(Dispatchers.IO) {
         val primary = fetchObject("sleep-service/sleep/dailySleepData", mapOf("date" to date.toString()))
-        val root: JSONObject = when (primary) {
-            is GarminFetch.Ok -> primary.value.takeIf { it.optJSONObject("dailySleepDTO") != null }
-            is GarminFetch.Failed -> return@withContext primary
-            GarminFetch.NoData -> null
-        } ?: run {
-            val user = userName() ?: return@withContext GarminFetch.NoData
-            AppLog.d("GarminApiClient", "Сон за $date: основной эндпоинт пуст, пробую wellness-service")
-            when (val fallback = fetchObject(
-                "wellness-service/wellness/dailySleepData/$user",
-                mapOf("nonSleepBufferMinutes" to "60", "date" to date.toString())
-            )) {
-                is GarminFetch.Ok -> fallback.value
-                is GarminFetch.Failed -> return@withContext fallback
-                GarminFetch.NoData -> return@withContext GarminFetch.NoData
-            }
+        if (primary is GarminFetch.Failed) return@withContext primary
+        val fromPrimary = (primary as? GarminFetch.Ok)?.value?.let { root ->
+            root.optJSONObject("dailySleepDTO")?.let { dto -> parseSleep(date, root, dto) }
         }
+        if (fromPrimary != null && !fromPrimary.isEmpty) return@withContext GarminFetch.Ok(fromPrimary)
 
-        val dto = root.optJSONObject("dailySleepDTO") ?: return@withContext GarminFetch.NoData
-        GarminFetch.Ok(parseSleep(date, root, dto))
+        // The condition for falling back is "nothing usable came back", not "the response
+        // was missing its DTO". This endpoint answers 200 with a present-but-hollow
+        // dailySleepDTO - no sleepTimeSeconds, no score - and an earlier version treated
+        // that as a real, empty night and never tried the second endpoint at all.
+        val user = userName() ?: return@withContext GarminFetch.NoData
+        AppLog.d("GarminApiClient", "Сон за $date: основной эндпоинт пуст, пробую wellness-service")
+        val fallback = fetchObject(
+            "wellness-service/wellness/dailySleepData/$user",
+            mapOf("nonSleepBufferMinutes" to "60", "date" to date.toString())
+        )
+        if (fallback is GarminFetch.Failed) return@withContext fallback
+        val fromFallback = (fallback as? GarminFetch.Ok)?.value?.let { root ->
+            root.optJSONObject("dailySleepDTO")?.let { dto -> parseSleep(date, root, dto) }
+        }
+        if (fromFallback != null && !fromFallback.isEmpty) GarminFetch.Ok(fromFallback) else GarminFetch.NoData
     }
 
     private fun parseSleep(date: LocalDate, root: JSONObject, dto: JSONObject): GarminSleep {
@@ -387,10 +389,9 @@ class GarminApiClient(private val auth: GarminAuthClient) {
 
     /**
      * garth `Activity.list`: `activitylist-service/activities/search/activities?limit=&start=`,
-     * newest first, paged until the page runs older than [from]; then each activity in
-     * range is enriched from `activity-service/activity/{id}` (`summaryDTO`, garth
-     * `Summary`) for Training Effect, load, power and cadence - the fields the list
-     * endpoint doesn't carry under garth-verified names.
+     * newest first, paged until the page runs older than [from]. Returns the list-level
+     * fields only; Training Effect, load, power and cadence live behind a per-activity
+     * detail call - see [activityDetail].
      */
     suspend fun activities(from: LocalDate, to: LocalDate): GarminFetch<List<GarminActivity>> = withContext(Dispatchers.IO) {
         val fromEpoch = from.toEpochDay()
@@ -428,7 +429,17 @@ class GarminApiClient(private val auth: GarminAuthClient) {
         }
 
         if (collected.isEmpty()) return@withContext GarminFetch.NoData
-        GarminFetch.Ok(collected.map { activity -> enrichActivity(activity) })
+        GarminFetch.Ok(collected)
+    }
+
+    /**
+     * The per-activity detail call, split out from [activities] so the caller can skip the
+     * ones it already has (see [com.fitnessapp.summary.data.GarminActivity.detailsLoaded]).
+     * A 90-day backfill re-run would otherwise repeat one request per activity every time,
+     * which is most of its cost.
+     */
+    suspend fun activityDetail(activity: GarminActivity): GarminActivity = withContext(Dispatchers.IO) {
+        enrichActivity(activity)
     }
 
     private fun parseActivity(item: JSONObject, epochDay: Long): GarminActivity {
@@ -460,6 +471,7 @@ class GarminApiClient(private val auth: GarminAuthClient) {
         val summary = fetchObject("activity-service/activity/${activity.activityId}")
             .valueOrNull()?.optJSONObject("summaryDTO") ?: return activity
         return activity.copy(
+            detailsLoaded = true,
             aerobicTrainingEffect = summary.float("trainingEffect"),
             anaerobicTrainingEffect = summary.float("anaerobicTrainingEffect"),
             trainingEffectLabel = summary.str("trainingEffectLabel"),

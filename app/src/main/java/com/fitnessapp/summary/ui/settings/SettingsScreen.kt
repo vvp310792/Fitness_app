@@ -440,7 +440,11 @@ private fun GarminSection(app: FitnessSummaryApp) {
                     }
                     is GarminSyncManager.State.Success -> {
                         Text(
-                            text = "Обновлено дней: ${state.daysWritten} (${formatTime(state.atMillis)})",
+                            text = buildString {
+                                append("Обновлено дней: ${state.daysWritten}")
+                                if (state.daysSkipped > 0) append(", пропущено уже загруженных: ${state.daysSkipped}")
+                                append(" (${formatTime(state.atMillis)})")
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = metricPalette().distance,
                             modifier = Modifier.padding(top = 6.dp)
@@ -497,13 +501,19 @@ private fun GarminSection(app: FitnessSummaryApp) {
                     }
                 }
                 Text(
-                    text = "Обычная синхронизация читает последние ${GarminSyncManager.DEFAULT_RECENT_DAYS} дней " +
-                        "при каждом запуске. История — разовая загрузка для вкладки «Тренды»; " +
-                        "это несколько сотен запросов к Garmin и занимает пару минут.",
+                    text = "Уже загруженные дни повторно не запрашиваются, поэтому прерванная " +
+                        "загрузка продолжается с того же места — можно просто нажать ещё раз. " +
+                        "Последние дни перечитываются всегда: Garmin дописывает их задним числом.",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp)
                 )
+                TextButton(
+                    onClick = { app.launchPersistent { app.garminSync.forgetSyncMarks() } },
+                    enabled = !running
+                ) {
+                    Text("Забыть отметки и перечитать всё")
+                }
                 TextButton(
                     onClick = {
                         app.garminAuth.logout()
