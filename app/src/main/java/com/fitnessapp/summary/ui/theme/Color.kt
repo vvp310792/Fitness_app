@@ -62,7 +62,21 @@ data class MetricPalette(
     val sleepDeep: Color,
     val sleepRem: Color,
     val sleepLight: Color,
-    val sleepAwake: Color
+    val sleepAwake: Color,
+    // Garmin's own scores (garmin/ package). One hue per score family, same rule as
+    // above: readiness is violet everywhere it appears, stress is orange everywhere.
+    val stress: Color,
+    val bodyBattery: Color,
+    val readiness: Color,
+    val hrv: Color,
+    val training: Color,
+    val weight: Color,
+    // Stress zones, Garmin's four bands. Like the sleep stages these are only ever drawn
+    // as labelled rows with the duration in text, so the colour reinforces, never carries.
+    val stressRest: Color,
+    val stressLow: Color,
+    val stressMedium: Color,
+    val stressHigh: Color
 )
 
 private val LightMetrics = MetricPalette(
@@ -79,7 +93,18 @@ private val LightMetrics = MetricPalette(
     sleepDeep = Color(0xFF3730A3),
     sleepRem = Color(0xFF4F46E5),
     sleepLight = Color(0xFF818CF8),
-    sleepAwake = Color(0xFFDC2626)
+    sleepAwake = Color(0xFFDC2626),
+    // All checked >= 3:1 against #FFFFFF (3.1-7.1).
+    stress = Color(0xFFEA580C),
+    bodyBattery = Color(0xFF65A30D),
+    readiness = Color(0xFF7C3AED),
+    hrv = Color(0xFF0284C7),
+    training = Color(0xFF9333EA),
+    weight = Color(0xFF6D28D9),
+    stressRest = Color(0xFF0891B2),
+    stressLow = Color(0xFFA16207),
+    stressMedium = Color(0xFFEA580C),
+    stressHigh = Color(0xFFDC2626)
 )
 
 private val DarkMetrics = MetricPalette(
@@ -92,7 +117,18 @@ private val DarkMetrics = MetricPalette(
     sleepDeep = Color(0xFF818CF8),
     sleepRem = Color(0xFFA5B4FC),
     sleepLight = Color(0xFFC7D2FE),
-    sleepAwake = Color(0xFFF87171)
+    sleepAwake = Color(0xFFF87171),
+    // All checked >= 6:1 against #161C1F.
+    stress = Color(0xFFFB923C),
+    bodyBattery = Color(0xFFA3E635),
+    readiness = Color(0xFFA78BFA),
+    hrv = Color(0xFF38BDF8),
+    training = Color(0xFFC084FC),
+    weight = Color(0xFFC4B5FD),
+    stressRest = Color(0xFF22D3EE),
+    stressLow = Color(0xFFFACC15),
+    stressMedium = Color(0xFFFB923C),
+    stressHigh = Color(0xFFF87171)
 )
 
 @Composable

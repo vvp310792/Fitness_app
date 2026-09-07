@@ -54,6 +54,25 @@ fun formatTimeRange(startMillis: Long, endMillis: Long): String =
     "${formatTime(startMillis)} - ${formatTime(endMillis)}"
 
 /**
+ * For Garmin's `*TimestampLocal` fields, which are epoch millis already shifted to the
+ * user's wall clock - reading them in UTC gives the clock time back; reading them in the
+ * device zone would shift them a second time.
+ */
+fun formatWallClockUtc(millis: Long): String =
+    if (millis <= 0L) "-" else TIME_FORMAT.format(Instant.ofEpochMilli(millis).atZone(java.time.ZoneOffset.UTC))
+
+/** "72,4 кг" from grams, one decimal, Russian comma. */
+fun formatKg(grams: Int): String =
+    if (grams <= 0) "-" else "${(Math.round(grams / 100.0) / 10.0).toString().replace('.', ',')} кг"
+
+/** One-decimal number with a Russian comma: 3.2 -> "3,2". */
+fun formatDecimal(value: Float): String =
+    (Math.round(value * 10) / 10.0).toString().replace('.', ',')
+
+/** Hours as "1 ч 30 мин" from a fractional hour count. */
+fun formatHours(hours: Float): String = formatDuration(Math.round(hours * 60))
+
+/**
  * Signed percentage change, for week-over-week comparison. Null when there's no
  * meaningful baseline (a zero previous week would make every change "+infinity%").
  */

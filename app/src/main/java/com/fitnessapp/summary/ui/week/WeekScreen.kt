@@ -26,17 +26,25 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.fitnessapp.summary.FitnessSummaryApp
+import com.fitnessapp.summary.analytics.GarminWeekSummary
+import com.fitnessapp.summary.analytics.LifestyleAnalytics
+import com.fitnessapp.summary.data.GarminDailyExtra
+import com.fitnessapp.summary.data.GarminSleep
 import com.fitnessapp.summary.data.SummaryRepository
 import com.fitnessapp.summary.data.WeekSummary
 import com.fitnessapp.summary.ui.components.BarDatum
 import com.fitnessapp.summary.ui.components.Chip
 import com.fitnessapp.summary.ui.components.EmptyState
+import com.fitnessapp.summary.ui.components.GarminActivityRow
 import com.fitnessapp.summary.ui.components.InfoCard
 import com.fitnessapp.summary.ui.components.MetricCard
+import com.fitnessapp.summary.ui.components.ProgressBar
 import com.fitnessapp.summary.ui.components.SectionHeader
 import com.fitnessapp.summary.ui.components.StatRow
 import com.fitnessapp.summary.ui.components.WeekBarChart
 import com.fitnessapp.summary.ui.components.WorkoutRow
+import com.fitnessapp.summary.ui.components.matchGarminActivity
+import com.fitnessapp.summary.ui.components.unmatchedGarminActivities
 import com.fitnessapp.summary.ui.theme.MetricPalette
 import com.fitnessapp.summary.ui.theme.metricPalette
 import com.fitnessapp.summary.util.WEEKDAY_LABELS
@@ -51,6 +59,7 @@ import com.fitnessapp.summary.util.formatSignedPercent
 import com.fitnessapp.summary.util.formatSleepDuration
 import com.fitnessapp.summary.util.formatWeekHeader
 import com.fitnessapp.summary.util.formatWeekRange
+import com.fitnessapp.summary.util.hrvStatusLabel
 import com.fitnessapp.summary.util.percentChange
 import com.fitnessapp.summary.util.weekStart
 import java.time.LocalDate
@@ -93,6 +102,19 @@ fun WeekScreen(app: FitnessSummaryApp) {
         )
     }
 
+    // Garmin's own numbers for the same seven days. All empty for an install without the
+    // Garmin login, in which case the section below simply doesn't render.
+    val weekFromEpoch = selectedWeekStart.toEpochDay()
+    val weekToEpoch = selectedWeekStart.plusDays(6).toEpochDay()
+    val garminDays by remember(selectedWeekStart) { app.database.garminDailyExtraDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
+    val garminSleeps by remember(selectedWeekStart) { app.database.garminSleepDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
+    val garminHrvs by remember(selectedWeekStart) { app.database.garminHrvDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
+    val garminReadiness by remember(selectedWeekStart) { app.database.garminReadinessDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
+    val garminActivities by remember(selectedWeekStart) { app.database.garminActivityDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
+    val garminWeek = remember(garminDays, garminSleeps, garminHrvs, garminReadiness, garminActivities, selectedWeekStart) {
+        LifestyleAnalytics.computeWeek(selectedWeekStart, garminDays, garminSleeps, garminHrvs, garminReadiness, garminActivities)
+    }
+
     val palette = metricPalette()
 
     LazyColumn(
@@ -130,7 +152,7 @@ fun WeekScreen(app: FitnessSummaryApp) {
             }
         }
 
-        if (week.isEmpty) {
+        if (week.isEmpty && garminWeek.isEmpty) {
             item {
                 EmptyState(
                     emoji = "📊",
@@ -141,20 +163,176 @@ fun WeekScreen(app: FitnessSummaryApp) {
             return@LazyColumn
         }
 
-        item { WeekTotals(week, previousWeek, palette) }
-        item { StepsChart(week, days, selectedWeekStart, today, palette) }
-        item { SleepSection(week, days, selectedWeekStart, today, palette) }
-        item { HeartSection(week) }
+        if (!week.isEmpty) {
+            item { WeekTotals(week, previousWeek, palette) }
+        }
+        if (!garminWeek.isEmpty) {
+            item { GarminWeekSection(garminWeek, garminDays, garminSleeps, selectedWeekStart, today, palette) }
+        }
+        if (!week.isEmpty) {
+            item { StepsChart(week, days, selectedWeekStart, today, palette) }
+            item { SleepSection(week, days, selectedWeekStart, today, palette) }
+            item { HeartSection(week) }
+        }
 
-        if (workouts.isNotEmpty()) {
+        val unmatched = unmatchedGarminActivities(workouts, garminActivities)
+        val total = workouts.size + unmatched.size
+        if (total > 0) {
             item {
-                SectionHeader("${workouts.size} ${declineWorkouts(workouts.size)} за неделю")
+                SectionHeader("$total ${declineWorkouts(total)} за неделю")
             }
             items(workouts, key = { it.recordId }) { workout ->
                 WorkoutRow(
                     workout = workout,
-                    showDate = formatDayMonth(LocalDate.ofEpochDay(workout.dateEpochDay))
+                    showDate = formatDayMonth(LocalDate.ofEpochDay(workout.dateEpochDay)),
+                    garmin = matchGarminActivity(workout, garminActivities)
                 )
+            }
+            items(unmatched, key = { "garmin_${it.activityId}" }) { activity ->
+                GarminActivityRow(
+                    activity = activity,
+                    showDate = formatDayMonth(LocalDate.ofEpochDay(activity.dateEpochDay))
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The Garmin half of the week: the weekly Intensity Minutes goal (the one weekly target
+ * Garmin itself sets), then the recovery-side averages. Every average names how many
+ * days it stands on, same as the Health Connect section.
+ */
+@Composable
+private fun GarminWeekSection(
+    garmin: GarminWeekSummary,
+    garminDays: List<GarminDailyExtra>,
+    garminSleeps: List<GarminSleep>,
+    weekStart: LocalDate,
+    today: LocalDate,
+    palette: MetricPalette
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (garmin.daysWithSummary > 0) {
+            InfoCard(title = "Интенсивные минуты") {
+                val goal = garmin.intensityMinutesGoal
+                Text(
+                    text = "${garmin.intensityMinutesWeighted} из $goal",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                ProgressBar(
+                    fraction = garmin.intensityMinutesWeighted.toFloat() / goal,
+                    accent = palette.workout,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+                val byDay = garminDays.associateBy { it.dateEpochDay }
+                val bars = (0..6).map { offset ->
+                    val date = weekStart.plusDays(offset.toLong())
+                    BarDatum(
+                        label = WEEKDAY_LABELS[offset],
+                        value = (byDay[date.toEpochDay()]?.intensityMinutesWeighted ?: 0).toLong(),
+                        highlighted = date == today
+                    )
+                }
+                WeekBarChart(
+                    data = bars,
+                    accent = palette.workout,
+                    formatValue = { it.toString() },
+                    modifier = Modifier.padding(top = 10.dp),
+                    barAreaHeight = 70
+                )
+                Text(
+                    text = "Умеренные минуты плюс интенсивные вдвое — формула Garmin. Недельная цель Garmin по умолчанию 150 (рекомендация ВОЗ).",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            MetricCard(
+                emoji = "🌙",
+                label = "Sleep Score",
+                value = if (garmin.avgSleepScore > 0) garmin.avgSleepScore.toString() else "-",
+                accent = palette.sleep,
+                modifier = Modifier.weight(1f),
+                caption = if (garmin.nightsWithScore > 0) "за ${garmin.nightsWithScore} ${declineDays(garmin.nightsWithScore)}" else null
+            )
+            MetricCard(
+                emoji = "🟢",
+                label = "Готовность",
+                value = if (garmin.avgReadiness > 0) garmin.avgReadiness.toString() else "-",
+                accent = palette.readiness,
+                modifier = Modifier.weight(1f),
+                caption = if (garmin.daysWithReadiness > 0) "за ${garmin.daysWithReadiness} ${declineDays(garmin.daysWithReadiness)}" else null
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            MetricCard(
+                emoji = "⚡",
+                label = "Стресс, средний",
+                value = if (garmin.avgStress > 0) garmin.avgStress.toString() else "-",
+                accent = palette.stress,
+                modifier = Modifier.weight(1f)
+            )
+            MetricCard(
+                emoji = "🔋",
+                label = "Body Battery утром",
+                value = if (garmin.avgBodyBatteryAtWake > 0) garmin.avgBodyBatteryAtWake.toString() else "-",
+                accent = palette.bodyBattery,
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        if (garmin.nightsWithScore > 0) {
+            InfoCard(title = "Sleep Score по дням") {
+                val byDay = garminSleeps.associateBy { it.dateEpochDay }
+                val bars = (0..6).map { offset ->
+                    val date = weekStart.plusDays(offset.toLong())
+                    BarDatum(
+                        label = WEEKDAY_LABELS[offset],
+                        value = (byDay[date.toEpochDay()]?.score ?: 0).toLong(),
+                        highlighted = date == today
+                    )
+                }
+                WeekBarChart(
+                    data = bars,
+                    accent = palette.sleep,
+                    formatValue = { it.toString() },
+                    modifier = Modifier.padding(top = 4.dp),
+                    barAreaHeight = 80
+                )
+                if (garmin.avgSleepNeedDeficitMinutes > 15) {
+                    Text(
+                        text = "В среднем не хватало ${formatDuration(garmin.avgSleepNeedDeficitMinutes)} до потребности во сне (Garmin Sleep Need).",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+            }
+        }
+
+        val hasRecovery = garmin.avgHrvLastNight > 0 || garmin.avgRestingHeartRate > 0 || garmin.totalTrainingLoad > 0 || garmin.floorsAscended > 0
+        if (hasRecovery) {
+            InfoCard(title = "Восстановление и нагрузка") {
+                if (garmin.avgHrvLastNight > 0) {
+                    StatRow("ВСР за ночь, средняя", "${garmin.avgHrvLastNight} мс")
+                }
+                if (garmin.latestHrvStatus.isNotBlank()) {
+                    StatRow("Статус ВСР", hrvStatusLabel(garmin.latestHrvStatus))
+                }
+                if (garmin.avgRestingHeartRate > 0) {
+                    StatRow("Пульс покоя, средний", "${formatHeartRate(garmin.avgRestingHeartRate)} уд/мин")
+                }
+                if (garmin.totalTrainingLoad > 0) {
+                    StatRow("Нагрузка тренировок за неделю", garmin.totalTrainingLoad.toString())
+                }
+                if (garmin.floorsAscended > 0) {
+                    StatRow("Этажей вверх", garmin.floorsAscended.toString())
+                }
             }
         }
     }

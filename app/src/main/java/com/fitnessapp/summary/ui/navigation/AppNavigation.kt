@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarViewWeek
 import androidx.compose.material.icons.filled.FitnessCenter
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.Icon
@@ -23,12 +24,14 @@ import androidx.navigation.compose.rememberNavController
 import com.fitnessapp.summary.FitnessSummaryApp
 import com.fitnessapp.summary.ui.day.DayScreen
 import com.fitnessapp.summary.ui.settings.SettingsScreen
+import com.fitnessapp.summary.ui.trends.TrendsScreen
 import com.fitnessapp.summary.ui.week.WeekScreen
 import com.fitnessapp.summary.ui.workouts.WorkoutsScreen
 
 object Routes {
     const val DAY = "day"
     const val WEEK = "week"
+    const val TRENDS = "trends"
     const val WORKOUTS = "workouts"
     const val SETTINGS = "settings"
 }
@@ -42,12 +45,13 @@ private data class BottomTab(
 private val BOTTOM_TABS = listOf(
     BottomTab(Routes.DAY, "День", Icons.Filled.Today),
     BottomTab(Routes.WEEK, "Неделя", Icons.Filled.CalendarViewWeek),
+    BottomTab(Routes.TRENDS, "Тренды", Icons.Filled.Insights),
     BottomTab(Routes.WORKOUTS, "Тренировки", Icons.Filled.FitnessCenter),
     BottomTab(Routes.SETTINGS, "Я", Icons.Filled.Person)
 )
 
 /**
- * Four flat tabs, no nested graphs.
+ * Five flat tabs, no nested graphs.
  *
  * Every route is a bare string with no query parameters on purpose: a route carrying
  * an argument stops matching its tab's template, which silently breaks the bottom
@@ -88,6 +92,7 @@ fun AppNavigation(app: FitnessSummaryApp) {
         ) {
             composable(Routes.DAY) { DayScreen(app = app) }
             composable(Routes.WEEK) { WeekScreen(app = app) }
+            composable(Routes.TRENDS) { TrendsScreen(app = app) }
             composable(Routes.WORKOUTS) { WorkoutsScreen(app = app) }
             composable(Routes.SETTINGS) { SettingsScreen(app = app) }
         }

@@ -69,12 +69,13 @@ class FitnessSummaryApp : Application() {
         )
     }
 
-    // Unofficial Garmin Connect access (Stress + Body Battery - see garmin/GarminAuthClient.kt
-    // for why this exists alongside Health Connect rather than instead of it).
+    // Unofficial Garmin Connect access (Garmin's own scores: sleep score, HRV, readiness,
+    // training status, Body Battery, stress... - see garmin/GarminAuthClient.kt for why
+    // this exists alongside Health Connect rather than instead of it).
     val garminTokenStore: GarminTokenStore by lazy { GarminTokenStore(this) }
     val garminAuth: GarminAuthClient by lazy { GarminAuthClient(garminTokenStore) }
     private val garminApi: GarminApiClient by lazy { GarminApiClient(garminAuth) }
-    val garminSync: GarminSyncManager by lazy { GarminSyncManager(garminApi, database.garminDailyExtraDao()) }
+    val garminSync: GarminSyncManager by lazy { GarminSyncManager(garminApi, database) }
 
     private val appScope = CoroutineScope(Dispatchers.IO)
 

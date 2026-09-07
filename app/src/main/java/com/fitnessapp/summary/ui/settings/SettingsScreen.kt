@@ -319,11 +319,14 @@ private fun GarminSection(app: FitnessSummaryApp) {
 
     InfoCard(title = "Garmin напрямую (неофициально)") {
         Text(
-            text = "Body Battery и Stress не передаются в Health Connect в принципе - " +
-                "их можно получить только логином напрямую в Garmin Connect тем же " +
-                "протоколом, что использует официальное приложение. Это не поддерживается " +
-                "Garmin и может сломаться при их изменениях без предупреждения. Пароль " +
-                "нигде не сохраняется - только при самом входе, дальше используется токен.",
+            text = "Собственные оценки Garmin — Sleep Score, ВСР, готовность к тренировке, " +
+                "статус тренировок и VO2max, Body Battery, стресс по зонам, интенсивные " +
+                "минуты, вес и Training Effect по тренировкам — в Health Connect не " +
+                "передаются в принципе. Их можно получить только логином напрямую в Garmin " +
+                "Connect тем же протоколом, что использует официальное приложение. Это не " +
+                "поддерживается Garmin и может сломаться при их изменениях без " +
+                "предупреждения. Пароль нигде не сохраняется - только при самом входе, " +
+                "дальше используется токен.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -437,7 +440,7 @@ private fun GarminSection(app: FitnessSummaryApp) {
                     }
                     is GarminSyncManager.State.Success -> {
                         Text(
-                            text = "Обновлено дней: ${state.daysWritten}",
+                            text = "Обновлено дней: ${state.daysWritten} (${formatTime(state.atMillis)})",
                             style = MaterialTheme.typography.bodyMedium,
                             color = metricPalette().distance,
                             modifier = Modifier.padding(top = 6.dp)
@@ -454,29 +457,40 @@ private fun GarminSection(app: FitnessSummaryApp) {
                     GarminSyncManager.State.Idle -> Unit
                 }
 
+                val running = syncState is GarminSyncManager.State.Running
                 Row(
                     modifier = Modifier.padding(top = 10.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Button(
-                        onClick = {
-                            app.launchPersistent {
-                                val today = LocalDate.now()
-                                app.garminSync.syncRange(today.minusDays(13), today)
-                            }
-                        }
+                        onClick = { app.launchPersistent { app.garminSync.syncRecent() } },
+                        enabled = !running
                     ) {
                         Text("Синхронизировать")
                     }
-                    TextButton(
-                        onClick = {
-                            app.garminAuth.logout()
-                            uiState = GarminUiState.LOGGED_OUT
-                            email = ""
-                        }
+                    OutlinedButton(
+                        onClick = { app.launchPersistent { app.garminSync.backfill() } },
+                        enabled = !running
                     ) {
-                        Text("Выйти")
+                        Text("История (${GarminSyncManager.DEFAULT_BACKFILL_DAYS} дней)")
                     }
+                }
+                Text(
+                    text = "Обычная синхронизация читает последние ${GarminSyncManager.DEFAULT_RECENT_DAYS} дней " +
+                        "при каждом запуске. История — разовая загрузка для вкладки «Тренды»; " +
+                        "это несколько сотен запросов к Garmin и занимает пару минут.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+                TextButton(
+                    onClick = {
+                        app.garminAuth.logout()
+                        uiState = GarminUiState.LOGGED_OUT
+                        email = ""
+                    }
+                ) {
+                    Text("Выйти")
                 }
             }
         }
@@ -629,7 +643,8 @@ private fun ExportSection(app: FitnessSummaryApp) {
 
     InfoCard(title = "Экспорт данных") {
         Text(
-            text = "Выгружает все дни и тренировки в один JSON — удобно для анализа.",
+            text = "Выгружает все дни, тренировки и все данные Garmin (сон, ВСР, готовность, " +
+                "статус тренировок, вес, стресс) в один JSON — удобно для анализа.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -639,7 +654,7 @@ private fun ExportSection(app: FitnessSummaryApp) {
                 scope.launch {
                     try {
                         val file = withContext(Dispatchers.IO) {
-                            DataExporter.export(context, app.summaryRepository, app.workoutRepository)
+                            DataExporter.export(context, app.summaryRepository, app.workoutRepository, app.database)
                         }
                         context.startActivity(DataExporter.shareIntent(context, file))
                     } catch (e: Exception) {
