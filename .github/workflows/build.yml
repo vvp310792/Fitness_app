@@ -1,0 +1,135 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      build_release:
+        description: 'Also build & upload the signed release APK'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.14.3
+
+      - name: Build debug APK
+        run: gradle assembleDebug --stacktrace -PappVersionCode=${{ github.run_number }}
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fitness-summary-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      # Signed release build for store distribution. Only runs when explicitly
+      # requested via a manual workflow_dispatch with build_release=true - a normal
+      # push to main just builds the debug APK above. Also requires
+      # RELEASE_KEYSTORE_BASE64 to be set as a repo secret.
+      - name: Check whether to build the signed release APK
+        id: release_check
+        run: |
+          if [ -n "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" ] && [ "${{ github.event.inputs.build_release }}" = "true" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write release keystore
+        if: steps.release_check.outputs.configured == 'true'
+        run: echo '${{ secrets.RELEASE_KEYSTORE_BASE64 }}' | base64 -d > "$RUNNER_TEMP/release.keystore"
+
+      - name: Build release APK
+        if: steps.release_check.outputs.configured == 'true'
+        run: >
+          gradle assembleRelease --stacktrace
+          -PappVersionCode=${{ github.run_number }}
+          -PreleaseKeystorePath=${{ runner.temp }}/release.keystore
+          -PreleaseKeystorePassword=${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          -PreleaseKeyAlias=${{ secrets.RELEASE_KEY_ALIAS }}
+
+      - name: Upload release APK artifact
+        if: steps.release_check.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fitness-summary-release-apk
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+      # Only publish a Release on an actual push to main (not on pull requests) -
+      # this is what the in-app updater checks and downloads from, since Release
+      # assets have plain public download URLs (unlike Actions artifacts, which
+      # require an authenticated API call even for public repos). The tag format
+      # "build-<N>" is parsed by update/UpdateChecker.kt - don't change one without
+      # the other.
+      - name: Create GitHub Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Build ${{ github.run_number }}"
+          files: app/build/outputs/apk/debug/app-debug.apk
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Auto-deploys firestore.rules to the Firebase project, so editing the rules file
+  # and pushing is enough - no manual step in the console. Entirely optional: with
+  # neither the FIREBASE_SERVICE_ACCOUNT secret nor the FIREBASE_PROJECT_ID variable
+  # set, this job does nothing. See docs/SETUP_FIREBASE.md.
+  deploy-firestore-rules:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check whether Firebase deploy is configured
+        id: check
+        run: |
+          if [ -n "${{ secrets.FIREBASE_SERVICE_ACCOUNT }}" ] && [ -n "${{ vars.FIREBASE_PROJECT_ID }}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node
+        if: steps.check.outputs.configured == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Write service account key
+        if: steps.check.outputs.configured == 'true'
+        run: echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}' > /tmp/firebase-service-account.json
+
+      - name: Deploy Firestore rules
+        if: steps.check.outputs.configured == 'true'
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/firebase-service-account.json
+        run: >
+          npx firebase-tools@latest deploy
+          --only firestore:rules
+          --project "${{ vars.FIREBASE_PROJECT_ID }}"
+          --non-interactive
