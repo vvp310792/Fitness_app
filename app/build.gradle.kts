@@ -107,6 +107,19 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    // Renames the built APK from the generic "app-debug.apk"/"app-release.apk" to
+    // something a person can recognise in their Downloads folder or a browser's
+    // download bar. Purely cosmetic - it has no effect on updates or install
+    // conflicts, which are governed entirely by applicationId + signing certificate
+    // + versionCode (all three stay fixed/increasing regardless of this filename;
+    // see the signingConfigs and defaultConfig comments above).
+    applicationVariants.all {
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName =
+                "fitness-summary-${buildType.name}.apk"
+        }
+    }
 }
 
 kotlin {

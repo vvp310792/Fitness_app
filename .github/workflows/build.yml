@@ -83,13 +83,24 @@ jobs:
       # require an authenticated API call even for public repos). The tag format
       # "build-<N>" is parsed by update/UpdateChecker.kt - don't change one without
       # the other.
+      #
+      # Only the DEBUG apk is ever attached here (release builds, when requested,
+      # only go to the workflow-artifact upload above) - so every Release the
+      # updater/README ever points to is signed with the same fixed debug keystore.
+      # That consistency is what lets a user install straight over a previous
+      # version with no signature-mismatch conflict; don't add the release APK to
+      # this "files:" list without also switching users to a single consistent key.
+      #
+      # A glob rather than a hardcoded filename, so a future rename of the output
+      # APK (see the applicationVariants.all block in app/build.gradle.kts) can't
+      # silently break this step.
       - name: Create GitHub Release
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
           name: "Build ${{ github.run_number }}"
-          files: app/build/outputs/apk/debug/app-debug.apk
+          files: app/build/outputs/apk/debug/*.apk
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
