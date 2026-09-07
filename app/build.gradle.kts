@@ -1,5 +1,5 @@
 // Not a secret - see the comment on GOOGLE_WEB_CLIENT_ID below.
-val GOOGLE_WEB_CLIENT_ID_DEFAULT = "REPLACE_ME.apps.googleusercontent.com"
+val GOOGLE_WEB_CLIENT_ID_DEFAULT = "211766917957-motgfultf6r1hdniteg8q1o3b4uued1c.apps.googleusercontent.com"
 
 plugins {
     id("com.android.application")
