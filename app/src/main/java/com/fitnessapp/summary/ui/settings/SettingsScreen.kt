@@ -16,6 +16,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -29,11 +30,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.fitnessapp.summary.BuildConfig
 import com.fitnessapp.summary.FitnessSummaryApp
 import com.fitnessapp.summary.debug.AppLog
 import com.fitnessapp.summary.export.DataExporter
+import com.fitnessapp.summary.garmin.GarminLoginResult
+import com.fitnessapp.summary.garmin.GarminSyncManager
 import com.fitnessapp.summary.health.HealthConnectManager
 import com.fitnessapp.summary.health.HealthSyncManager
 import com.fitnessapp.summary.sync.FirebaseSetup
@@ -49,6 +53,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -64,6 +69,7 @@ fun SettingsScreen(app: FitnessSummaryApp) {
     ) {
         item { HealthConnectSection(app) }
         item { SyncSection(app) }
+        item { GarminSection(app) }
         item { LogsSection() }
         item { AccountSection(app) }
         item { ExportSection(app) }
@@ -284,6 +290,196 @@ private fun SyncSection(app: FitnessSummaryApp) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 8.dp)
         )
+    }
+}
+
+private enum class GarminUiState { LOGGED_OUT, ENTERING_MFA, LOGGED_IN }
+
+/**
+ * Login for the unofficial Garmin Connect client (garmin/GarminAuthClient.kt) - the
+ * only way to get Stress and Body Battery into this app, since Health Connect never
+ * carries them (see CLAUDE.md). Deliberately upfront that this is NOT the official path:
+ * the password only ever leaves the device once, to Garmin's own sign-in endpoint, and
+ * nothing else - but this protocol is unsupported by Garmin and can break without notice
+ * if they change it, unlike the Health Connect integration above.
+ */
+@Composable
+private fun GarminSection(app: FitnessSummaryApp) {
+    val scope = rememberCoroutineScope()
+    var uiState by remember {
+        mutableStateOf(if (app.garminAuth.isLoggedIn) GarminUiState.LOGGED_IN else GarminUiState.LOGGED_OUT)
+    }
+    var email by remember { mutableStateOf(app.garminAuth.savedEmail.orEmpty()) }
+    var password by remember { mutableStateOf("") }
+    var mfaCode by remember { mutableStateOf("") }
+    var mfaMethod by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var errorText by remember { mutableStateOf<String?>(null) }
+    val syncState by app.garminSync.state.collectAsState()
+
+    InfoCard(title = "Garmin напрямую (неофициально)") {
+        Text(
+            text = "Body Battery и Stress не передаются в Health Connect в принципе - " +
+                "их можно получить только логином напрямую в Garmin Connect тем же " +
+                "протоколом, что использует официальное приложение. Это не поддерживается " +
+                "Garmin и может сломаться при их изменениях без предупреждения. Пароль " +
+                "нигде не сохраняется - только при самом входе, дальше используется токен.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        errorText?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        }
+
+        when (uiState) {
+            GarminUiState.LOGGED_OUT -> {
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    label = { Text("Email Garmin") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Пароль") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                )
+                Button(
+                    onClick = {
+                        errorText = null
+                        busy = true
+                        scope.launch {
+                            when (val result = app.garminAuth.login(email.trim(), password)) {
+                                is GarminLoginResult.Success -> {
+                                    password = ""
+                                    uiState = GarminUiState.LOGGED_IN
+                                }
+                                is GarminLoginResult.MfaRequired -> {
+                                    mfaMethod = result.method
+                                    uiState = GarminUiState.ENTERING_MFA
+                                }
+                                is GarminLoginResult.Failed -> {
+                                    errorText = "Не удалось войти: ${result.reason}"
+                                }
+                            }
+                            busy = false
+                        }
+                    },
+                    enabled = !busy && email.isNotBlank() && password.isNotBlank(),
+                    modifier = Modifier.padding(top = 10.dp)
+                ) {
+                    Text(if (busy) "Вхожу..." else "Войти в Garmin")
+                }
+            }
+
+            GarminUiState.ENTERING_MFA -> {
+                Text(
+                    text = "Garmin прислал код подтверждения ($mfaMethod) - введите его:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(top = 10.dp)
+                )
+                OutlinedTextField(
+                    value = mfaCode,
+                    onValueChange = { mfaCode = it },
+                    label = { Text("Код") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                )
+                Button(
+                    onClick = {
+                        errorText = null
+                        busy = true
+                        scope.launch {
+                            when (val result = app.garminAuth.submitMfaCode(mfaCode.trim())) {
+                                is GarminLoginResult.Success -> {
+                                    mfaCode = ""
+                                    uiState = GarminUiState.LOGGED_IN
+                                }
+                                is GarminLoginResult.Failed -> {
+                                    errorText = "Код не подошёл: ${result.reason}"
+                                }
+                                is GarminLoginResult.MfaRequired -> {
+                                    errorText = "Запросите код ещё раз"
+                                }
+                            }
+                            busy = false
+                        }
+                    },
+                    enabled = !busy && mfaCode.isNotBlank(),
+                    modifier = Modifier.padding(top = 10.dp)
+                ) {
+                    Text(if (busy) "Проверяю..." else "Подтвердить")
+                }
+            }
+
+            GarminUiState.LOGGED_IN -> {
+                StatRow("Вошли как", app.garminAuth.savedEmail ?: "Garmin")
+
+                when (val state = syncState) {
+                    is GarminSyncManager.State.Running -> {
+                        Text(
+                            text = "Читаю день ${state.done + 1} из ${state.total}...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                    is GarminSyncManager.State.Success -> {
+                        Text(
+                            text = "Обновлено дней: ${state.daysWritten}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = metricPalette().distance,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                    is GarminSyncManager.State.Failed -> {
+                        Text(
+                            text = state.reason,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                    GarminSyncManager.State.Idle -> Unit
+                }
+
+                Row(
+                    modifier = Modifier.padding(top = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            app.launchPersistent {
+                                val today = LocalDate.now()
+                                app.garminSync.syncRange(today.minusDays(13), today)
+                            }
+                        }
+                    ) {
+                        Text("Синхронизировать")
+                    }
+                    TextButton(
+                        onClick = {
+                            app.garminAuth.logout()
+                            uiState = GarminUiState.LOGGED_OUT
+                            email = ""
+                        }
+                    ) {
+                        Text("Выйти")
+                    }
+                }
+            }
+        }
     }
 }
 

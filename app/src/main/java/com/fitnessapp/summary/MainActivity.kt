@@ -25,6 +25,18 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Same trigger, same window, for the unofficial Garmin source - only if the
+        // user has actually logged in (most installs never will, and that's fine).
+        app.launchPersistent {
+            if (app.garminAuth.isLoggedIn) {
+                val today = java.time.LocalDate.now()
+                app.garminSync.syncRange(
+                    today.minusDays((com.fitnessapp.summary.health.HealthSyncManager.DEFAULT_RECENT_DAYS - 1).toLong()),
+                    today
+                )
+            }
+        }
+
         setContent {
             FitnessSummaryTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {

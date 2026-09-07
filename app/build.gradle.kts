@@ -172,8 +172,16 @@ dependencies {
     implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.2.0")
 
-    // Networking for the GitHub Releases update-checker (see update/)
+    // Networking for the GitHub Releases update-checker (see update/) and the
+    // unofficial Garmin Connect client (see garmin/)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // Encrypted on-device storage for the Garmin OAuth1 token (see garmin/GarminAuthClient.kt).
+    // The Garmin *password* is never stored anywhere, only ever held in memory for the
+    // single login request; what's persisted is the long-lived OAuth1 token/secret pair,
+    // and only this encrypted store, not plain SharedPreferences, is an acceptable place
+    // for it.
+    implementation("androidx.security:security-crypto:1.1.0")
 
     testImplementation("junit:junit:4.13.2")
 }

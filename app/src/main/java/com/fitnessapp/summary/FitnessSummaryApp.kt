@@ -5,6 +5,10 @@ import com.fitnessapp.summary.data.AppDatabase
 import com.fitnessapp.summary.debug.AppLog
 import com.fitnessapp.summary.data.SummaryRepository
 import com.fitnessapp.summary.data.WorkoutRepository
+import com.fitnessapp.summary.garmin.GarminApiClient
+import com.fitnessapp.summary.garmin.GarminAuthClient
+import com.fitnessapp.summary.garmin.GarminSyncManager
+import com.fitnessapp.summary.garmin.GarminTokenStore
 import com.fitnessapp.summary.health.HealthConnectManager
 import com.fitnessapp.summary.health.HealthConnectReader
 import com.fitnessapp.summary.health.HealthSyncManager
@@ -64,6 +68,13 @@ class FitnessSummaryApp : Application() {
             workoutRepository = workoutRepository
         )
     }
+
+    // Unofficial Garmin Connect access (Stress + Body Battery - see garmin/GarminAuthClient.kt
+    // for why this exists alongside Health Connect rather than instead of it).
+    val garminTokenStore: GarminTokenStore by lazy { GarminTokenStore(this) }
+    val garminAuth: GarminAuthClient by lazy { GarminAuthClient(garminTokenStore) }
+    private val garminApi: GarminApiClient by lazy { GarminApiClient(garminAuth) }
+    val garminSync: GarminSyncManager by lazy { GarminSyncManager(garminApi, database.garminDailyExtraDao()) }
 
     private val appScope = CoroutineScope(Dispatchers.IO)
 

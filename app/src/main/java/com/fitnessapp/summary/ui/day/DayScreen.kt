@@ -65,6 +65,13 @@ fun DayScreen(app: FitnessSummaryApp) {
         app.workoutRepository.observeForDay(selectedDate)
     }.collectAsState(initial = emptyList())
 
+    // Only ever non-null for a user who logged into the unofficial Garmin client (see
+    // ui/settings - "Garmin напрямую") - null for everyone else, and GarminExtraCard
+    // below stays hidden in that case.
+    val garminExtra by remember(selectedDate) {
+        app.database.garminDailyExtraDao().observeDay(selectedDate.toEpochDay())
+    }.collectAsState(initial = null)
+
     val palette = metricPalette()
 
     LazyColumn(
@@ -112,6 +119,7 @@ fun DayScreen(app: FitnessSummaryApp) {
             item { DayMetrics(day, palette) }
             item { SleepCard(day, palette) }
             item { HeartCard(day) }
+            garminExtra?.let { extra -> if (!extra.isEmpty) item { GarminExtraCard(extra) } }
         }
 
         if (workouts.isNotEmpty()) {
@@ -216,5 +224,32 @@ private fun HeartCard(day: DailySummary) {
             StatRow("Минимальный", "${formatHeartRate(day.minHeartRate)} уд/мин")
         }
         StatRow("Максимальный", "${formatHeartRate(day.maxHeartRate)} уд/мин")
+    }
+}
+
+/**
+ * Stress + Body Battery, from the unofficial Garmin client (garmin/GarminApiClient.kt) -
+ * the two metrics Health Connect can never carry (see CLAUDE.md). Only ever rendered
+ * for a user who's logged into that separately, via [DayScreen]'s `garminExtra?.let`
+ * guard - most installs will never see this card at all.
+ */
+@Composable
+private fun GarminExtraCard(extra: com.fitnessapp.summary.data.GarminDailyExtra) {
+    InfoCard(title = "Garmin: стресс и Body Battery") {
+        if (extra.averageStressLevel > 0) {
+            StatRow("Стресс, средний", extra.averageStressLevel.toString())
+        }
+        if (extra.maxStressLevel > 0) {
+            StatRow("Стресс, максимум", extra.maxStressLevel.toString())
+        }
+        if (extra.bodyBatteryAtWake > 0) {
+            StatRow("Body Battery при пробуждении", extra.bodyBatteryAtWake.toString())
+        }
+        if (extra.bodyBatteryHighest > 0) {
+            StatRow("Body Battery, максимум", extra.bodyBatteryHighest.toString())
+        }
+        if (extra.bodyBatteryLowest > 0) {
+            StatRow("Body Battery, минимум", extra.bodyBatteryLowest.toString())
+        }
     }
 }
