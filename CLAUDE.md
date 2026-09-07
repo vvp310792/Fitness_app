@@ -76,15 +76,30 @@ Body Battery**, которых в Health Connect нет и не будет в п
 памяти — это прямо оговорённый риск (см. «Грабли» ниже), поэтому каждый
 эндпоинт и поле сверялись с реальным кодом перед реализацией:
 
+0. `GET sso.garmin.com/mobile/sso/en/sign-in?clientId=...` **до** логина, и
+   `GET sso.garmin.com/portal/sso/embed` **после** SSO-успеха, но до обмена
+   тикета — оба не несут полезной нагрузки сами по себе, только сессионные
+   cookie, которые следующий шаг молча требует. Пропуск любого из двух —
+   реальный баг, который был: SSO логинился успешно (тикет приходил), но
+   обмен тикета падал с HTTP 400 без них
 1. `POST sso.garmin.com/mobile/api/login` — JSON {username, password}. При
    `responseStatus.type == "MFA_REQUIRED"` — второй запрос
    `POST .../mobile/api/mfa/verifyCode` с кодом (метод MFA из
    `customerMfaInfo.mfaLastMethodUsed`, дефолт "email"). SSO-сессия живёт в
-   cookie — оба запроса обязаны идти через один `OkHttpClient` с общим
-   `CookieJar` (`InMemoryCookieJar` в `GarminAuthClient.kt`), иначе шаг с MFA
-   бьёт по свежей неавторизованной сессии
+   cookie — все запросы этого раздела обязаны идти через один `OkHttpClient`
+   с общим `CookieJar` (`InMemoryCookieJar` в `GarminAuthClient.kt`), а сам
+   jar обязан сопоставлять cookie по `Cookie.matches()`, не по точному хосту
+   ответа — Garmin ставит cookie на весь `.garmin.com`, и они нужны и на
+   `connectapi.garmin.com` тоже, не только на `sso.garmin.com`
 2. Успех даёт `serviceTicketId` → обмен на **OAuth1**-токен:
-   `GET connectapi.garmin.com/oauth-service/oauth/preauthorized?ticket=...`
+   `GET connectapi.garmin.com/oauth-service/oauth/preauthorized?ticket=...`.
+   **Этот запрос тоже подписан OAuth1** — двухногим (только consumer
+   key/secret, без пользовательского токена, которого на этом шаге ещё нет:
+   именно этот запрос его и выдаёт). `GarminOAuth1Signer` в этом режиме не
+   добавляет `oauth_token` в параметры вовсе (не пустой строкой — отсутствует),
+   а в подписываемую строку параметров обязан попасть весь query этого
+   запроса (`ticket`/`login-url`/`accepts-mfa-tokens`), не только `oauth_*` —
+   раньше подписи для этого вызова не было вообще, тоже давало HTTP 400
 3. OAuth1 → **OAuth2** Bearer:
    `POST .../oauth-service/oauth/exchange/user/2.0`, подписан HMAC-SHA1
    (`GarminOAuth1Signer.kt` — минимальный самописный подписчик, в проекте
@@ -321,7 +336,21 @@ FileProvider-паттерн, что и `export/DataExporter`)/«Очистить
   `garth`, не восстанавливать по памяти.** Этот приватный API уже менялся
   под всеми, кто на него полагается; см. подробный список сверенных
   эндпоинтов/полей в «Прямой доступ к Garmin» выше — каждый URL, заголовок и
-  имя JSON-поля там взяты прямо из `github.com/matin/garth`, не угаданы
+  имя JSON-поля там взяты прямо из `github.com/matin/garth`, не угаданы.
+  Реальный кейс: первая реализация сверила эндпоинты и JSON-поля, но
+  пропустила то, что `garth` делает *между* ними — два «пустых» GET на
+  cookie-only страницы (см. п.0 выше) и OAuth1-подпись на обмене тикета —
+  и SSO логинился успешно, а обмен тикета стабильно падал HTTP 400. Сверять
+  нужно не только эндпоинты/поля, но и каждый вызов в цепочке, включая те,
+  чей ответ в коде не используется
+- **`GarminOAuth1Signer` подписывает и запросы без пользовательского
+  токена** (обмен тикета на OAuth1 — двухногая подпись, только consumer
+  key/secret). В таком режиме `oauth_token` должен отсутствовать в
+  параметрах вовсе, не быть пустой строкой — `requests_oauthlib` (на чём
+  основан `garth`) именно так и делает при `resource_owner_key=None`. Подпись
+  также обязана включать query-параметры URL, не только `oauth_*` и тело —
+  RFC 5849 §3.4.1.3 требует их в общий набор, но не в саму base string URI
+  (та — без query)
 - **Debug-keystore коммитить, фиксированный** — иначе каждая пересборка CI
   получает новый случайный ключ и Google Sign-In (привязанный к SHA-1) ломается
 - **`rememberCoroutineScope()` отменяется при уходе с экрана.** Для синхронизации
