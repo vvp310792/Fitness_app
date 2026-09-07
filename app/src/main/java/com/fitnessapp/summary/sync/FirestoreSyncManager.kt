@@ -101,6 +101,12 @@ class FirestoreSyncManager(private val database: AppDatabase) {
         )
         summariesRef(uid).document(summary.dateEpochDay.toString())
             .set(data, SetOptions.merge())
+            // DEBUG, not silence - a run of PERMISSION_DENIED errors followed by a sync
+            // with *no* log lines at all used to be genuinely ambiguous (fixed and quiet,
+            // or nothing attempted?). This is what turns "no errors" into "confirmed sent".
+            .addOnSuccessListener {
+                AppLog.d("FirestoreSyncManager", "Сводка за ${summary.dateEpochDay} отправлена")
+            }
             .addOnFailureListener { e ->
                 AppLog.e("FirestoreSyncManager", "Не удалось отправить сводку за ${summary.dateEpochDay}", e)
             }
@@ -123,6 +129,9 @@ class FirestoreSyncManager(private val database: AppDatabase) {
         )
         workoutsRef(uid).document(sanitizeDocId(workout.recordId))
             .set(data, SetOptions.merge())
+            .addOnSuccessListener {
+                AppLog.d("FirestoreSyncManager", "Тренировка ${workout.recordId} отправлена")
+            }
             .addOnFailureListener { e ->
                 AppLog.e("FirestoreSyncManager", "Не удалось отправить тренировку ${workout.recordId}", e)
             }
@@ -137,6 +146,7 @@ class FirestoreSyncManager(private val database: AppDatabase) {
     // ---- merge back ---------------------------------------------------------
 
     private suspend fun mergeSummaryChanges(changes: List<DocumentChange>) {
+        AppLog.d("FirestoreSyncManager", "Получено изменений dailySummaries: ${changes.size}")
         val dao = database.dailySummaryDao()
         for (change in changes) {
             if (change.type == DocumentChange.Type.REMOVED) continue
@@ -176,6 +186,7 @@ class FirestoreSyncManager(private val database: AppDatabase) {
     }
 
     private suspend fun mergeWorkoutChanges(changes: List<DocumentChange>) {
+        AppLog.d("FirestoreSyncManager", "Получено изменений workouts: ${changes.size}")
         val dao = database.workoutDao()
         for (change in changes) {
             if (change.type == DocumentChange.Type.REMOVED) continue
