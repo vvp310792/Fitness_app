@@ -432,7 +432,11 @@ private fun GarminSection(app: FitnessSummaryApp) {
                 when (val state = syncState) {
                     is GarminSyncManager.State.Running -> {
                         Text(
-                            text = "Читаю день ${state.done + 1} из ${state.total}...",
+                            text = if (state.total > 0) {
+                                "Читаю день ${state.done + 1} из ${state.total}..."
+                            } else {
+                                "Читаю историю, дней пройдено: ${state.done}..."
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 6.dp)
@@ -494,16 +498,18 @@ private fun GarminSection(app: FitnessSummaryApp) {
                         Text("Синхронизировать")
                     }
                     OutlinedButton(
-                        onClick = { app.launchPersistent { app.garminSync.backfill() } },
+                        onClick = { app.launchPersistent { app.garminSync.syncAllHistory() } },
                         enabled = !running
                     ) {
-                        Text("История (${GarminSyncManager.DEFAULT_BACKFILL_DAYS} дней)")
+                        Text("Вся история")
                     }
                 }
                 Text(
-                    text = "Уже загруженные дни повторно не запрашиваются, поэтому прерванная " +
-                        "загрузка продолжается с того же места — можно просто нажать ещё раз. " +
-                        "Последние дни перечитываются всегда: Garmin дописывает их задним числом.",
+                    text = "«Вся история» идёт назад по 30 дней и останавливается там, где у Garmin " +
+                        "кончаются данные — глубина не ограничена, дата начала аккаунта определяется " +
+                        "сама. Уже загруженные дни повторно не запрашиваются, поэтому прерванная " +
+                        "загрузка продолжается с того же места: можно просто нажать ещё раз. " +
+                        "Последние дни перечитываются всегда — Garmin дописывает их задним числом.",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp)

@@ -43,7 +43,15 @@ import com.fitnessapp.summary.util.formatDecimal
 import com.fitnessapp.summary.util.formatSleepDuration
 import java.time.LocalDate
 
-private val WINDOWS = listOf(28 to "4 недели", 56 to "8 недель", 84 to "12 недель")
+// Now that the history walk pulls everything Garmin has rather than a fixed 90 days,
+// the windows go past a quarter: a year of weight or VO2max is a different picture from
+// twelve weeks of it. A window with no data just draws "нет данных за этот период".
+private val WINDOWS = listOf(
+    28 to "4 недели",
+    84 to "12 недель",
+    182 to "полгода",
+    365 to "год"
+)
 
 /**
  * Trends longer than a week, plus the plain-language reading of them (analytics/).
@@ -110,7 +118,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
                     emoji = "📈",
                     title = "Трендов пока нет",
                     message = if (app.garminAuth.isLoggedIn) {
-                        "Данные Garmin ещё не загружены. Нажмите «Загрузить историю» во вкладке «Я» — для трендов нужно хотя бы две недели."
+                        "Данные Garmin ещё не загружены. Нажмите «Вся история» во вкладке «Я» — для трендов нужно хотя бы две недели."
                     } else {
                         "Аналитика строится на данных Garmin напрямую: Sleep Score, ВСР, готовность, стресс. Войдите в Garmin во вкладке «Я»."
                     }

@@ -81,12 +81,6 @@ class GarminSyncManager(
         return syncRange(today.minusDays((days - 1).toLong()), today)
     }
 
-    /** "Pull everything" - long enough for month-scale trends on the Тренды tab to mean something. */
-    suspend fun backfill(days: Int = DEFAULT_BACKFILL_DAYS): State {
-        val today = LocalDate.now()
-        return syncRange(today.minusDays(days.toLong()), today)
-    }
-
     /**
      * Forgets every "already synced" mark, so the next run asks Garmin about every day
      * again. For when Garmin itself back-fills an old day long after the fact - the marks
@@ -100,15 +94,76 @@ class GarminSyncManager(
     suspend fun syncRange(from: LocalDate, to: LocalDate): State {
         AppLog.i("GarminSyncManager", "Синк Garmin $from..$to начат")
         val totalDays = (to.toEpochDay() - from.toEpochDay() + 1).toInt().coerceAtLeast(1)
-        _state.value = State.Running(0, totalDays)
+        val run = RunState()
+        runWindow(from, to, run, totalDays, 0)
+        return finish(run, totalDays)
+    }
+
+    /**
+     * Everything Garmin still has, without being told how far back that is.
+     *
+     * Walks backwards in [HISTORY_CHUNK_DAYS]-day windows and stops when Garmin has run
+     * out: [EMPTY_CHUNKS_TO_STOP] consecutive windows in which no day holds data, freshly
+     * read or already stored. That is what "all days" has to mean here - Garmin exposes no
+     * "account starts on" date, and guessing a fixed number of years would either cut real
+     * history off or spend thousands of requests on years that never existed. The cap is
+     * only a safety net for an account whose history somehow never goes quiet.
+     *
+     * Walking backwards (rather than forward from a guessed start) is what makes the stop
+     * rule possible at all: the interesting end is today, and the far end is exactly what
+     * we're looking for.
+     */
+    suspend fun syncAllHistory(): State {
+        val today = LocalDate.now()
+        AppLog.i("GarminSyncManager", "Полная история Garmin: иду назад от $today")
+        val run = RunState()
+        var chunkEnd = today
+        var emptyChunks = 0
+        var daysWalked = 0
+
+        while (daysWalked < MAX_HISTORY_DAYS && emptyChunks < EMPTY_CHUNKS_TO_STOP && !run.networkLost) {
+            val chunkStart = chunkEnd.minusDays((HISTORY_CHUNK_DAYS - 1).toLong())
+            val withData = runWindow(chunkStart, chunkEnd, run, totalDays = 0, doneOffset = daysWalked)
+            if (withData == 0) emptyChunks++ else emptyChunks = 0
+            daysWalked += HISTORY_CHUNK_DAYS
+            chunkEnd = chunkStart.minusDays(1)
+        }
+
+        if (emptyChunks >= EMPTY_CHUNKS_TO_STOP) {
+            AppLog.i(
+                "GarminSyncManager",
+                "Полная история: ${EMPTY_CHUNKS_TO_STOP * HISTORY_CHUNK_DAYS} дней подряд без данных - " +
+                    "дошли до начала истории на ${chunkEnd.plusDays((EMPTY_CHUNKS_TO_STOP * HISTORY_CHUNK_DAYS).toLong())}"
+            )
+        }
+        return finish(run, totalDays = daysWalked)
+    }
+
+    /**
+     * One window of days. Accumulates into [run] rather than reporting, so the history walk
+     * above can run many windows and still produce a single report at the end.
+     *
+     * Returns how many days in the window hold data - counting both what was just stored
+     * and what a mark says is already stored. That distinction matters for the walk's stop
+     * rule: a window that is entirely skipped because it was synced last week is NOT an
+     * empty window, and must not count towards "Garmin has nothing this far back".
+     */
+    private suspend fun runWindow(
+        from: LocalDate,
+        to: LocalDate,
+        run: RunState,
+        totalDays: Int,
+        doneOffset: Int
+    ): Int {
+        _state.value = State.Running(doneOffset, totalDays)
 
         val markDao = database.garminSyncMarkDao()
-        val settled = markDao.marksInRange(from.toEpochDay(), to.toEpochDay(), LOGIC_VERSION)
-            .map { it.dateEpochDay to it.section }
-            .toSet()
+        val marksHere = markDao.marksInRange(from.toEpochDay(), to.toEpochDay(), LOGIC_VERSION)
+        val settled = marksHere.map { it.dateEpochDay to it.section }.toSet()
+        val daysKnownToHaveData = marksHere.filter { it.hasData }.map { it.dateEpochDay }.toSet()
         // Days Garmin may still revise are re-read no matter what the marks say.
         val refreshFromEpochDay = LocalDate.now().minusDays((ALWAYS_REFRESH_DAYS - 1).toLong()).toEpochDay()
-        val run = RunState()
+        var daysWithData = 0
 
         // Range-shaped endpoints first, one call per window instead of one per day. Their
         // results are folded into the per-day summary row below.
@@ -119,7 +174,7 @@ class GarminSyncManager(
         var date = from
         var index = 0
         while (!date.isAfter(to)) {
-            _state.value = State.Running(index, totalDays)
+            _state.value = State.Running(doneOffset + index, totalDays)
             val epochDay = date.toEpochDay()
             val skippable = epochDay < refreshFromEpochDay
             val marks = mutableListOf<GarminSyncMark>()
@@ -240,6 +295,7 @@ class GarminSyncManager(
 
             if (wroteSomething) run.daysWritten++
             if (!askedSomething) run.daysSkipped++
+            if (wroteSomething || epochDay in daysKnownToHaveData) daysWithData++
 
             // A backfill that outlives the phone's connectivity used to grind through
             // hundreds of doomed requests - 64 identical DNS failures per endpoint in one
@@ -265,17 +321,23 @@ class GarminSyncManager(
             syncActivities(from, to, run)
         }
 
+        return daysWithData
+    }
+
+    /** Turns the accumulated tallies into the one State a whole sync reports. */
+    private fun finish(run: RunState, totalDays: Int): State {
         val sections = run.sections()
+        val outOf = if (totalDays > 0) " из $totalDays" else ""
         AppLog.i(
             "GarminSyncManager",
-            "Синк Garmin завершён: дней с данными=${run.daysWritten} из $totalDays " +
+            "Синк Garmin завершён: дней с данными=${run.daysWritten}$outOf " +
                 "(пропущено уже загруженных: ${run.daysSkipped}); " +
                 sections.joinToString(" ") { "${it.label}=${it.stored}/нд${it.noData}/ош${it.failed}/проп${it.skipped}" }
         )
 
         return when {
             run.networkLost -> State.Failed(
-                "Соединение пропало во время синхронизации. Загружено дней: ${run.daysWritten} из $totalDays — " +
+                "Соединение пропало во время синхронизации. Загружено дней: ${run.daysWritten}$outOf — " +
                     "нажмите ещё раз, синк продолжится с того же места."
             )
             run.daysWritten == 0 && run.daysSkipped == 0 && sections.any { it.hasProblem } -> State.Failed(
@@ -390,7 +452,22 @@ class GarminSyncManager(
 
     companion object {
         const val DEFAULT_RECENT_DAYS = 14
-        const val DEFAULT_BACKFILL_DAYS = 90
+
+        /** One window of the history walk - also the granularity of its stop rule. */
+        private const val HISTORY_CHUNK_DAYS = 30
+
+        /**
+         * Consecutive empty windows that mean "Garmin's history ends here". Three months of
+         * complete silence is far longer than any plausible gap between wearing the watch,
+         * and short enough that the walk doesn't spend hundreds of requests proving it.
+         */
+        private const val EMPTY_CHUNKS_TO_STOP = 3
+
+        /**
+         * Hard stop for the history walk - only reached by an account whose data never goes
+         * quiet for three months. Garmin Connect launched well inside this window.
+         */
+        private const val MAX_HISTORY_DAYS = 366 * 15
 
         /**
          * Consecutive network-level failures that mean "the phone is offline", not "this
