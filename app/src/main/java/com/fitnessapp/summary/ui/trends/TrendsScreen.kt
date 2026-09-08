@@ -33,6 +33,9 @@ import com.fitnessapp.summary.analytics.Insight
 import com.fitnessapp.summary.analytics.InsightTone
 import com.fitnessapp.summary.analytics.LifestyleAnalytics
 import com.fitnessapp.summary.analytics.LifestyleInputs
+import com.fitnessapp.summary.analytics.LiftSession
+import com.fitnessapp.summary.analytics.StrengthAnalytics
+import com.fitnessapp.summary.analytics.StrengthLift
 import com.fitnessapp.summary.analytics.TrendPoint
 import com.fitnessapp.summary.ui.components.EmptyState
 import com.fitnessapp.summary.ui.components.InfoCard
@@ -91,6 +94,14 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     val activities by remember(windowDays) { app.database.garminActivityDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val healthDays by remember(windowDays) { app.summaryRepository.observeRange(from, today) }.collectAsState(initial = emptyList())
     val scaleWeights by remember(windowDays) { app.database.scaleMeasurementDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
+    val strengthSets by remember(windowDays) { app.database.strengthSetDao().observeTrackedRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
+
+    // Sessions per lift, recomputed only when the imported sets or the window change.
+    val liftSessions = remember(strengthSets) {
+        StrengthLift.entries
+            .map { it to StrengthAnalytics.sessionsOf(strengthSets, it) }
+            .filter { (_, sessions) -> sessions.isNotEmpty() }
+    }
 
     val inputs = remember(summaries, sleeps, hrvs, readiness, training, weights, activities, healthDays, scaleWeights) {
         LifestyleInputs(today, summaries, sleeps, hrvs, readiness, training, weights, activities, healthDays, scaleWeights)
@@ -130,11 +141,15 @@ fun TrendsScreen(app: FitnessSummaryApp) {
             }
         }
 
+        strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
+
         if (nothingFromGarmin) {
             item {
                 EmptyState(
                     emoji = "📈",
-                    title = "Трендов пока нет",
+                    // With an imported gym log on screen above, "нет трендов" would be a lie -
+                    // it is the Garmin half specifically that is missing.
+                    title = if (liftSessions.isEmpty()) "Трендов пока нет" else "Данных Garmin пока нет",
                     message = if (app.garminAuth.isLoggedIn) {
                         "Данные Garmin ещё не загружены. Нажмите «Вся история» во вкладке «Я» — для трендов нужно хотя бы две недели."
                     } else {
@@ -245,6 +260,86 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trendCard(
             }
             if (points.isNotEmpty()) {
                 StatRow("Дней с данными", points.count { it.epochDay in fromEpoch..toEpoch }.toString())
+            }
+        }
+    }
+}
+
+/**
+ * The base lifts the user actually tracks: what could be lifted once (estimated) against
+ * what the work is being done at, per lift, over the same window as everything else.
+ *
+ * One card per lift and one chart in it: the solid line is the estimated 1RM, the dashed
+ * one the working weight. Both in kilograms, both the same colour - it is one measure of
+ * one lift seen two ways, and the distance between them is the story (a 1RM that climbs
+ * while the working weight sits still is a rep PR, not a load PR).
+ *
+ * Shown only for lifts that actually have sessions in the window, and independent of the
+ * Garmin login: this data comes from an imported gym log, not from a watch.
+ */
+private fun androidx.compose.foundation.lazy.LazyListScope.strengthSection(
+    liftSessions: List<Pair<StrengthLift, List<LiftSession>>>,
+    fromEpoch: Long,
+    toEpoch: Long,
+    smoothWindowDays: Int,
+    accent: Color
+) {
+    if (liftSessions.isEmpty()) return
+
+    item { SectionHeader("Силовые показатели") }
+    item {
+        Text(
+            text = "1ПМ — расчётный разовый максимум по формуле Эпли (вес × (1 + повторы/30)) " +
+                "по лучшему подходу тренировки; подходы длиннее ${StrengthAnalytics.MAX_REPS_FOR_ONE_RM} повторов " +
+                "в расчёт не идут. Рабочий вес — самый тяжёлый вес, сделанный минимум в двух подходах. " +
+                "Сплошная линия на графике — 1ПМ, пунктир — рабочий вес.",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+
+    liftSessions.forEach { (lift, sessions) ->
+        item(key = "lift-${lift.key}") {
+            val inWindow = sessions.filter { it.dateEpochDay in fromEpoch..toEpoch }
+            InfoCard(title = lift.title) {
+                if (inWindow.isEmpty()) {
+                    Text(
+                        text = "Нет тренировок за этот период.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    return@InfoCard
+                }
+                val last = inWindow.last()
+                StatRow("1ПМ (оценка)", "${formatDecimal(last.oneRmKg)} кг")
+                StatRow("Рабочий вес", "${formatDecimal(last.workingWeightKg)} кг × ${last.workingReps}")
+                StatRow("Лучший подход", "${formatDecimal(last.topWeightKg)} кг × ${last.topReps}")
+                StrengthAnalytics.changeKg(inWindow)?.let { change ->
+                    val sign = if (change > 0) "+" else ""
+                    StatRow("Изменение 1ПМ за период", "$sign${formatDecimal(change)} кг")
+                }
+                StatRow("Тренировок за период", inWindow.size.toString())
+                // A programme can swap the variant (сумо вместо классики) without it being a
+                // different lift - name it rather than let the numbers jump unexplained.
+                val variants = inWindow.map { it.exerciseName }.distinct()
+                if (variants.size > 1) {
+                    Text(
+                        text = "В этот период: ${variants.joinToString(", ")}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+                TrendChart(
+                    points = StrengthAnalytics.oneRmTrend(inWindow),
+                    fromEpochDay = fromEpoch,
+                    toEpochDay = toEpoch,
+                    accent = accent,
+                    formatValue = { "${formatDecimal(it)} кг" },
+                    smoothWindowDays = smoothWindowDays,
+                    secondary = StrengthAnalytics.workingWeightTrend(inWindow),
+                    modifier = Modifier.padding(top = 8.dp)
+                )
             }
         }
     }

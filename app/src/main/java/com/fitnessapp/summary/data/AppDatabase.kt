@@ -30,9 +30,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GarminBodyComposition::class,
         GarminActivity::class,
         GarminSyncMark::class,
-        ScaleMeasurement::class
+        ScaleMeasurement::class,
+        StrengthSet::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -48,6 +49,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun garminActivityDao(): GarminActivityDao
     abstract fun garminSyncMarkDao(): GarminSyncMarkDao
     abstract fun scaleMeasurementDao(): ScaleMeasurementDao
+    abstract fun strengthSetDao(): StrengthSetDao
 
     companion object {
         @Volatile
@@ -340,6 +342,29 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** Imported gym log - see data/StrengthEntities.kt. Additive, like every migration here. */
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS strength_sets (
+                        startMillis INTEGER NOT NULL,
+                        dateEpochDay INTEGER NOT NULL,
+                        exerciseName TEXT NOT NULL,
+                        lift TEXT NOT NULL DEFAULT '',
+                        setIndex INTEGER NOT NULL,
+                        weightKg REAL NOT NULL DEFAULT 0,
+                        reps INTEGER NOT NULL DEFAULT 0,
+                        updatedAtMillis INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(startMillis, exerciseName, setIndex)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_strength_sets_dateEpochDay ON strength_sets(dateEpochDay)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_strength_sets_lift ON strength_sets(lift)")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -347,7 +372,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "fitness_summary.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                 INSTANCE = instance
                 instance

@@ -51,7 +51,7 @@ object DataExporter {
             put("app", "fitness-summary")
             put("schemaVersion", 2)
             put("exportedAt", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
-            put("sources", JSONArray(listOf("Health Connect", "Garmin Connect (unofficial)", "Zepp Life (unofficial, optional)")))
+            put("sources", JSONArray(listOf("Health Connect", "Garmin Connect (unofficial)", "Zepp Life (unofficial, optional)", "журнал силовых тренировок (импорт)")))
             put("dayCount", days.size)
             put("workoutCount", workouts.size)
         }
@@ -336,6 +336,23 @@ object DataExporter {
                         put("deviceId", m.deviceId)
                         put("source", m.source)
                         put("uploadedToGarmin", m.isUploadedToGarmin)
+                    })
+                }
+            })
+        })
+
+        root.put("strength", JSONObject().apply {
+            put("source", "журнал тренировок (импорт из файла)")
+            put("sets", JSONArray().also { array ->
+                for (set in database.strengthSetDao().getAllOnce()) {
+                    array.put(JSONObject().apply {
+                        putDate(set.dateEpochDay)
+                        put("start", DateTimeFormatter.ISO_INSTANT.format(Instant.ofEpochMilli(set.startMillis)))
+                        put("exercise", set.exerciseName)
+                        put("lift", set.lift)
+                        put("setIndex", set.setIndex)
+                        put("weightKg", set.weightKg.toDouble())
+                        put("reps", set.reps)
                     })
                 }
             })

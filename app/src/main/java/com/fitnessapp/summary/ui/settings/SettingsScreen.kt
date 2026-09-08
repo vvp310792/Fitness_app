@@ -41,6 +41,8 @@ import com.fitnessapp.summary.export.DataExporter
 import com.fitnessapp.summary.garmin.GarminLoginResult
 import com.fitnessapp.summary.garmin.GarminSyncManager
 import com.fitnessapp.summary.scale.ScaleSyncManager
+import com.fitnessapp.summary.strength.StrengthImportManager
+import com.fitnessapp.summary.util.formatDayMonth
 import com.fitnessapp.summary.scale.ZeppLoginResult
 import com.fitnessapp.summary.health.HealthConnectManager
 import com.fitnessapp.summary.health.HealthSyncManager
@@ -75,6 +77,7 @@ fun SettingsScreen(app: FitnessSummaryApp) {
         item { SyncSection(app) }
         item { GarminSection(app) }
         item { ScaleSection(app) }
+        item { StrengthSection(app) }
         item { LogsSection() }
         item { AccountSection(app) }
         item { ExportSection(app) }
@@ -818,6 +821,101 @@ private fun AboutSection() {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp)
+            )
+        }
+    }
+}
+
+/**
+ * Import of the gym log the user keeps in a separate workout app. Its own card rather
+ * than a corner of the scale one: different data, different file, different question -
+ * and the only place in the app where the numbers come from a text file the user exports
+ * by hand, which is worth stating plainly rather than hiding behind a generic "импорт".
+ */
+@Composable
+private fun StrengthSection(app: FitnessSummaryApp) {
+    val importState by app.strengthImport.state.collectAsState()
+    val sessionCount by remember { app.database.strengthSetDao().observeSessionCount() }.collectAsState(initial = 0)
+    var period by remember { mutableStateOf<String?>(null) }
+    var showHelp by remember { mutableStateOf(false) }
+    val palette = metricPalette()
+
+    LaunchedEffect(sessionCount) {
+        val dao = app.database.strengthSetDao()
+        val first = dao.firstDay()
+        val last = dao.lastDay()
+        period = if (first != null && last != null) {
+            "${formatDayMonth(java.time.LocalDate.ofEpochDay(first))} ${java.time.LocalDate.ofEpochDay(first).year} — " +
+                "${formatDayMonth(java.time.LocalDate.ofEpochDay(last))} ${java.time.LocalDate.ofEpochDay(last).year}"
+        } else {
+            null
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) app.launchPersistent { app.strengthImport.importFrom(uri) }
+    }
+
+    InfoCard(title = "Силовые тренировки") {
+        Text(
+            text = "Журнал тренировок из вашего зального приложения — текстовая выгрузка. " +
+                "По базовым упражнениям (приседания, становая, жим лёжа, армейский жим, тяга в " +
+                "наклоне, подтягивания) на вкладке «Тренды» считаются 1ПМ и рабочий вес. " +
+                "Повторный импорт свежей выгрузки не задваивает: подход опознаётся по тренировке, " +
+                "упражнению и номеру.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        if (sessionCount > 0) {
+            StatRow("Тренировок загружено", sessionCount.toString())
+            period?.let { StatRow("Период", it) }
+        }
+
+        when (val state = importState) {
+            is StrengthImportManager.State.Running -> Text(
+                text = state.step,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+            is StrengthImportManager.State.Success -> Text(
+                text = "Прочитано тренировок ${state.sessions}, подходов ${state.sets}" +
+                    (if (state.skippedLines > 0) ", пропущено строк ${state.skippedLines}" else "") +
+                    " (${formatTime(state.atMillis)}).\n${state.liftSummary}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = palette.distance,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+            is StrengthImportManager.State.Failed -> Text(
+                text = state.reason,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+            StrengthImportManager.State.Idle -> Unit
+        }
+
+        Button(
+            onClick = { importLauncher.launch(arrayOf("*/*")) },
+            enabled = importState !is StrengthImportManager.State.Running,
+            modifier = Modifier.padding(top = 8.dp)
+        ) {
+            Text(if (sessionCount > 0) "Обновить из файла" else "Выбрать файл журнала")
+        }
+
+        TextButton(onClick = { showHelp = !showHelp }) {
+            Text(if (showHelp) "Скрыть подробности" else "Какой файл нужен")
+        }
+        if (showHelp) {
+            Text(
+                text = "Обычный .txt журнала, где каждая тренировка начинается строкой с датой и " +
+                    "временем, дальше идут упражнения и подходы вида «1. 60кг • 8x». Кодировка " +
+                    "определяется сама (UTF-8 или windows-1251). Все упражнения сохраняются, но " +
+                    "на «Трендах» рисуются только шесть базовых — остальные лежат в базе и " +
+                    "попадают в экспорт.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }

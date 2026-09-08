@@ -60,6 +60,12 @@ import kotlin.math.min
  * [band] shades a reference range (an HRV baseline), [goal] draws a dashed reference
  * line (a step or intensity target). Both are recessive: present enough to read the
  * points against, quiet enough not to compete with them.
+ *
+ * [secondary] is a second series of the SAME measure in the SAME units, drawn dashed and
+ * without dots - estimated 1RM against the weight the work is actually done at. Same
+ * colour again, for the same reason: it is the same metric, and the gap between the two
+ * lines is the thing worth seeing. It is not a licence for a second axis; anything that
+ * would need one does not belong on this chart.
  */
 @Composable
 fun TrendChart(
@@ -73,9 +79,11 @@ fun TrendChart(
     band: ClosedFloatingPointRange<Float>? = null,
     goal: Float? = null,
     floorAtZero: Boolean = false,
-    smoothWindowDays: Int = 0
+    smoothWindowDays: Int = 0,
+    secondary: List<TrendPoint> = emptyList()
 ) {
     val sorted = points.filter { it.epochDay in fromEpochDay..toEpochDay }.sortedBy { it.epochDay }
+    val sortedSecondary = secondary.filter { it.epochDay in fromEpochDay..toEpochDay }.sortedBy { it.epochDay }
     val smoothed = remember(sorted, smoothWindowDays) {
         if (smoothWindowDays >= 2) LifestyleAnalytics.smoothTrend(sorted, smoothWindowDays) else emptyList()
     }
@@ -94,8 +102,8 @@ fun TrendChart(
     }
 
     val values = sorted.map { it.value }
-    var lo = values.min()
-    var hi = values.max()
+    var lo = minOf(values.min(), sortedSecondary.minOfOrNull { it.value } ?: values.min())
+    var hi = maxOf(values.max(), sortedSecondary.maxOfOrNull { it.value } ?: values.max())
     band?.let { lo = min(lo, it.start); hi = max(hi, it.endInclusive) }
     goal?.let { lo = min(lo, it); hi = max(hi, it) }
     if (floorAtZero) lo = min(lo, 0f)
@@ -193,6 +201,27 @@ fun TrendChart(
                 sorted.forEach { p ->
                     drawCircle(color = dotColor, radius = dotRadius.dp.toPx(), center = Offset(x(p.epochDay), y(p.value)))
                 }
+            }
+            if (sortedSecondary.size >= 2) {
+                val path = Path()
+                var previousDay = Long.MIN_VALUE
+                sortedSecondary.forEach { p ->
+                    val px = x(p.epochDay)
+                    val py = y(p.value)
+                    if (previousDay == Long.MIN_VALUE || p.epochDay - previousDay > maxGapDays) path.moveTo(px, py)
+                    else path.lineTo(px, py)
+                    previousDay = p.epochDay
+                }
+                drawPath(
+                    path = path,
+                    color = accent.copy(alpha = 0.75f),
+                    style = Stroke(
+                        width = 1.5.dp.toPx(),
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f))
+                    )
+                )
             }
             drawSeries(smoothed, accent, 2.5f)
             drawCircle(color = accent, radius = 5.dp.toPx(), center = Offset(x(latest.epochDay), y(latest.value)))
