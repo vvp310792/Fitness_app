@@ -3,8 +3,6 @@ package com.fitnessapp.summary.garmin
 import com.fitnessapp.summary.debug.AppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.Cookie
-import okhttp3.CookieJar
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -370,32 +368,4 @@ class GarminAuthClient(private val tokenStore: GarminTokenStore) {
             "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
         const val OAUTH_USER_AGENT = "com.garmin.android.apps.connectmobile"
     }
-}
-
-/**
- * A bare in-memory cookie jar, scoped to one [GarminAuthClient]'s [OkHttpClient]. Needed
- * because the whole login flow - sign-in page, login POST, MFA verify, the post-login
- * embed-page visit, and (per [okhttp3.Cookie.matches]) even the ticket exchange on a
- * *different* host (`connectapi.$DOMAIN` vs `sso.$DOMAIN`) - is tied together only by
- * session cookies. OkHttp does not persist cookies across calls by default.
- *
- * Matching is by [Cookie.matches], not by exact response host: Garmin's SSO sets cookies
- * scoped to the whole `.garmin.com` domain, meant to carry over to `connectapi.$DOMAIN`
- * too. An earlier, naive version of this jar kept cookies keyed by the exact host that
- * set them, which silently dropped every domain-wide cookie the moment a request moved
- * to a different subdomain - part of why the ticket exchange was failing.
- */
-private class InMemoryCookieJar : CookieJar {
-    private val cookies = mutableListOf<Cookie>()
-
-    @Synchronized
-    override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-        for (cookie in cookies) {
-            this.cookies.removeAll { it.name == cookie.name && it.domain == cookie.domain && it.path == cookie.path }
-            this.cookies.add(cookie)
-        }
-    }
-
-    @Synchronized
-    override fun loadForRequest(url: HttpUrl): List<Cookie> = cookies.filter { it.matches(url) }
 }

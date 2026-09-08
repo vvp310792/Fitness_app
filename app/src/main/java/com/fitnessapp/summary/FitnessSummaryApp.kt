@@ -9,6 +9,11 @@ import com.fitnessapp.summary.garmin.GarminApiClient
 import com.fitnessapp.summary.garmin.GarminAuthClient
 import com.fitnessapp.summary.garmin.GarminSyncManager
 import com.fitnessapp.summary.garmin.GarminTokenStore
+import com.fitnessapp.summary.garmin.GarminWeightUploader
+import com.fitnessapp.summary.scale.ScaleSyncManager
+import com.fitnessapp.summary.scale.ZeppApiClient
+import com.fitnessapp.summary.scale.ZeppAuthClient
+import com.fitnessapp.summary.scale.ZeppTokenStore
 import com.fitnessapp.summary.health.HealthConnectManager
 import com.fitnessapp.summary.health.HealthConnectReader
 import com.fitnessapp.summary.health.HealthSyncManager
@@ -76,6 +81,16 @@ class FitnessSummaryApp : Application() {
     val garminAuth: GarminAuthClient by lazy { GarminAuthClient(garminTokenStore) }
     private val garminApi: GarminApiClient by lazy { GarminApiClient(garminAuth) }
     val garminSync: GarminSyncManager by lazy { GarminSyncManager(garminApi, database) }
+
+    // Mi Body Composition Scale via the Zepp Life cloud (scale/), and the one write this
+    // app makes to Garmin - pushing those weigh-ins in. See scale/ScaleSyncManager.kt.
+    val zeppTokenStore: ZeppTokenStore by lazy { ZeppTokenStore(this) }
+    val zeppAuth: ZeppAuthClient by lazy { ZeppAuthClient(zeppTokenStore) }
+    private val zeppApi: ZeppApiClient by lazy { ZeppApiClient(zeppAuth) }
+    private val garminWeightUploader: GarminWeightUploader by lazy { GarminWeightUploader(garminAuth) }
+    val scaleSync: ScaleSyncManager by lazy {
+        ScaleSyncManager(zeppApi, zeppTokenStore, garminAuth, garminApi, garminWeightUploader, database)
+    }
 
     private val appScope = CoroutineScope(Dispatchers.IO)
 

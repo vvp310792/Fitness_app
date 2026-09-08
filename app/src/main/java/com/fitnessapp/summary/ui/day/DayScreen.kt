@@ -33,6 +33,7 @@ import com.fitnessapp.summary.data.GarminHrv
 import com.fitnessapp.summary.data.GarminReadiness
 import com.fitnessapp.summary.data.GarminSleep
 import com.fitnessapp.summary.data.GarminTraining
+import com.fitnessapp.summary.data.ScaleMeasurement
 import com.fitnessapp.summary.ui.components.EmptyState
 import com.fitnessapp.summary.ui.components.GarminActivityRow
 import com.fitnessapp.summary.ui.components.InfoCard
@@ -60,6 +61,7 @@ import com.fitnessapp.summary.util.formatHeartRate
 import com.fitnessapp.summary.util.formatHours
 import com.fitnessapp.summary.util.formatKg
 import com.fitnessapp.summary.util.formatSleepDuration
+import com.fitnessapp.summary.util.formatTime
 import com.fitnessapp.summary.util.formatWallClockUtc
 import com.fitnessapp.summary.util.hrvStatusLabel
 import com.fitnessapp.summary.util.qualifierLabel
@@ -101,6 +103,7 @@ fun DayScreen(app: FitnessSummaryApp) {
     val training by remember(selectedDate) { app.database.garminTrainingDao().observeDay(epochDay) }.collectAsState(initial = null)
     val bodyComp by remember(selectedDate) { app.database.garminBodyCompositionDao().observeLatestUpTo(epochDay) }.collectAsState(initial = null)
     val garminActivities by remember(selectedDate) { app.database.garminActivityDao().observeForDay(epochDay) }.collectAsState(initial = emptyList())
+    val scaleToday by remember(selectedDate) { app.database.scaleMeasurementDao().observeLatestForDay(epochDay) }.collectAsState(initial = null)
 
     val palette = metricPalette()
 
@@ -168,7 +171,9 @@ fun DayScreen(app: FitnessSummaryApp) {
             training?.takeUnless { it.isEmpty }?.let { item { TrainingCard(it) } }
             displayDay?.let { day -> item { HeartCard(day, extra) } }
             extra?.let { item { ActivityDetailsCard(it, palette) } }
-            bodyComp?.takeUnless { it.isEmpty }?.let { item { BodyCompositionCard(it, selectedDate) } }
+            if (scaleToday != null || bodyComp?.isEmpty == false) {
+                item { BodyCompositionCard(bodyComp, scaleToday, selectedDate) }
+            }
         }
 
         val unmatched = unmatchedGarminActivities(workouts, garminActivities)
@@ -632,8 +637,38 @@ private fun ActivityDetailsCard(extra: GarminDailyExtra, palette: MetricPalette)
     }
 }
 
+/**
+ * The scale's own reading when there is one for the day - richer than Garmin's copy (body
+ * score, protein, basal metabolism) and with an upload status line, so "did it reach
+ * Garmin?" is answered on the same card. Garmin's row otherwise, with the last weigh-in
+ * carried forward and dated when the day itself had none.
+ */
 @Composable
-private fun BodyCompositionCard(body: GarminBodyComposition, selectedDate: LocalDate) {
+private fun BodyCompositionCard(garmin: GarminBodyComposition?, scale: ScaleMeasurement?, selectedDate: LocalDate) {
+    if (scale != null) {
+        InfoCard(title = "Вес и состав тела · весы Mi") {
+            StatRow("Вес", formatKg(scale.weightGrams))
+            if (scale.bmi > 0f) StatRow("ИМТ", formatDecimal(scale.bmi))
+            if (scale.bodyFatPercent > 0f) StatRow("Жир", "${formatDecimal(scale.bodyFatPercent)}%")
+            if (scale.muscleMassGrams > 0) StatRow("Мышечная масса", formatKg(scale.muscleMassGrams))
+            if (scale.bodyWaterPercent > 0f) StatRow("Вода", "${formatDecimal(scale.bodyWaterPercent)}%")
+            if (scale.proteinPercent > 0f) StatRow("Белок", "${formatDecimal(scale.proteinPercent)}%")
+            if (scale.boneMassGrams > 0) StatRow("Костная масса", formatKg(scale.boneMassGrams))
+            if (scale.visceralFat > 0) StatRow("Висцеральный жир", scale.visceralFat.toString())
+            if (scale.basalMetabolismKcal > 0) StatRow("Базовый обмен", "${scale.basalMetabolismKcal} ккал")
+            if (scale.metabolicAge > 0) StatRow("Метаболический возраст", scale.metabolicAge.toString())
+            if (scale.bodyScore > 0) StatRow("Оценка тела", "${scale.bodyScore} из 100")
+            Text(
+                text = "Взвешивание в ${formatTime(scale.timestampMillis)} · " +
+                    if (scale.isUploadedToGarmin) "передано в Garmin" else "в Garmin ещё не отправлено",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+        return
+    }
+    val body = garmin?.takeUnless { it.isEmpty } ?: return
     val sameDay = body.dateEpochDay == selectedDate.toEpochDay()
     InfoCard(title = if (sameDay) "Вес и состав тела" else "Вес и состав тела · ${formatDayMonth(LocalDate.ofEpochDay(body.dateEpochDay))}") {
         StatRow("Вес", formatKg(body.weightGrams))

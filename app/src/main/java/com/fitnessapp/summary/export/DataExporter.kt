@@ -51,7 +51,7 @@ object DataExporter {
             put("app", "fitness-summary")
             put("schemaVersion", 2)
             put("exportedAt", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
-            put("sources", JSONArray(listOf("Health Connect", "Garmin Connect (unofficial)")))
+            put("sources", JSONArray(listOf("Health Connect", "Garmin Connect (unofficial)", "Zepp Life (unofficial)")))
             put("dayCount", days.size)
             put("workoutCount", workouts.size)
         }
@@ -307,6 +307,34 @@ object DataExporter {
                         put("moderateIntensityMinutes", a.moderateIntensityMinutes)
                         put("vigorousIntensityMinutes", a.vigorousIntensityMinutes)
                         put("bodyBatteryDiff", a.bodyBatteryDiff)
+                    })
+                }
+            })
+        })
+
+        root.put("scale", JSONObject().apply {
+            put("source", "Zepp Life (Mi Body Composition Scale)")
+            put("measurements", JSONArray().also { array ->
+                for (m in database.scaleMeasurementDao().getAllOnce()) {
+                    array.put(JSONObject().apply {
+                        putDate(m.dateEpochDay)
+                        put("timestamp", DateTimeFormatter.ISO_INSTANT.format(Instant.ofEpochMilli(m.timestampMillis)))
+                        put("weightGrams", m.weightGrams)
+                        put("heightCm", m.heightCm.toDouble())
+                        put("bmi", m.bmi.toDouble())
+                        put("bodyFatPercent", m.bodyFatPercent.toDouble())
+                        put("bodyWaterPercent", m.bodyWaterPercent.toDouble())
+                        put("boneMassGrams", m.boneMassGrams)
+                        put("muscleMassGrams", m.muscleMassGrams)
+                        put("metabolicAge", m.metabolicAge)
+                        put("visceralFat", m.visceralFat)
+                        put("basalMetabolismKcal", m.basalMetabolismKcal)
+                        put("proteinPercent", m.proteinPercent.toDouble())
+                        put("bodyScore", m.bodyScore)
+                        put("physiqueRating", m.physiqueRating)
+                        put("impedance", m.impedance)
+                        put("deviceId", m.deviceId)
+                        put("uploadedToGarmin", m.isUploadedToGarmin)
                     })
                 }
             })

@@ -176,6 +176,12 @@ dependencies {
     // unofficial Garmin Connect client (see garmin/)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // Garmin's official FIT SDK - used only to ENCODE a weight-scale FIT file for
+    // upload-service/upload (see garmin/GarminWeightUploader.kt). The FIT binary format
+    // (definition messages, scaled fields, CRC) is exactly the kind of thing not worth
+    // hand-rolling when the format's owner publishes the encoder on Maven Central.
+    implementation("com.garmin:fit:21.214.0")
+
     // Encrypted on-device storage for the Garmin OAuth1 token (see garmin/GarminAuthClient.kt).
     // The Garmin *password* is never stored anywhere, only ever held in memory for the
     // single login request; what's persisted is the long-lived OAuth1 token/secret pair,

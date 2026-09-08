@@ -78,9 +78,10 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     val weights by remember(windowDays) { app.database.garminBodyCompositionDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val activities by remember(windowDays) { app.database.garminActivityDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val healthDays by remember(windowDays) { app.summaryRepository.observeRange(from, today) }.collectAsState(initial = emptyList())
+    val scaleWeights by remember(windowDays) { app.database.scaleMeasurementDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
 
-    val inputs = remember(summaries, sleeps, hrvs, readiness, training, weights, activities, healthDays) {
-        LifestyleInputs(today, summaries, sleeps, hrvs, readiness, training, weights, activities, healthDays)
+    val inputs = remember(summaries, sleeps, hrvs, readiness, training, weights, activities, healthDays, scaleWeights) {
+        LifestyleInputs(today, summaries, sleeps, hrvs, readiness, training, weights, activities, healthDays, scaleWeights)
     }
     val insights = remember(inputs) { LifestyleAnalytics.insights(inputs) }
     val palette = metricPalette()
@@ -167,7 +168,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
             ) { it.toInt().toString() }
         }
 
-        val weightPoints = LifestyleAnalytics.weightTrend(weights)
+        val weightPoints = LifestyleAnalytics.weightTrend(weights, scaleWeights)
         if (weightPoints.isNotEmpty()) trendCard("Вес, кг", weightPoints, fromEpoch, toEpoch, palette.weight) { formatDecimal(it) }
 
         item {

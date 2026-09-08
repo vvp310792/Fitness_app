@@ -31,6 +31,10 @@ class MainActivity : ComponentActivity() {
             if (app.garminAuth.isLoggedIn) {
                 app.garminSync.syncRecent()
             }
+            // After Garmin, so a weigh-in pushed to Garmin here is re-read in the same run.
+            if (app.zeppAuth.isLoggedIn) {
+                app.scaleSync.sync()
+            }
         }
 
         setContent {

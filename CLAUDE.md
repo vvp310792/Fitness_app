@@ -250,6 +250,96 @@ Sleep Need не посчитал. Время отбоя для «стабиль�
 предупреждения при изменениях на их стороне — не «баг», а свойство
 неофициального пути.
 
+## Весы Mi → Zepp Life → приложение → Garmin — `scale/`
+
+У пользователя Mi Body Composition Scale 2 (с импедансом), а не весы Garmin. Реализован
+вариант **B** из обсуждения (не «внешний скрипт на ПК» и не «BLE напрямую»): приложение
+само читает взвешивания из облака Zepp Life по аккаунту Xiaomi и, по переключателю,
+**отправляет их в Garmin Connect**. Это **единственное место, где приложение пишет в
+Garmin** — принцип «ничего не пишет обратно» здесь осознанно нарушен по явной просьбе,
+и это оформлено как отдельный переключатель «Отправлять вес в Garmin» в секции весов,
+а не как побочный эффект синка.
+
+**Референс — SmartScaleConnect** (https://github.com/AlexxIT/SmartScaleConnect, MIT, Go):
+рабочая реализация ровно этой связки. Как и с `garth` для Garmin, каждый URL, заголовок,
+поле формы и JSON-ключ взяты из его исходников (`pkg/xiaomi/auth.go`, `pkg/zepp/*.go`,
+`pkg/garmin/client.go`, `pkg/garmin/fit/fit.go`), скачанных и прочитанных целиком, а не
+восстановленных по памяти или по чужому пересказу.
+
+**Логин (`ZeppAuthClient`)** — Xiaomi OAuth2 → токен Zepp:
+1. `GET account.xiaomi.com/oauth2/authorize?_json=true&client_id=428135909242707968&pt=1&redirect_uri=https://api-mifit-cn.huami.com/huami.health.loginview.do&response_type=code`
+   → `data.oauthLoginUrl` → `GET` его → `qs`, `_sign`, `sid`, `callback`. **Каждый
+   `_json=true`-ответ Xiaomi начинается с литерала `&&&START&&&`**, его надо срезать до
+   парсинга
+2. `POST account.xiaomi.com/pass/serviceLoginAuth2` (form: `_json=true`, `hash` =
+   **MD5 пароля в верхнем hex**, `sid`, `callback`, `_sign`, `qs`, `user`; заголовок
+   `Cookie: deviceId=<16 случайных>`) → `location`. Если в ответе `notificationUrl` —
+   Xiaomi требует 2FA, если `captchaUrl` — капчу; ни то, ни другое из приложения не
+   пройти, пользователю говорится прямо, а не «ошибка входа»
+3. Идти по `location` вручную (OkHttp с `followRedirects(false)`, общий cookie jar), пока
+   в заголовке `Location` не появится `code=` — это код OAuth2. SmartScaleConnect
+   останавливается ровно на втором редиректе; здесь — «пока не увидим `code=`», до 6
+   переходов, что устойчивее к изменению длины цепочки
+4. `POST account.zepp.com/v2/client/login` (form: `app_name=com.xiaomi.hm.health`,
+   `app_version=6.14.0`, `code`, `country_code=CN`, `device_id=<uuid>`,
+   `device_model=phone`, `dn=api-mifit.zepp.com`, `grant_type=request_token`,
+   `third_name=xiaomi-hm-mifit`) → `token_info.app_token` + `token_info.user_id`
+
+**Xiaomi держит одну живую сессию на приложение: вход отсюда разлогинивает Zepp Life
+на телефоне.** Поэтому токен (`userId:appToken`) сохраняется в `EncryptedSharedPreferences`
+(`ZeppTokenStore`) и переиспользуется, пока Zepp его принимает; приложение **никогда не
+перелогинивается само**. Протухший токен = «войдите заново» в UI. Пароль Xiaomi не
+хранится; `passToken` Xiaomi тоже — SmartScaleConnect не показывает повторный OAuth2 по
+нему, а угадывать не стали.
+
+**Данные (`ZeppApiClient`)**: `GET api-mifit.zepp.com/users/{userId}/members/-1/weightRecords?limit=200&toTime={unix}`
+с заголовком `apptoken`; `-1` — сам владелец аккаунта (члены семьи имеют свои `fuid`, не
+используются). Пагинация назад по `next`. В записи: `generatedTime` (unix-секунды),
+`deviceId`, `weightType` (**берутся только `0`** — у `3` битые веса, наблюдение
+SmartScaleConnect) и `summary`: `weight`, `height`, `bmi`, `fatRate`, `bodyWaterRate`,
+`boneMass`, `metabolism`, `muscleRate`, `muscleAge`, `proteinRatio`, `visceralFat`,
+`bodyScore`, `bodyStyle`, `impedance`. **`muscleRate` — это масса мышц в кг, не
+процент**, несмотря на имя (в примере Zepp: вес 64,7 → muscleRate 50,96; это ~79% —
+типичная «общая мышечная масса» Xiaomi). Инкрементально: тянется всё новее последнего
+сохранённого `timestampMillis`; записи Zepp задним числом не меняются.
+
+**Хранение — `scale_measurements`** (`data/ScaleEntities.kt`, ключ — момент
+взвешивания): отдельно от `garmin_body_composition`, потому что это два разных факта —
+«что измерили весы» и «что лежит в Garmin». После отправки взвешивание есть в обеих, и
+их разница — буквально ответ на вопрос «долетело ли». Строка хранит полный вывод весов
+(оценка тела, белок, базовый обмен, импеданс), Garmin-копия — только то, что принимает
+FIT. `garminUploadedAtMillis` — отметка отправки; при повторном upsert она **сохраняется**
+(иначе REPLACE сбрасывал бы её в 0 и вся история улетала бы в Garmin заново на каждом
+синке).
+
+**Отправка в Garmin (`GarminWeightUploader`)** — FIT-файл типа WEIGHT multipart-полем
+`file` в `POST connectapi.garmin.com/upload-service/upload` с Bearer; успех — 200/201/202,
+**409 = «уже загружен» и считается успехом**. FIT собирается официальным Garmin FIT SDK
+(`com.garmin:fit:21.214.0`, Maven Central), `BufferEncoder(V2_0)` → `close(): ByteArray`;
+`file_id`: type=weight, manufacturer=garmin, product=2429 (код весов Garmin — как у
+SmartScaleConnect), serial=1234; по одному `weight_scale` на взвешивание. **Сеттеры SDK
+принимают физические единицы** (кг, %, ккал/сут) и масштабируют сами — не умножать на
+100, как делает Go-библиотека у SmartScaleConnect. **Мышечная масса в Garmin не
+отправляется**: у Xiaomi это общая (~78% веса), у Garmin `muscle_mass` — скелетная
+(~40%); SmartScaleConnect её тоже не пишет. До 200 взвешиваний на файл (Garmin валит
+большие).
+
+**Дедупликация перед отправкой (`ScaleSyncManager`)**: у Garmin спрашиваются метки уже
+имеющихся взвешиваний (`allWeightMetrics[].timestampGMT`, тот же эндпоинт
+`weight-service/weight/range`), совпавшие по секунде помечаются загруженными без
+отправки — так взвешивание, попавшее в Garmin раньше (этим приложением или чужим
+скриптом), не дублируется. Если этот запрос не удался — отправка откладывается, а не
+рискует дублями. После успешной отправки диапазон перечитывается из Garmin в
+`garmin_body_composition`, чтобы «День» сразу показал, что долетело.
+
+**UI**: «Я» → «Весы Mi (Zepp Life)» — вход по аккаунту Xiaomi (с предупреждением про
+разлогин Zepp Life и 2FA), счётчик взвешиваний, состояние синка, переключатель отправки
+в Garmin (по умолчанию включён — так просил пользователь), «Синхронизировать»/«Выйти».
+«День» → карточка «Вес и состав тела · весы Mi» при взвешивании в этот день (полный
+набор полей + строка «передано в Garmin / ещё не отправлено»), иначе Garmin-копия.
+«Тренды» → вес объединяется по дням из обоих источников, весы приоритетнее Garmin-копии.
+Экспорт → секция `scale`.
+
 ## Стек и структура
 
 Kotlin + Jetpack Compose (Material3), Room (единственный источник правды для
@@ -263,7 +353,8 @@ data/          Entity + Dao + Repository + агрегация недели
 health/        HealthConnectManager (доступ/разрешения), Reader (чтение), SyncManager (в Room)
 sync/          FirestoreSyncManager, AuthManager, FirebaseSetup
 debug/         AppLog — внутриприложенный лог, см. «Диагностика» ниже
-garmin/        Неофициальный клиент Garmin Connect (Auth, Api, Sync) — см. выше
+garmin/        Неофициальный клиент Garmin Connect (Auth, Api, Sync, WeightUploader) — см. выше
+scale/         Весы Mi через облако Zepp Life (ZeppAuth, ZeppApi, ScaleSync) — см. выше
 analytics/     LifestyleAnalytics — правила-инсайты и тренд-серии поверх Garmin-таблиц
 ui/<screen>/   один пакет на экран (day, week, trends, workouts, settings)
 ui/components/ переиспользуемые composable, включая графики (Charts, TrendCharts)
@@ -273,12 +364,13 @@ util/          чистые функции без побочных эффект�
 navigation/    Routes + NavHost + нижнее меню
 ```
 
-Текущая версия БД — **v4** (v1→v2 добавила `garmin_daily_extra`; v2→v3
+Текущая версия БД — **v5** (v1→v2 добавила `garmin_daily_extra`; v2→v3
 расширила её до полной дневной сводки Garmin и добавила `garmin_sleep`,
 `garmin_hrv`, `garmin_readiness`, `garmin_training`,
 `garmin_body_composition`, `garmin_activities`; v3→v4 добавила
 `garmin_sync_marks` и колонку `detailsLoaded` — инкрементальный синк, см.
-«Прямой доступ к Garmin» выше). Каждая будущая миграция аддитивна, ничего не
+«Прямой доступ к Garmin» выше; v4→v5 добавила `scale_measurements` — взвешивания
+с весов Mi, см. «Весы Mi» выше). Каждая будущая миграция аддитивна, ничего не
 удаляется деструктивно, никогда `fallbackToDestructiveMigration` — потерянная
 строка здесь это потерянная история, которую Health Connect может уже не отдать
 (он гарантирует только 30 дней, а провайдеры чистят данные независимо).
@@ -411,7 +503,8 @@ FileProvider-паттерн, что и `export/DataExporter`)/«Очистить
 - **Тренировки** — весь архив, сгруппированный по датам, плюс итоги за всё время
 - **Я** — Health Connect (статус/разрешения), синхронизация, Garmin напрямую
   (вход/MFA, «Синхронизировать» = 14 дней, «Вся история» = назад до конца
-  данных, «Забыть отметки»), логи (см.
+  данных, «Забыть отметки»), весы Mi через Zepp Life (вход Xiaomi, переключатель
+  отправки в Garmin), логи (см.
   «Диагностика» выше), аккаунт, экспорт JSON (включая все Garmin-таблицы),
   обновления приложения
 
@@ -527,6 +620,20 @@ FileProvider-паттерн, что и `export/DataExporter`)/«Очистить
   заглавной аббревиатурой перед цифрой (`averageSpO2Value`), поэтому такие
   поля читаются с несколькими вариантами написания (`JSONObject.float(vararg)`
   в `GarminApiClient`), а не одним угаданным
+- **Xiaomi: `&&&START&&&` перед каждым JSON, MD5 пароля в верхнем hex, одна сессия
+  на приложение.** Три вещи, без которых логин в Zepp Life не собирается, и ни одна
+  не угадывается — все из `pkg/xiaomi/auth.go` SmartScaleConnect. Третья ещё и
+  меняет UX: вход из приложения выбивает Zepp Life на телефоне, поэтому токен
+  переиспользуется и автоматического перелогина нет намеренно
+- **`WebFetch` отказывается воспроизводить исходники дословно** («copyright»),
+  даже MIT-лицензированные — и выдаёт пересказ, в котором теряются как раз
+  литералы (URL, поля форм). Для протокольной работы качать raw-файлы `curl`-ом
+  с `raw.githubusercontent.com` (из песочницы доступен) и читать `cat`-ом — так
+  и сделано для SmartScaleConnect
+- **Garmin FIT SDK масштабирует сам.** `WeightScaleMesg.setWeight(64.7f)` — это кг,
+  а не кг×100; Go-библиотека у референса требовала ручного масштабирования, и
+  бездумный перенос дал бы вес 6470 кг. Проверено по сигнатурам `javap`
+  (`setWeight(java.lang.Float)`, `setMetabolicAge(java.lang.Short)`), не по памяти
 - **Debug-keystore коммитить, фиксированный** — иначе каждая пересборка CI
   получает новый случайный ключ и Google Sign-In (привязанный к SHA-1) ломается
 - **`rememberCoroutineScope()` отменяется при уходе с экрана.** Для синхронизации
@@ -574,6 +681,16 @@ FileProvider-паттерн, что и `export/DataExporter`)/«Очистить
   эти данные для вашего аккаунта»). Если появятся новые часы — сбросить отметки
   кнопкой «Забыть отметки» или поднятием `LOGIC_VERSION`. Работают: сводка дня,
   статус тренировок и нагрузка, вес, тренировки с Training Effect
+- **Весы: члены семьи в Zepp Life** — API отдаёт список `fuid` через
+  `huami.health.scale.familymember.get.json`; сейчас читается только владелец (`-1`)
+- **Весы: Mi Fitness как второй источник** — Mi Body Composition Scale 2 может быть
+  привязана и к Mi Fitness (экосистема Mi Home); у SmartScaleConnect есть и этот
+  провайдер (`pkg/xiaomi/client.go`, RC4-шифрованный API `get_fitness_data_by_time`),
+  заметно сложнее Zepp-пути — делать только если у пользователя весы не в Zepp Life
+- **Весы: BLE напрямую** (вариант C обсуждения) — без облака Xiaomi вообще, по
+  формулам openScale; самый независимый путь, но самый большой по работе
+- **Переупотребление `passToken` Xiaomi для тихого перелогина** — не реализовано,
+  потому что референс не демонстрирует повторный OAuth2 по нему
 - **Автоматический повторный вход при протухшем OAuth1** — сейчас, если
   Garmin отзовёт OAuth1-токен раньше года, `GarminSyncManager` вернёт
   `Failed("Garmin ничего не вернул. Возможно, нужно войти заново.")` и покажет

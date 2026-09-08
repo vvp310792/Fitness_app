@@ -29,9 +29,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GarminTraining::class,
         GarminBodyComposition::class,
         GarminActivity::class,
-        GarminSyncMark::class
+        GarminSyncMark::class,
+        ScaleMeasurement::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -46,6 +47,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun garminBodyCompositionDao(): GarminBodyCompositionDao
     abstract fun garminActivityDao(): GarminActivityDao
     abstract fun garminSyncMarkDao(): GarminSyncMarkDao
+    abstract fun scaleMeasurementDao(): ScaleMeasurementDao
 
     companion object {
         @Volatile
@@ -299,6 +301,45 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v4 -> v5: `scale_measurements` - weigh-ins from a non-Garmin smart scale (Mi Body
+         * Composition Scale via the Zepp Life cloud, scale/). Its own table, not rows in
+         * garmin_body_composition: see ScaleMeasurement's doc comment for why the scale's
+         * reading and Garmin's copy of it are kept as two facts.
+         */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS scale_measurements (
+                        timestampMillis INTEGER PRIMARY KEY NOT NULL,
+                        dateEpochDay INTEGER NOT NULL,
+                        weightGrams INTEGER NOT NULL,
+                        heightCm REAL NOT NULL DEFAULT 0,
+                        bmi REAL NOT NULL DEFAULT 0,
+                        bodyFatPercent REAL NOT NULL DEFAULT 0,
+                        bodyWaterPercent REAL NOT NULL DEFAULT 0,
+                        boneMassGrams INTEGER NOT NULL DEFAULT 0,
+                        muscleMassGrams INTEGER NOT NULL DEFAULT 0,
+                        metabolicAge INTEGER NOT NULL DEFAULT 0,
+                        visceralFat INTEGER NOT NULL DEFAULT 0,
+                        basalMetabolismKcal INTEGER NOT NULL DEFAULT 0,
+                        proteinPercent REAL NOT NULL DEFAULT 0,
+                        bodyScore INTEGER NOT NULL DEFAULT 0,
+                        physiqueRating INTEGER NOT NULL DEFAULT 0,
+                        impedance INTEGER NOT NULL DEFAULT 0,
+                        deviceId TEXT NOT NULL DEFAULT '',
+                        source TEXT NOT NULL DEFAULT 'zepp',
+                        garminUploadedAtMillis INTEGER NOT NULL DEFAULT 0,
+                        updatedAtMillis INTEGER NOT NULL DEFAULT 0
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_scale_measurements_dateEpochDay ON scale_measurements(dateEpochDay)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_scale_measurements_garminUploadedAtMillis ON scale_measurements(garminUploadedAtMillis)")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -306,7 +347,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "fitness_summary.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                 INSTANCE = instance
                 instance

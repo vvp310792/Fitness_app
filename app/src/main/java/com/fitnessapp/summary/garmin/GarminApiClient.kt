@@ -388,6 +388,28 @@ class GarminApiClient(private val auth: GarminAuthClient) {
     }
 
     /**
+     * Instants (unix seconds) of every weigh-in Garmin already holds in the range - the
+     * same `weight-service/weight/range` response as [bodyComposition], read for its
+     * `allWeightMetrics[].timestampGMT` instead of its values. Used before pushing scale
+     * measurements so a weigh-in that already reached Garmin (through this app earlier, or
+     * another tool) is never uploaded twice: a FIT weight message carries its timestamp to
+     * the second, so the second is the identity. SmartScaleConnect dedupes exactly this way.
+     */
+    suspend fun weightTimestampsSeconds(from: LocalDate, to: LocalDate): GarminFetch<Set<Long>> = withContext(Dispatchers.IO) {
+        fetchObject("weight-service/weight/range/$from/$to", mapOf("includeAll" to "true"))
+            .parse("метки веса $from..$to") { root ->
+                val out = mutableSetOf<Long>()
+                for (day in (root.optJSONArray("dailyWeightSummaries") ?: JSONArray()).objects()) {
+                    for (metric in day.optJSONArray("allWeightMetrics")?.objects().orEmpty()) {
+                        val millis = metric.optLong("timestampGMT", 0L).takeIf { it > 0 } ?: metric.optLong("date", 0L)
+                        if (millis > 0) out += millis / 1000
+                    }
+                }
+                out // an empty set is a real answer ("Garmin holds nothing here"), not NoData
+            }
+    }
+
+    /**
      * garth `Activity.list`: `activitylist-service/activities/search/activities?limit=&start=`,
      * newest first, paged until the page runs older than [from]. Returns the list-level
      * fields only; Training Effect, load, power and cadence live behind a per-activity
@@ -639,7 +661,7 @@ class GarminApiClient(private val auth: GarminAuthClient) {
         }
     }
 
-    private companion object {
+    internal companion object {
         const val DOMAIN = "garmin.com"
 
         /**

@@ -8,6 +8,7 @@ import com.fitnessapp.summary.data.GarminHrv
 import com.fitnessapp.summary.data.GarminReadiness
 import com.fitnessapp.summary.data.GarminSleep
 import com.fitnessapp.summary.data.GarminTraining
+import com.fitnessapp.summary.data.ScaleMeasurement
 import com.fitnessapp.summary.util.acwrStatusLabel
 import com.fitnessapp.summary.util.declineDays
 import com.fitnessapp.summary.util.formatDuration
@@ -43,7 +44,9 @@ data class LifestyleInputs(
     val training: List<GarminTraining>,
     val weights: List<GarminBodyComposition>,
     val activities: List<GarminActivity>,
-    val healthDays: List<DailySummary>
+    val healthDays: List<DailySummary>,
+    /** Weigh-ins from a non-Garmin scale (scale/); merged with [weights] by day, scale winning. */
+    val scaleWeights: List<ScaleMeasurement> = emptyList()
 )
 
 /**
@@ -401,13 +404,13 @@ object LifestyleAnalytics {
         }
 
         // --- Weight ---------------------------------------------------------------------------------------------
-        val weights = inputs.weights.filter { it.weightGrams > 0 }
+        val weights = mergedWeightByDay(inputs.weights, inputs.scaleWeights)
         if (weights.size >= 2) {
-            val delta = (weights.last().weightGrams - weights.first().weightGrams) / 1000f
+            val delta = weights.last().value - weights.first().value
             if (abs(delta) >= 0.5f) {
                 out += Insight(
                     "⚖️", "Вес: ${if (delta > 0) "+" else ""}${"%.1f".format(delta)} кг",
-                    "С ${LocalDate.ofEpochDay(weights.first().dateEpochDay)} по ${LocalDate.ofEpochDay(weights.last().dateEpochDay)}, ${weights.size} взвешиваний.",
+                    "С ${LocalDate.ofEpochDay(weights.first().epochDay)} по ${LocalDate.ofEpochDay(weights.last().epochDay)}, ${weights.size} ${declineDays(weights.size)} с взвешиванием.",
                     InsightTone.NEUTRAL
                 )
             }
@@ -481,7 +484,20 @@ object LifestyleAnalytics {
     fun vo2MaxTrend(list: List<GarminTraining>) = list.filter { it.vo2Max > 0f }.map { TrendPoint(it.dateEpochDay, it.vo2Max) }
     fun acuteLoadTrend(list: List<GarminTraining>) = list.filter { it.dailyTrainingLoadAcute > 0 }.map { TrendPoint(it.dateEpochDay, it.dailyTrainingLoadAcute.toFloat()) }
     fun chronicLoadTrend(list: List<GarminTraining>) = list.filter { it.dailyTrainingLoadChronic > 0 }.map { TrendPoint(it.dateEpochDay, it.dailyTrainingLoadChronic.toFloat()) }
-    fun weightTrend(list: List<GarminBodyComposition>) = list.filter { it.weightGrams > 0 }.map { TrendPoint(it.dateEpochDay, it.weightKg) }
+    fun weightTrend(garmin: List<GarminBodyComposition>, scale: List<ScaleMeasurement> = emptyList()) = mergedWeightByDay(garmin, scale)
+
+    /**
+     * One weight per day from both sources. The scale's own reading wins over Garmin's
+     * copy of it when both exist for a day - it's the primary record; Garmin's is the
+     * echo - and the latest weigh-in of a day wins within the scale (lists arrive
+     * ascending, so a later entry simply overwrites).
+     */
+    fun mergedWeightByDay(garmin: List<GarminBodyComposition>, scale: List<ScaleMeasurement>): List<TrendPoint> {
+        val byDay = mutableMapOf<Long, Float>()
+        garmin.filter { it.weightGrams > 0 }.forEach { byDay[it.dateEpochDay] = it.weightKg }
+        scale.filter { it.weightGrams > 0 }.forEach { byDay[it.dateEpochDay] = it.weightKg }
+        return byDay.entries.sortedBy { it.key }.map { TrendPoint(it.key, it.value) }
+    }
     fun intensityMinutesTrend(list: List<GarminDailyExtra>) = list.map { TrendPoint(it.dateEpochDay, it.intensityMinutesWeighted.toFloat()) }
 
     // ---- helpers ------------------------------------------------------------------------------

@@ -17,6 +17,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -38,6 +39,8 @@ import com.fitnessapp.summary.debug.AppLog
 import com.fitnessapp.summary.export.DataExporter
 import com.fitnessapp.summary.garmin.GarminLoginResult
 import com.fitnessapp.summary.garmin.GarminSyncManager
+import com.fitnessapp.summary.scale.ScaleSyncManager
+import com.fitnessapp.summary.scale.ZeppLoginResult
 import com.fitnessapp.summary.health.HealthConnectManager
 import com.fitnessapp.summary.health.HealthSyncManager
 import com.fitnessapp.summary.sync.FirebaseSetup
@@ -70,6 +73,7 @@ fun SettingsScreen(app: FitnessSummaryApp) {
         item { HealthConnectSection(app) }
         item { SyncSection(app) }
         item { GarminSection(app) }
+        item { ZeppSection(app) }
         item { LogsSection() }
         item { AccountSection(app) }
         item { ExportSection(app) }
@@ -814,6 +818,173 @@ private fun AboutSection() {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp)
             )
+        }
+    }
+}
+
+private enum class ZeppUiState { LOGGED_OUT, LOGGED_IN }
+
+/**
+ * Login for the Mi Body Composition Scale via the Zepp Life cloud (scale/ZeppAuthClient.kt)
+ * and the switch for the one thing this app writes to Garmin - pushing those weigh-ins in.
+ * Two facts the user must know before pressing "Войти", both stated on the card: logging
+ * in here signs the phone's Zepp Life app out (Xiaomi keeps one session per app), and
+ * a Xiaomi account with 2FA or a captcha challenge cannot be logged into from here.
+ */
+@Composable
+private fun ZeppSection(app: FitnessSummaryApp) {
+    val scope = rememberCoroutineScope()
+    var uiState by remember {
+        mutableStateOf(if (app.zeppAuth.isLoggedIn) ZeppUiState.LOGGED_IN else ZeppUiState.LOGGED_OUT)
+    }
+    var account by remember { mutableStateOf(app.zeppAuth.savedAccount.orEmpty()) }
+    var password by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var errorText by remember { mutableStateOf<String?>(null) }
+    var uploadToGarmin by remember { mutableStateOf(app.zeppTokenStore.uploadToGarmin) }
+    val syncState by app.scaleSync.state.collectAsState()
+    val count by remember { app.database.scaleMeasurementDao().observeCount() }.collectAsState(initial = 0)
+
+    InfoCard(title = "Весы Mi (Zepp Life)") {
+        Text(
+            text = "Взвешивания Mi Body Composition Scale читаются из облака Zepp Life по " +
+                "аккаунту Xiaomi — тем же способом, что и приложение Zepp Life. Оттуда они " +
+                "попадают на экран «День» и в «Тренды», а при включённом переключателе ниже — " +
+                "отправляются в Garmin Connect (единственное, что это приложение пишет в Garmin). " +
+                "Внимание: вход здесь разлогинит Zepp Life на телефоне — Xiaomi держит одну " +
+                "сессию на приложение. Аккаунт с двухфакторной защитой войти отсюда не сможет.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        errorText?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        }
+
+        when (uiState) {
+            ZeppUiState.LOGGED_OUT -> {
+                OutlinedTextField(
+                    value = account,
+                    onValueChange = { account = it },
+                    label = { Text("Аккаунт Xiaomi (email или телефон)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Пароль Xiaomi") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                )
+                Button(
+                    onClick = {
+                        errorText = null
+                        busy = true
+                        scope.launch {
+                            when (val result = app.zeppAuth.login(account.trim(), password)) {
+                                is ZeppLoginResult.Success -> {
+                                    password = ""
+                                    uiState = ZeppUiState.LOGGED_IN
+                                    app.launchPersistent { app.scaleSync.sync() }
+                                }
+                                is ZeppLoginResult.Failed -> errorText = "Не удалось войти: ${result.reason}"
+                            }
+                            busy = false
+                        }
+                    },
+                    enabled = !busy && account.isNotBlank() && password.isNotBlank(),
+                    modifier = Modifier.padding(top = 10.dp)
+                ) {
+                    Text(if (busy) "Вхожу..." else "Войти через Xiaomi")
+                }
+            }
+
+            ZeppUiState.LOGGED_IN -> {
+                StatRow("Аккаунт", app.zeppAuth.savedAccount ?: "Xiaomi")
+                StatRow("Взвешиваний загружено", count.toString())
+
+                when (val state = syncState) {
+                    is ScaleSyncManager.State.Running -> Text(
+                        text = state.step,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    is ScaleSyncManager.State.Success -> Text(
+                        text = buildString {
+                            append("Новых взвешиваний: ${state.newMeasurements}")
+                            if (state.uploadedToGarmin > 0) append(", отправлено в Garmin: ${state.uploadedToGarmin}")
+                            if (state.pendingUpload > 0) append(", ждут отправки: ${state.pendingUpload}")
+                            append(" (${formatTime(state.atMillis)})")
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = metricPalette().distance,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    is ScaleSyncManager.State.Failed -> Text(
+                        text = state.reason,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    ScaleSyncManager.State.Idle -> Unit
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Отправлять вес в Garmin",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Switch(
+                        checked = uploadToGarmin,
+                        onCheckedChange = {
+                            uploadToGarmin = it
+                            app.zeppTokenStore.uploadToGarmin = it
+                        }
+                    )
+                }
+                if (uploadToGarmin && !app.garminAuth.isLoggedIn) {
+                    Text(
+                        text = "Для отправки нужен вход в Garmin — секция выше.",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+
+                val running = syncState is ScaleSyncManager.State.Running
+                Row(
+                    modifier = Modifier.padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = { app.launchPersistent { app.scaleSync.sync() } },
+                        enabled = !running
+                    ) {
+                        Text("Синхронизировать")
+                    }
+                    TextButton(
+                        onClick = {
+                            app.zeppAuth.logout()
+                            uiState = ZeppUiState.LOGGED_OUT
+                            account = ""
+                        }
+                    ) {
+                        Text("Выйти")
+                    }
+                }
+            }
         }
     }
 }
