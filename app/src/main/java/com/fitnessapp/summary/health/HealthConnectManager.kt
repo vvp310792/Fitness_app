@@ -7,13 +7,19 @@ import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.ActiveCaloriesBurnedRecord
+import androidx.health.connect.client.records.BasalMetabolicRateRecord
+import androidx.health.connect.client.records.BodyFatRecord
+import androidx.health.connect.client.records.BodyWaterMassRecord
+import androidx.health.connect.client.records.BoneMassRecord
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.HeightRecord
 import androidx.health.connect.client.records.RestingHeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
+import androidx.health.connect.client.records.WeightRecord
 
 /**
  * Owns the connection to Health Connect: whether it's usable at all, whether the
@@ -65,11 +71,9 @@ class HealthConnectManager(private val context: Context) {
         if (isAvailable) HealthConnectClient.getOrCreate(context) else null
 
     /**
-     * Every permission the app asks for. Must stay in sync with the
-     * `android.permission.health.*` entries in AndroidManifest.xml - a permission
-     * requested here but not declared there is simply never granted, with no error.
+     * Daily activity and recovery: what Garmin Connect writes into Health Connect.
      */
-    val permissions: Set<String> = setOf(
+    val activityPermissions: Set<String> = setOf(
         HealthPermission.getReadPermission(StepsRecord::class),
         HealthPermission.getReadPermission(ActiveCaloriesBurnedRecord::class),
         HealthPermission.getReadPermission(TotalCaloriesBurnedRecord::class),
@@ -80,6 +84,36 @@ class HealthConnectManager(private val context: Context) {
         HealthPermission.getReadPermission(ExerciseSessionRecord::class)
     )
 
+    /**
+     * Weight and body composition: what a smart scale's app (Zepp Life via Google Fit,
+     * or anything else) writes into Health Connect. Read by [HealthConnectScaleReader]
+     * and pushed on to Garmin by scale/ScaleSyncManager. Kept as its own set so the
+     * scale section of the settings screen can ask for exactly these and tell the user
+     * whether weight specifically is readable, independent of the activity grants.
+     *
+     * Deliberately no LeanBodyMassRecord: lean mass (everything that isn't fat) is not
+     * the "muscle mass" the scale card shows, and storing it under that label would be
+     * a lie by ~20 kg.
+     */
+    val scalePermissions: Set<String> = setOf(
+        HealthPermission.getReadPermission(WeightRecord::class),
+        HealthPermission.getReadPermission(BodyFatRecord::class),
+        HealthPermission.getReadPermission(BodyWaterMassRecord::class),
+        HealthPermission.getReadPermission(BoneMassRecord::class),
+        HealthPermission.getReadPermission(BasalMetabolicRateRecord::class),
+        HealthPermission.getReadPermission(HeightRecord::class)
+    )
+
+    /** The one permission without which the scale path cannot do anything at all. */
+    val weightPermission: String = HealthPermission.getReadPermission(WeightRecord::class)
+
+    /**
+     * Every permission the app asks for. Must stay in sync with the
+     * `android.permission.health.*` entries in AndroidManifest.xml - a permission
+     * requested here but not declared there is simply never granted, with no error.
+     */
+    val permissions: Set<String> = activityPermissions + scalePermissions
+
     /** Which of [permissions] the user has actually granted. Empty when unavailable. */
     suspend fun grantedPermissions(): Set<String> {
         val client = clientOrNull() ?: return emptySet()
@@ -87,6 +121,9 @@ class HealthConnectManager(private val context: Context) {
     }
 
     suspend fun hasAllPermissions(): Boolean = grantedPermissions().containsAll(permissions)
+
+    /** True when at least weight can be read - the minimum for the scale pipeline to run. */
+    suspend fun canReadWeight(): Boolean = weightPermission in grantedPermissions()
 
     /**
      * Contract for the system permission sheet. Health Connect deliberately does NOT

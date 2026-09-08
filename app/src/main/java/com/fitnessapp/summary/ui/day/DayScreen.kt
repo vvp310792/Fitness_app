@@ -646,7 +646,7 @@ private fun ActivityDetailsCard(extra: GarminDailyExtra, palette: MetricPalette)
 @Composable
 private fun BodyCompositionCard(garmin: GarminBodyComposition?, scale: ScaleMeasurement?, selectedDate: LocalDate) {
     if (scale != null) {
-        InfoCard(title = "Вес и состав тела · весы Mi") {
+        InfoCard(title = "Вес и состав тела · весы") {
             StatRow("Вес", formatKg(scale.weightGrams))
             if (scale.bmi > 0f) StatRow("ИМТ", formatDecimal(scale.bmi))
             if (scale.bodyFatPercent > 0f) StatRow("Жир", "${formatDecimal(scale.bodyFatPercent)}%")
@@ -660,6 +660,7 @@ private fun BodyCompositionCard(garmin: GarminBodyComposition?, scale: ScaleMeas
             if (scale.bodyScore > 0) StatRow("Оценка тела", "${scale.bodyScore} из 100")
             Text(
                 text = "Взвешивание в ${formatTime(scale.timestampMillis)} · " +
+                    (if (scale.source == ScaleMeasurement.SOURCE_ZEPP) "Zepp Life" else "Health Connect") + " · " +
                     if (scale.isUploadedToGarmin) "передано в Garmin" else "в Garmin ещё не отправлено",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

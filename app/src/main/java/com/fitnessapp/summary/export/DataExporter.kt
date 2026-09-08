@@ -51,7 +51,7 @@ object DataExporter {
             put("app", "fitness-summary")
             put("schemaVersion", 2)
             put("exportedAt", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
-            put("sources", JSONArray(listOf("Health Connect", "Garmin Connect (unofficial)", "Zepp Life (unofficial)")))
+            put("sources", JSONArray(listOf("Health Connect", "Garmin Connect (unofficial)", "Zepp Life (unofficial, optional)")))
             put("dayCount", days.size)
             put("workoutCount", workouts.size)
         }
@@ -313,7 +313,7 @@ object DataExporter {
         })
 
         root.put("scale", JSONObject().apply {
-            put("source", "Zepp Life (Mi Body Composition Scale)")
+            put("sources", JSONArray(listOf("health_connect (Zepp Life -> Google Fit -> Health Connect)", "zepp (Zepp Life cloud, optional)")))
             put("measurements", JSONArray().also { array ->
                 for (m in database.scaleMeasurementDao().getAllOnce()) {
                     array.put(JSONObject().apply {
@@ -334,6 +334,7 @@ object DataExporter {
                         put("physiqueRating", m.physiqueRating)
                         put("impedance", m.impedance)
                         put("deviceId", m.deviceId)
+                        put("source", m.source)
                         put("uploadedToGarmin", m.isUploadedToGarmin)
                     })
                 }

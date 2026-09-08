@@ -1,40 +1,60 @@
 package com.fitnessapp.summary.scale
 
+import android.content.Context
 import com.fitnessapp.summary.data.AppDatabase
+import com.fitnessapp.summary.data.ScaleMeasurement
 import com.fitnessapp.summary.debug.AppLog
 import com.fitnessapp.summary.garmin.GarminApiClient
 import com.fitnessapp.summary.garmin.GarminAuthClient
 import com.fitnessapp.summary.garmin.GarminFetch
 import com.fitnessapp.summary.garmin.GarminWeightUploader
 import com.fitnessapp.summary.garmin.valueOrNull
+import com.fitnessapp.summary.health.HealthConnectManager
+import com.fitnessapp.summary.health.HealthConnectScaleReader
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.time.Duration
+import java.time.Instant
 import java.time.LocalDate
+import kotlin.math.abs
 
 /**
- * The scale pipeline: Zepp Life cloud -> `scale_measurements` -> (optionally) Garmin.
+ * The scale pipeline: weigh-ins -> `scale_measurements` -> (optionally) Garmin.
  *
- * Runs on app start when a Zepp Life session exists, and on demand. Two halves, each
- * independently skippable:
+ * Two sources feed the table, either or both may be active:
  *
- * 1. **Pull** - everything newer than the latest stored weigh-in (or the whole history
- *    the first time). Zepp records never change after the fact, so "newer than what we
- *    have" is a safe incremental rule; there is no Garmin-style late revision to chase.
- *    Re-syncing a record preserves its upload stamp - a REPLACE upsert would otherwise
- *    reset it and re-push the whole history every time.
- * 2. **Push** - only if the user left "Отправлять в Garmin" on and Garmin is logged in.
- *    Before uploading, Garmin is asked which weigh-in instants it already holds, so a
- *    reading that got there earlier (through this app, or another tool) is marked as
- *    uploaded rather than sent again. Then the rest goes up in FIT files of at most
- *    [GarminWeightUploader.MAX_PER_FILE], and Garmin's own copy of the range is re-read
- *    into garmin_body_composition so the Day screen shows the upload landed.
+ * - **Health Connect** ([HealthConnectScaleReader]) - the primary one. The user's chain is
+ *   Mi scale -> Zepp Life -> Google Fit -> Health Connect, and from there this app reads
+ *   weight the same way it reads steps, with nothing but a Health Connect permission.
+ *   Re-read with an overlap of [HC_RESYNC_OVERLAP] behind the latest stored row, because
+ *   Google Fit forwards Zepp Life's data with a delay and can drop a weigh-in into the
+ *   past; the first read goes [HC_FIRST_WINDOW] back and Health Connect returns whatever
+ *   it has (30 days without READ_HEALTH_DATA_HISTORY, all of it with).
+ * - **Zepp Life cloud** ([ZeppApiClient]) - optional, needs a Xiaomi login, richer rows
+ *   (body score, protein, impedance). Kept for installs where it works; not required.
+ *
+ * With both active the same step onto the scale arrives twice at slightly different
+ * timestamps (Google Fit re-stamps to the second). A row within [DUPLICATE_WINDOW] of one
+ * already stored from the *other* source is dropped, first come first served, so the
+ * table - and Garmin - see each weigh-in once. Re-storing a row preserves its upload
+ * stamp: a REPLACE upsert would otherwise reset it and re-push the history every time.
+ *
+ * **Push** - only if "Отправлять в Garmin" is on and Garmin is logged in. Before
+ * uploading, Garmin is asked which weigh-in instants it already holds, so a reading that
+ * got there earlier (through this app or another tool) is marked as uploaded rather than
+ * sent again. Then the rest goes up in FIT files of at most
+ * [GarminWeightUploader.MAX_PER_FILE], and Garmin's own copy of the range is re-read into
+ * garmin_body_composition so the Day screen shows the upload landed.
  *
  * Deliberately not part of [com.fitnessapp.summary.garmin.GarminSyncManager]: that one is
  * a read-only mirror of Garmin, this one WRITES to Garmin, and the two failure modes
- * (an expired Zepp token; Garmin rejecting a file) should never be reported as one.
+ * should never be reported as one.
  */
 class ScaleSyncManager(
+    context: Context,
+    private val healthConnect: HealthConnectManager,
+    private val healthReader: HealthConnectScaleReader,
     private val zeppApi: ZeppApiClient,
     private val zeppTokens: ZeppTokenStore,
     private val garminAuth: GarminAuthClient,
@@ -49,42 +69,86 @@ class ScaleSyncManager(
             val newMeasurements: Int,
             val uploadedToGarmin: Int,
             val pendingUpload: Int,
-            val atMillis: Long
+            val atMillis: Long,
+            /** A source that misbehaved while the other delivered - shown, not fatal. */
+            val note: String? = null
         ) : State()
         data class Failed(val reason: String) : State()
     }
 
+    private val prefs = context.getSharedPreferences("scale_sync", Context.MODE_PRIVATE)
+
     private val _state = MutableStateFlow<State>(State.Idle)
     val state: StateFlow<State> = _state.asStateFlow()
 
-    suspend fun sync(): State {
-        if (!zeppTokens.isLoggedIn) {
-            return State.Failed("Нет входа в Zepp Life").also { _state.value = it }
-        }
-        AppLog.i("ScaleSyncManager", "Синк весов начат")
-        val dao = database.scaleMeasurementDao()
+    /**
+     * The switch for the one thing this app writes to Garmin. Defaults to the value the
+     * earlier Zepp-only build stored, so an existing install keeps its choice.
+     */
+    var uploadToGarmin: Boolean
+        get() = prefs.getBoolean(KEY_UPLOAD_TO_GARMIN, zeppTokens.uploadToGarmin)
+        set(value) = prefs.edit().putBoolean(KEY_UPLOAD_TO_GARMIN, value).apply()
 
-        // ---- 1. pull -------------------------------------------------------------
-        _state.value = State.Running("Читаю взвешивания из Zepp Life...")
-        val since = dao.latestTimestamp() ?: 0L
-        val pulled = when (val fetch = zeppApi.weighIns(since)) {
-            is GarminFetch.Ok -> fetch.value
-            GarminFetch.NoData -> emptyList()
-            is GarminFetch.Failed -> {
-                AppLog.w("ScaleSyncManager", "Zepp Life не отдал взвешивания: ${fetch.reason}")
-                return State.Failed("Zepp Life: ${fetch.reason}").also { _state.value = it }
+    suspend fun healthConnectReadable(): Boolean = healthConnect.isAvailable && healthConnect.canReadWeight()
+
+    /** Anything to sync from at all - decides whether the start-up sync runs. */
+    suspend fun hasAnySource(): Boolean = healthConnectReadable() || zeppTokens.isLoggedIn
+
+    suspend fun sync(): State {
+        val fromHealthConnect = healthConnectReadable()
+        val fromZepp = zeppTokens.isLoggedIn
+        if (!fromHealthConnect && !fromZepp) {
+            return State.Failed(
+                "Нет источника взвешиваний: выдайте разрешение на чтение веса в Health Connect " +
+                    "или войдите в Zepp Life"
+            ).also { _state.value = it }
+        }
+        AppLog.i("ScaleSyncManager", "Синк весов начат (Health Connect=$fromHealthConnect, Zepp=$fromZepp)")
+        val dao = database.scaleMeasurementDao()
+        val problems = ArrayList<String>()
+        var newRows = 0
+
+        // ---- 1. pull: Health Connect ------------------------------------------------
+        if (fromHealthConnect) {
+            _state.value = State.Running("Читаю вес из Health Connect...")
+            val latest = dao.latestTimestampForSource(ScaleMeasurement.SOURCE_HEALTH_CONNECT)
+            val from = if (latest == null) Instant.now().minus(HC_FIRST_WINDOW)
+            else Instant.ofEpochMilli(latest).minus(HC_RESYNC_OVERLAP)
+            val rows = healthReader.readWeighIns(from, Instant.now().plus(Duration.ofHours(1)))
+            if (rows == null) {
+                problems += "Health Connect не отдал вес"
+            } else {
+                newRows += store(rows)
+                AppLog.i("ScaleSyncManager", "Health Connect: взвешиваний в окне ${rows.size}")
             }
         }
-        if (pulled.isNotEmpty()) {
-            val stamps = dao.uploadedTimestamps().associate { it.timestampMillis to it.garminUploadedAtMillis }
-            dao.upsertAll(pulled.map { it.copy(garminUploadedAtMillis = stamps[it.timestampMillis] ?: 0L) })
+
+        // ---- 1b. pull: Zepp Life cloud -----------------------------------------------
+        if (fromZepp) {
+            _state.value = State.Running("Читаю взвешивания из Zepp Life...")
+            val since = dao.latestTimestampForSource(ScaleMeasurement.SOURCE_ZEPP) ?: 0L
+            when (val fetch = zeppApi.weighIns(since)) {
+                is GarminFetch.Ok -> {
+                    newRows += store(fetch.value)
+                    AppLog.i("ScaleSyncManager", "Zepp Life: новых взвешиваний ${fetch.value.size}")
+                }
+                GarminFetch.NoData -> Unit
+                is GarminFetch.Failed -> {
+                    AppLog.w("ScaleSyncManager", "Zepp Life не отдал взвешивания: ${fetch.reason}")
+                    problems += "Zepp Life: ${fetch.reason}"
+                }
+            }
         }
-        AppLog.i("ScaleSyncManager", "Из Zepp Life получено новых взвешиваний: ${pulled.size}")
+
+        if (problems.size == listOf(fromHealthConnect, fromZepp).count { it }) {
+            // Every active source failed - nothing was read, say so plainly.
+            return State.Failed(problems.joinToString("; ")).also { _state.value = it }
+        }
 
         // ---- 2. push -------------------------------------------------------------
         var uploaded = 0
         val pending = dao.pendingGarminUpload()
-        val pushWanted = zeppTokens.uploadToGarmin && garminAuth.isLoggedIn
+        val pushWanted = uploadToGarmin && garminAuth.isLoggedIn
         if (pushWanted && pending.isNotEmpty()) {
             _state.value = State.Running("Отправляю в Garmin: ${pending.size}...")
             val from = LocalDate.ofEpochDay(pending.first().dateEpochDay)
@@ -97,7 +161,8 @@ class ScaleSyncManager(
                 GarminFetch.NoData -> emptySet()
                 is GarminFetch.Failed -> {
                     AppLog.w("ScaleSyncManager", "Не удалось узнать, что уже есть в Garmin - отправка отложена: ${fetch.reason}")
-                    return State.Success(pulled.size, 0, pending.size, System.currentTimeMillis()).also { _state.value = it }
+                    return State.Success(newRows, 0, pending.size, System.currentTimeMillis(), "Garmin: ${fetch.reason}")
+                        .also { _state.value = it }
                 }
             }
             val now = System.currentTimeMillis()
@@ -136,9 +201,53 @@ class ScaleSyncManager(
         val stillPending = dao.pendingGarminUpload().size
         AppLog.i(
             "ScaleSyncManager",
-            "Синк весов завершён: новых=${pulled.size}, отправлено в Garmin=$uploaded, ожидают=$stillPending" +
-                if (!pushWanted) " (отправка в Garmin выключена или нет входа в Garmin)" else ""
+            "Синк весов завершён: новых=$newRows, отправлено в Garmin=$uploaded, ожидают=$stillPending" +
+                (if (!pushWanted) " (отправка в Garmin выключена или нет входа в Garmin)" else "") +
+                (if (problems.isNotEmpty()) "; проблемы: ${problems.joinToString("; ")}" else "")
         )
-        return State.Success(pulled.size, uploaded, stillPending, System.currentTimeMillis()).also { _state.value = it }
+        return State.Success(
+            newRows, uploaded, stillPending, System.currentTimeMillis(),
+            problems.takeIf { it.isNotEmpty() }?.joinToString("; ")
+        ).also { _state.value = it }
+    }
+
+    /**
+     * Upserts [rows], dropping cross-source duplicates and preserving upload stamps.
+     * Returns how many were not in the table before.
+     */
+    private suspend fun store(rows: List<ScaleMeasurement>): Int {
+        if (rows.isEmpty()) return 0
+        val dao = database.scaleMeasurementDao()
+        val window = DUPLICATE_WINDOW.toMillis()
+        val existing = dao.stampsBetween(
+            rows.minOf { it.timestampMillis } - window,
+            rows.maxOf { it.timestampMillis } + window
+        )
+        val exactKeys = existing.map { it.timestampMillis }.toHashSet()
+        val uploaded = dao.uploadedTimestamps().associate { it.timestampMillis to it.garminUploadedAtMillis }
+
+        val kept = rows.filter { row ->
+            row.timestampMillis in exactKeys || existing.none { other ->
+                other.source != row.source && abs(other.timestampMillis - row.timestampMillis) <= window
+            }
+        }
+        val dropped = rows.size - kept.size
+        if (dropped > 0) AppLog.d("ScaleSyncManager", "Пропущено как дубликаты другого источника: $dropped")
+
+        dao.upsertAll(kept.map { it.copy(garminUploadedAtMillis = uploaded[it.timestampMillis] ?: 0L) })
+        return kept.count { it.timestampMillis !in exactKeys }
+    }
+
+    private companion object {
+        const val KEY_UPLOAD_TO_GARMIN = "upload_to_garmin"
+
+        /** First read: as far back as Health Connect will go. */
+        val HC_FIRST_WINDOW: Duration = Duration.ofDays(3 * 365)
+
+        /** Later reads: behind the latest stored row, to catch Google Fit's late forwarding. */
+        val HC_RESYNC_OVERLAP: Duration = Duration.ofDays(14)
+
+        /** Two records this close from different sources are one step onto the scale. */
+        val DUPLICATE_WINDOW: Duration = Duration.ofMinutes(3)
     }
 }

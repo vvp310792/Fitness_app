@@ -57,7 +57,7 @@ data class ScaleMeasurement(
     /** Xiaomi `bodyStyle`, a 1-9 physique classification - same scale Garmin calls physique rating. */
     val physiqueRating: Int = 0,
     val impedance: Int = 0,
-    /** Scale MAC without colons, as Zepp reports it. */
+    /** Zepp: scale MAC without colons. Health Connect: package name of the app that wrote the record. */
     val deviceId: String = "",
     val source: String = SOURCE_ZEPP,
     /** When this row was pushed to Garmin; 0 = not (yet) uploaded. */
@@ -68,7 +68,11 @@ data class ScaleMeasurement(
     val isUploadedToGarmin: Boolean get() = garminUploadedAtMillis > 0
 
     companion object {
+        /** Read out of the Zepp Life cloud directly (scale/ZeppApiClient.kt). */
         const val SOURCE_ZEPP = "zepp"
+
+        /** Read from Health Connect (health/HealthConnectScaleReader.kt) - the primary path. */
+        const val SOURCE_HEALTH_CONNECT = "health_connect"
     }
 }
 
@@ -93,6 +97,16 @@ interface ScaleMeasurementDao {
     @Query("SELECT MAX(timestampMillis) FROM scale_measurements")
     suspend fun latestTimestamp(): Long?
 
+    @Query("SELECT MAX(timestampMillis) FROM scale_measurements WHERE source = :source")
+    suspend fun latestTimestampForSource(source: String): Long?
+
+    /** Instants already stored in a window, with their source - to keep two sources from storing one weigh-in twice. */
+    @Query("SELECT timestampMillis, source FROM scale_measurements WHERE timestampMillis BETWEEN :fromMillis AND :toMillis")
+    suspend fun stampsBetween(fromMillis: Long, toMillis: Long): List<SourceStamp>
+
+    @Query("SELECT * FROM scale_measurements ORDER BY timestampMillis DESC LIMIT 1")
+    fun observeLatest(): Flow<ScaleMeasurement?>
+
     /** Rows still to be pushed to Garmin, oldest first so a partial upload leaves a contiguous history. */
     @Query("SELECT * FROM scale_measurements WHERE garminUploadedAtMillis = 0 ORDER BY timestampMillis ASC")
     suspend fun pendingGarminUpload(): List<ScaleMeasurement>
@@ -108,6 +122,12 @@ interface ScaleMeasurementDao {
     @Query("UPDATE scale_measurements SET garminUploadedAtMillis = :atMillis WHERE timestampMillis IN (:timestamps)")
     suspend fun markUploaded(timestamps: List<Long>, atMillis: Long)
 }
+
+/** Projection for [ScaleMeasurementDao.stampsBetween]. */
+data class SourceStamp(
+    val timestampMillis: Long,
+    val source: String
+)
 
 /** Projection for [ScaleMeasurementDao.uploadedTimestamps]. */
 data class UploadedStamp(

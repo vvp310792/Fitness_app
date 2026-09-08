@@ -73,7 +73,7 @@ fun SettingsScreen(app: FitnessSummaryApp) {
         item { HealthConnectSection(app) }
         item { SyncSection(app) }
         item { GarminSection(app) }
-        item { ZeppSection(app) }
+        item { ScaleSection(app) }
         item { LogsSection() }
         item { AccountSection(app) }
         item { ExportSection(app) }
@@ -825,15 +825,236 @@ private fun AboutSection() {
 private enum class ZeppUiState { LOGGED_OUT, LOGGED_IN }
 
 /**
- * Login for the Mi Body Composition Scale via the Zepp Life cloud (scale/ZeppAuthClient.kt)
- * and the switch for the one thing this app writes to Garmin - pushing those weigh-ins in.
- * Two facts the user must know before pressing "Войти", both stated on the card: logging
- * in here signs the phone's Zepp Life app out (Xiaomi keeps one session per app), and
- * a Xiaomi account with 2FA or a captcha challenge cannot be logged into from here.
+ * The scale card: where weigh-ins come from, whether they can be read, and the switch for
+ * the one thing this app writes to Garmin - pushing those weigh-ins in.
+ *
+ * The primary source is Health Connect, fed by Zepp Life through Google Fit - no login
+ * here, only a Health Connect permission, so the card's job is mostly diagnosis: is weight
+ * readable, and has anyone actually written weight into Health Connect lately. The Zepp
+ * Life cloud login is kept as an optional, folded-away second source.
  */
 @Composable
-private fun ZeppSection(app: FitnessSummaryApp) {
+private fun ScaleSection(app: FitnessSummaryApp) {
     val scope = rememberCoroutineScope()
+    var refreshKey by remember { mutableIntStateOf(0) }
+    var hcReadable by remember { mutableStateOf(false) }
+    var weightWriters by remember { mutableStateOf<List<String>?>(null) }
+    val hcAvailable = remember(refreshKey) { app.healthConnect.isAvailable }
+
+    LaunchedEffect(refreshKey) {
+        hcReadable = app.scaleSync.healthConnectReadable()
+        weightWriters = if (hcReadable) {
+            app.healthScaleReader.weightWriters(java.time.Instant.now().minus(java.time.Duration.ofDays(365)))
+        } else null
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = app.healthConnect.requestPermissionsContract()
+    ) {
+        refreshKey++
+        app.launchPersistent { if (app.scaleSync.hasAnySource()) app.scaleSync.sync() }
+    }
+
+    var uploadToGarmin by remember { mutableStateOf(app.scaleSync.uploadToGarmin) }
+    var showHelp by remember { mutableStateOf(false) }
+    var showZepp by remember { mutableStateOf(app.zeppAuth.isLoggedIn) }
+    val syncState by app.scaleSync.state.collectAsState()
+    val count by remember { app.database.scaleMeasurementDao().observeCount() }.collectAsState(initial = 0)
+    val latest by remember { app.database.scaleMeasurementDao().observeLatest() }.collectAsState(initial = null)
+    val palette = metricPalette()
+
+    InfoCard(title = "Весы · вес и состав тела") {
+        Text(
+            text = "Взвешивания умных весов (Mi Body Composition Scale и любых других) читаются из " +
+                "Health Connect — туда их отдаёт Google Fit, подключённый к Zepp Life. Отсюда они " +
+                "попадают на экран «День» и в «Тренды», а при включённом переключателе ниже — " +
+                "отправляются в Garmin Connect (единственное, что это приложение пишет в Garmin).",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        // ---- Health Connect: readable? written? -----------------------------------
+        when {
+            !hcAvailable -> Text(
+                text = "Health Connect недоступен на этом устройстве — см. секцию выше.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+            !hcReadable -> {
+                Row(modifier = Modifier.padding(top = 10.dp)) {
+                    Chip(text = "Вес из Health Connect: доступ не выдан", color = palette.calories)
+                }
+                Button(
+                    onClick = { permissionLauncher.launch(app.healthConnect.scalePermissions) },
+                    modifier = Modifier.padding(top = 8.dp)
+                ) {
+                    Text("Разрешить чтение веса")
+                }
+                Text(
+                    text = "Если окно с разрешениями не появляется — выдайте вес, жир, воду, костную " +
+                        "массу, базовый обмен и рост этому приложению прямо в настройках Health Connect.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+            else -> {
+                Row(modifier = Modifier.padding(top = 10.dp)) {
+                    Chip(text = "Вес из Health Connect: читается", color = palette.distance)
+                }
+                val writers = weightWriters
+                if (writers != null) {
+                    Text(
+                        text = if (writers.isEmpty()) {
+                            "За последний год в Health Connect никто не записал вес. Проверьте связку " +
+                                "Zepp Life → Google Fit → Health Connect — шаги ниже."
+                        } else {
+                            "Вес в Health Connect пишут: " + writers.joinToString { appName(it) }
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (writers.isEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                }
+            }
+        }
+
+        TextButton(onClick = { showHelp = !showHelp }) {
+            Text(if (showHelp) "Скрыть настройку связки" else "Как настроить связку Zepp Life → Health Connect")
+        }
+        if (showHelp) {
+            Text(
+                text = "1. Zepp Life → Профиль → Добавить аккаунты → Google Fit → войти в Google.\n" +
+                    "2. Google Fit → Профиль → Настройки → «Синхронизировать с Health Connect» — включить.\n" +
+                    "3. Health Connect → Разрешения приложений → Google Fit → разрешить запись веса " +
+                    "(и жира, если есть).\n" +
+                    "4. Встать на весы, открыть Zepp Life, затем Google Fit — данные доезжают до " +
+                    "Health Connect с задержкой до нескольких часов.\n" +
+                    "5. Здесь — «Разрешить чтение веса», затем «Синхронизировать».\n" +
+                    "Google Fit передаёт из Zepp Life вес и обычно процент жира; остальные показатели " +
+                    "состава тела по этому пути не проходят.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        // ---- what we have ----------------------------------------------------------
+        StatRow("Взвешиваний сохранено", count.toString())
+        latest?.let { m ->
+            StatRow(
+                "Последнее",
+                String.format(java.util.Locale.getDefault(), "%.1f кг", m.weightKg) + " · " + formatDateTime(m.timestampMillis)
+            )
+        }
+
+        when (val state = syncState) {
+            is ScaleSyncManager.State.Running -> Text(
+                text = state.step,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+            is ScaleSyncManager.State.Success -> {
+                Text(
+                    text = buildString {
+                        append("Новых взвешиваний: ${state.newMeasurements}")
+                        if (state.uploadedToGarmin > 0) append(", отправлено в Garmin: ${state.uploadedToGarmin}")
+                        if (state.pendingUpload > 0) append(", ждут отправки: ${state.pendingUpload}")
+                        append(" (${formatTime(state.atMillis)})")
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = palette.distance,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+                state.note?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+            is ScaleSyncManager.State.Failed -> Text(
+                text = state.reason,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+            ScaleSyncManager.State.Idle -> Unit
+        }
+
+        // ---- Garmin push -----------------------------------------------------------
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Отправлять вес в Garmin",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Switch(
+                checked = uploadToGarmin,
+                onCheckedChange = {
+                    uploadToGarmin = it
+                    app.scaleSync.uploadToGarmin = it
+                }
+            )
+        }
+        if (uploadToGarmin && !app.garminAuth.isLoggedIn) {
+            Text(
+                text = "Для отправки нужен вход в Garmin — секция выше.",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+
+        val running = syncState is ScaleSyncManager.State.Running
+        Button(
+            onClick = { app.launchPersistent { app.scaleSync.sync() } },
+            enabled = !running && (hcReadable || app.zeppAuth.isLoggedIn),
+            modifier = Modifier.padding(top = 6.dp)
+        ) {
+            Text("Синхронизировать")
+        }
+
+        // ---- optional: Zepp Life cloud directly ------------------------------------
+        TextButton(onClick = { showZepp = !showZepp }) {
+            Text(if (showZepp) "Скрыть Zepp Life напрямую" else "Zepp Life напрямую (необязательно)")
+        }
+        if (showZepp) {
+            ZeppLoginBlock(app, scope)
+        }
+    }
+}
+
+/** Human names for the packages that commonly write weight into Health Connect. */
+private fun appName(packageName: String): String = when (packageName) {
+    "com.google.android.apps.fitness" -> "Google Fit"
+    "com.xiaomi.hm.health" -> "Zepp Life"
+    "com.huami.watch.hmwatchmanager" -> "Zepp"
+    "com.xiaomi.wearable" -> "Mi Fitness"
+    "com.garmin.android.apps.connectmobile" -> "Garmin Connect"
+    "com.fitbit.FitbitMobile" -> "Fitbit"
+    "com.sec.android.app.shealth" -> "Samsung Health"
+    "com.google.android.apps.healthdata" -> "Health Connect"
+    else -> packageName
+}
+
+private fun formatDateTime(millis: Long): String =
+    java.time.Instant.ofEpochMilli(millis).atZone(java.time.ZoneId.systemDefault())
+        .format(java.time.format.DateTimeFormatter.ofPattern("d MMM HH:mm", java.util.Locale("ru")))
+
+/**
+ * Direct login to the Zepp Life cloud (scale/ZeppAuthClient.kt) - the optional second
+ * source. Two facts the user must know before pressing "Войти", both stated here: logging
+ * in signs the phone's Zepp Life app out (Xiaomi keeps one session per app), and a Xiaomi
+ * account with 2FA or a captcha challenge cannot be logged into from here.
+ */
+@Composable
+private fun ZeppLoginBlock(app: FitnessSummaryApp, scope: kotlinx.coroutines.CoroutineScope) {
     var uiState by remember {
         mutableStateOf(if (app.zeppAuth.isLoggedIn) ZeppUiState.LOGGED_IN else ZeppUiState.LOGGED_OUT)
     }
@@ -841,149 +1062,75 @@ private fun ZeppSection(app: FitnessSummaryApp) {
     var password by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
-    var uploadToGarmin by remember { mutableStateOf(app.zeppTokenStore.uploadToGarmin) }
-    val syncState by app.scaleSync.state.collectAsState()
-    val count by remember { app.database.scaleMeasurementDao().observeCount() }.collectAsState(initial = 0)
 
-    InfoCard(title = "Весы Mi (Zepp Life)") {
+    Text(
+        text = "Чтение из облака Zepp Life по аккаунту Xiaomi даёт полный состав тела (белок, " +
+            "оценка тела, импеданс), но не обязательно: вес и жир приходят и через Health Connect. " +
+            "Внимание: вход здесь разлогинит Zepp Life на телефоне — Xiaomi держит одну сессию на " +
+            "приложение. Аккаунт с двухфакторной защитой или капчей войти отсюда не сможет.",
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
+    errorText?.let {
         Text(
-            text = "Взвешивания Mi Body Composition Scale читаются из облака Zepp Life по " +
-                "аккаунту Xiaomi — тем же способом, что и приложение Zepp Life. Оттуда они " +
-                "попадают на экран «День» и в «Тренды», а при включённом переключателе ниже — " +
-                "отправляются в Garmin Connect (единственное, что это приложение пишет в Garmin). " +
-                "Внимание: вход здесь разлогинит Zepp Life на телефоне — Xiaomi держит одну " +
-                "сессию на приложение. Аккаунт с двухфакторной защитой войти отсюда не сможет.",
+            text = it,
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(top = 8.dp)
         )
+    }
 
-        errorText?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(top = 8.dp)
+    when (uiState) {
+        ZeppUiState.LOGGED_OUT -> {
+            OutlinedTextField(
+                value = account,
+                onValueChange = { account = it },
+                label = { Text("Аккаунт Xiaomi (email или телефон)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
             )
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it },
+                label = { Text("Пароль Xiaomi") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            )
+            Button(
+                onClick = {
+                    errorText = null
+                    busy = true
+                    scope.launch {
+                        when (val result = app.zeppAuth.login(account.trim(), password)) {
+                            is ZeppLoginResult.Success -> {
+                                password = ""
+                                uiState = ZeppUiState.LOGGED_IN
+                                app.launchPersistent { app.scaleSync.sync() }
+                            }
+                            is ZeppLoginResult.Failed -> errorText = "Не удалось войти: ${result.reason}"
+                        }
+                        busy = false
+                    }
+                },
+                enabled = !busy && account.isNotBlank() && password.isNotBlank(),
+                modifier = Modifier.padding(top = 10.dp)
+            ) {
+                Text(if (busy) "Вхожу..." else "Войти через Xiaomi")
+            }
         }
 
-        when (uiState) {
-            ZeppUiState.LOGGED_OUT -> {
-                OutlinedTextField(
-                    value = account,
-                    onValueChange = { account = it },
-                    label = { Text("Аккаунт Xiaomi (email или телефон)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
-                )
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("Пароль Xiaomi") },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-                )
-                Button(
-                    onClick = {
-                        errorText = null
-                        busy = true
-                        scope.launch {
-                            when (val result = app.zeppAuth.login(account.trim(), password)) {
-                                is ZeppLoginResult.Success -> {
-                                    password = ""
-                                    uiState = ZeppUiState.LOGGED_IN
-                                    app.launchPersistent { app.scaleSync.sync() }
-                                }
-                                is ZeppLoginResult.Failed -> errorText = "Не удалось войти: ${result.reason}"
-                            }
-                            busy = false
-                        }
-                    },
-                    enabled = !busy && account.isNotBlank() && password.isNotBlank(),
-                    modifier = Modifier.padding(top = 10.dp)
-                ) {
-                    Text(if (busy) "Вхожу..." else "Войти через Xiaomi")
+        ZeppUiState.LOGGED_IN -> {
+            StatRow("Аккаунт Zepp Life", app.zeppAuth.savedAccount ?: "Xiaomi")
+            TextButton(
+                onClick = {
+                    app.zeppAuth.logout()
+                    uiState = ZeppUiState.LOGGED_OUT
+                    account = ""
                 }
-            }
-
-            ZeppUiState.LOGGED_IN -> {
-                StatRow("Аккаунт", app.zeppAuth.savedAccount ?: "Xiaomi")
-                StatRow("Взвешиваний загружено", count.toString())
-
-                when (val state = syncState) {
-                    is ScaleSyncManager.State.Running -> Text(
-                        text = state.step,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 6.dp)
-                    )
-                    is ScaleSyncManager.State.Success -> Text(
-                        text = buildString {
-                            append("Новых взвешиваний: ${state.newMeasurements}")
-                            if (state.uploadedToGarmin > 0) append(", отправлено в Garmin: ${state.uploadedToGarmin}")
-                            if (state.pendingUpload > 0) append(", ждут отправки: ${state.pendingUpload}")
-                            append(" (${formatTime(state.atMillis)})")
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = metricPalette().distance,
-                        modifier = Modifier.padding(top = 6.dp)
-                    )
-                    is ScaleSyncManager.State.Failed -> Text(
-                        text = state.reason,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(top = 6.dp)
-                    )
-                    ScaleSyncManager.State.Idle -> Unit
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Отправлять вес в Garmin",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Switch(
-                        checked = uploadToGarmin,
-                        onCheckedChange = {
-                            uploadToGarmin = it
-                            app.zeppTokenStore.uploadToGarmin = it
-                        }
-                    )
-                }
-                if (uploadToGarmin && !app.garminAuth.isLoggedIn) {
-                    Text(
-                        text = "Для отправки нужен вход в Garmin — секция выше.",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-
-                val running = syncState is ScaleSyncManager.State.Running
-                Row(
-                    modifier = Modifier.padding(top = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = { app.launchPersistent { app.scaleSync.sync() } },
-                        enabled = !running
-                    ) {
-                        Text("Синхронизировать")
-                    }
-                    TextButton(
-                        onClick = {
-                            app.zeppAuth.logout()
-                            uiState = ZeppUiState.LOGGED_OUT
-                            account = ""
-                        }
-                    ) {
-                        Text("Выйти")
-                    }
-                }
+            ) {
+                Text("Выйти из Zepp Life")
             }
         }
     }

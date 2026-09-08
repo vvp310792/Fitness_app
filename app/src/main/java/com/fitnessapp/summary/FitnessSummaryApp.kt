@@ -15,6 +15,7 @@ import com.fitnessapp.summary.scale.ZeppApiClient
 import com.fitnessapp.summary.scale.ZeppAuthClient
 import com.fitnessapp.summary.scale.ZeppTokenStore
 import com.fitnessapp.summary.health.HealthConnectManager
+import com.fitnessapp.summary.health.HealthConnectScaleReader
 import com.fitnessapp.summary.health.HealthConnectReader
 import com.fitnessapp.summary.health.HealthSyncManager
 import com.fitnessapp.summary.sync.AuthManager
@@ -82,14 +83,26 @@ class FitnessSummaryApp : Application() {
     private val garminApi: GarminApiClient by lazy { GarminApiClient(garminAuth) }
     val garminSync: GarminSyncManager by lazy { GarminSyncManager(garminApi, database) }
 
-    // Mi Body Composition Scale via the Zepp Life cloud (scale/), and the one write this
-    // app makes to Garmin - pushing those weigh-ins in. See scale/ScaleSyncManager.kt.
+    // Smart-scale weigh-ins (scale/): primarily out of Health Connect, where Zepp Life
+    // lands via Google Fit; optionally straight from the Zepp Life cloud. And the one
+    // write this app makes to Garmin - pushing those weigh-ins in. See scale/ScaleSyncManager.kt.
     val zeppTokenStore: ZeppTokenStore by lazy { ZeppTokenStore(this) }
     val zeppAuth: ZeppAuthClient by lazy { ZeppAuthClient(zeppTokenStore) }
     private val zeppApi: ZeppApiClient by lazy { ZeppApiClient(zeppAuth) }
+    val healthScaleReader: HealthConnectScaleReader by lazy { HealthConnectScaleReader(healthConnect) }
     private val garminWeightUploader: GarminWeightUploader by lazy { GarminWeightUploader(garminAuth) }
     val scaleSync: ScaleSyncManager by lazy {
-        ScaleSyncManager(zeppApi, zeppTokenStore, garminAuth, garminApi, garminWeightUploader, database)
+        ScaleSyncManager(
+            context = this,
+            healthConnect = healthConnect,
+            healthReader = healthScaleReader,
+            zeppApi = zeppApi,
+            zeppTokens = zeppTokenStore,
+            garminAuth = garminAuth,
+            garminApi = garminApi,
+            uploader = garminWeightUploader,
+            database = database
+        )
     }
 
     private val appScope = CoroutineScope(Dispatchers.IO)

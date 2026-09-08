@@ -32,7 +32,9 @@ class MainActivity : ComponentActivity() {
                 app.garminSync.syncRecent()
             }
             // After Garmin, so a weigh-in pushed to Garmin here is re-read in the same run.
-            if (app.zeppAuth.isLoggedIn) {
+            // Runs whenever there is any scale source: weight readable from Health Connect
+            // (Zepp Life -> Google Fit -> Health Connect) or a Zepp Life login.
+            if (app.scaleSync.hasAnySource()) {
                 app.scaleSync.sync()
             }
         }
