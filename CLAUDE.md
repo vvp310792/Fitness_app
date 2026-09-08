@@ -679,6 +679,19 @@ FileProvider-паттерн, что и `export/DataExporter`)/«Очистить
   обмен — отдельные типы записей с близкими, но не равными метками времени; собирать по
   окну (±10 мин вокруг `WeightRecord`), не по равенству `time`. Вода — масса в кг, не
   процент; lean body mass — не мышечная масса
+- **Подключение Google Fit к Health Connect ломает подсчёт активности, если не сузить
+  источник.** Реальный кейс: после подключения Google Fit (ради веса с весов) шаги в
+  приложении показали 19350 против 10787 в самом Garmin Connect. Причина —
+  `client.aggregate(StepsRecord.COUNT_TOTAL, ...)` без `dataOriginFilter` суммирует
+  записи ВСЕХ приложений, писавших в Health Connect за окно, а не только Garmin; Google
+  Fit пишет свои шаги с шагомера телефона поверх часовых, и Health Connect их не
+  дедуплицирует. Лечится `AggregateRequest`/`ReadRecordsRequest(dataOriginFilter = ...)`
+  с `DataOrigin("com.garmin.android.apps.connectmobile")` — `HealthConnectReader` сузил
+  им шаги, дистанцию, калории, пульс (оба типа), сон и тренировки
+  (`HealthConnectReader.garminOrigin`, пакет — `HealthConnectManager.GARMIN_PACKAGE`).
+  Вес и состав тела — единственное намеренное исключение: там источники нужны все, и
+  `HealthConnectScaleReader`/`ScaleSyncManager` дедуплицируют сами, на уровне приложения,
+  а не полагаются на Health Connect
 - **Garmin FIT SDK масштабирует сам.** `WeightScaleMesg.setWeight(64.7f)` — это кг,
   а не кг×100; Go-библиотека у референса требовала ручного масштабирования, и
   бездумный перенос дал бы вес 6470 кг. Проверено по сигнатурам `javap`

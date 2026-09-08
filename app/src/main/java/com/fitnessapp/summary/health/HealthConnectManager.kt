@@ -175,6 +175,16 @@ class HealthConnectManager(private val context: Context) {
     companion object {
         const val HEALTH_CONNECT_PACKAGE = "com.google.android.apps.healthdata"
 
+        /**
+         * The one data origin [HealthConnectReader] trusts for daily activity (steps,
+         * distance, calories, heart rate, workouts). See its class doc for why: any other
+         * app that also writes these record types into Health Connect - Google Fit's own
+         * phone-pedometer step count is the real case that surfaced this, once the user
+         * connected it for [HealthConnectScaleReader] - would otherwise be summed right
+         * alongside Garmin's, inflating every total past what Garmin itself shows.
+         */
+        const val GARMIN_PACKAGE = "com.garmin.android.apps.connectmobile"
+
         /** Android 13 and below: broadcast-handled by the standalone Health Connect app. */
         const val ACTION_HEALTH_CONNECT_SETTINGS = "androidx.health.ACTION_HEALTH_CONNECT_SETTINGS"
 

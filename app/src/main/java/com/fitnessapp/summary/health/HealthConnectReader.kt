@@ -9,6 +9,7 @@ import androidx.health.connect.client.records.RestingHeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
+import androidx.health.connect.client.records.metadata.DataOrigin
 import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
@@ -41,6 +42,16 @@ data class DayReadResult(
  *    other tracker) reports it - attributing it to Monday would make "how did I
  *    sleep last night" answer with the wrong night.
  *
+ * 3. **Every read here is scoped to Garmin's own records** ([garminOrigin]) - real
+ *    bug, not a hypothetical: a user who connected Google Fit to Health Connect
+ *    (for the scale pipeline - [HealthConnectScaleReader]) got a step total of
+ *    19350 in the app against 10787 in Garmin Connect itself, because Google Fit
+ *    also writes StepsRecord from the phone's own pedometer, and an unscoped
+ *    `StepsRecord.COUNT_TOTAL` aggregate sums every app's records in the window,
+ *    not just Garmin's. Weight/body composition is the one deliberate exception -
+ *    that section wants every source and merges them explicitly, because Garmin
+ *    doesn't write most of it at all.
+ *
  * Each section is independently guarded: with a partially granted permission set,
  * reading what we *can* read beats failing the whole day. A denied read leaves its
  * fields at 0, which the rest of the app already treats as "no data".
@@ -48,6 +59,13 @@ data class DayReadResult(
 class HealthConnectReader(private val manager: HealthConnectManager) {
 
     private val zone: ZoneId get() = ZoneId.systemDefault()
+
+    /**
+     * Daily activity is scoped to Garmin's own records - see [HealthConnectManager.GARMIN_PACKAGE].
+     * Weight/body composition ([HealthConnectScaleReader]) deliberately does NOT use this:
+     * that section wants every source, Garmin included, and merges them explicitly.
+     */
+    private val garminOrigin = setOf(DataOrigin(HealthConnectManager.GARMIN_PACKAGE))
 
     suspend fun readDay(date: LocalDate): DayReadResult? {
         val client = manager.clientOrNull() ?: run {
@@ -118,7 +136,8 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
                     TotalCaloriesBurnedRecord.ENERGY_TOTAL,
                     DistanceRecord.DISTANCE_TOTAL
                 ),
-                timeRangeFilter = TimeRangeFilter.between(start, end)
+                timeRangeFilter = TimeRangeFilter.between(start, end),
+                dataOriginFilter = garminOrigin
             )
         )
         Movement(
@@ -151,7 +170,8 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
             val result = client.aggregate(
                 AggregateRequest(
                     metrics = setOf(HeartRateRecord.BPM_AVG, HeartRateRecord.BPM_MIN, HeartRateRecord.BPM_MAX),
-                    timeRangeFilter = range
+                    timeRangeFilter = range,
+                    dataOriginFilter = garminOrigin
                 )
             )
             Triple(
@@ -167,7 +187,8 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
             val result = client.aggregate(
                 AggregateRequest(
                     metrics = setOf(RestingHeartRateRecord.BPM_AVG),
-                    timeRangeFilter = range
+                    timeRangeFilter = range,
+                    dataOriginFilter = garminOrigin
                 )
             )
             result[RestingHeartRateRecord.BPM_AVG]?.toInt() ?: 0
@@ -198,7 +219,8 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
             val sessions = client.readRecords(
                 ReadRecordsRequest(
                     recordType = SleepSessionRecord::class,
-                    timeRangeFilter = TimeRangeFilter.between(windowStart, windowEnd)
+                    timeRangeFilter = TimeRangeFilter.between(windowStart, windowEnd),
+                    dataOriginFilter = garminOrigin
                 )
             ).records.filter { it.endTime.atZone(zone).toLocalDate() == date }
 
@@ -254,7 +276,8 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
         val sessions = client.readRecords(
             ReadRecordsRequest(
                 recordType = ExerciseSessionRecord::class,
-                timeRangeFilter = TimeRangeFilter.between(dayStart, dayEnd)
+                timeRangeFilter = TimeRangeFilter.between(dayStart, dayEnd),
+                dataOriginFilter = garminOrigin
             )
         ).records
 
@@ -274,7 +297,8 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
                             HeartRateRecord.BPM_AVG,
                             HeartRateRecord.BPM_MAX
                         ),
-                        timeRangeFilter = sessionRange
+                        timeRangeFilter = sessionRange,
+                        dataOriginFilter = garminOrigin
                     )
                 )
             }
