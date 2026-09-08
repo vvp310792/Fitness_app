@@ -141,8 +141,6 @@ fun TrendsScreen(app: FitnessSummaryApp) {
             }
         }
 
-        strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
-
         if (nothingFromGarmin) {
             item {
                 EmptyState(
@@ -157,6 +155,8 @@ fun TrendsScreen(app: FitnessSummaryApp) {
                     }
                 )
             }
+            // The gym log is a separate source: no Garmin data is no reason to hide it.
+            strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
             return@LazyColumn
         }
 
@@ -211,6 +211,8 @@ fun TrendsScreen(app: FitnessSummaryApp) {
 
         val weightPoints = LifestyleAnalytics.weightTrend(weights, scaleWeights)
         if (weightPoints.isNotEmpty()) trendCard("Вес, кг", weightPoints, fromEpoch, toEpoch, palette.weight, smoothWindow) { formatDecimal(it) }
+
+        strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
 
         item {
             Text(

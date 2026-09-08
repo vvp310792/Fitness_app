@@ -97,7 +97,10 @@ class WorkoutLogParserTest {
         assertEquals(StrengthLift.DEADLIFT, StrengthLift.match("Становая тяга со штангой"))
         assertNull(StrengthLift.match("Жим ногами"))
         assertNull(StrengthLift.match("Тяга на нижнем блоке"))
-        assertNull(StrengthLift.match("Отжимания на брусьях"))
+        assertEquals(StrengthLift.DIPS, StrengthLift.match("Отжимания на брусьях"))
+        // Neighbours in the same log that are NOT dips.
+        assertNull(StrengthLift.match("Отжимания"))
+        assertNull(StrengthLift.match("Отжимания от скамьи из-за спины"))
     }
 
     @Test

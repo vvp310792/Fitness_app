@@ -5,8 +5,8 @@ import kotlin.math.roundToInt
 
 /**
  * The base lifts whose numbers the user actually tracks. Everything else in the imported
- * log (curls, dips, machines, abs) is stored but never charted - six lines that mean
- * something beat thirty that don't.
+ * log (curls, machines, abs, accessory work) is stored but never charted - seven lines
+ * that mean something beat thirty that don't.
  *
  * Matching is by keyword against the log's own exercise names, not by exact string,
  * because the source app spells them out in full ("Жим штанги лёжа средним хватом") and
@@ -21,7 +21,8 @@ enum class StrengthLift(val key: String, val title: String) {
     BENCH("bench", "Жим лёжа"),
     OVERHEAD("overhead", "Армейский жим"),
     ROW("row", "Тяга в наклоне"),
-    PULL_UP("pullup", "Подтягивания");
+    PULL_UP("pullup", "Подтягивания"),
+    DIPS("dips", "Отжимания на брусьях");
 
     companion object {
         fun byKey(key: String): StrengthLift? = entries.firstOrNull { it.key == key }
@@ -37,6 +38,9 @@ enum class StrengthLift(val key: String, val title: String) {
                 name.contains("становая") -> DEADLIFT
                 name.contains("присед") -> SQUAT
                 name.contains("подтягивания") || name.contains("подтягивание") -> PULL_UP
+                // "брусь" only: the log also holds "Отжимания" and "Отжимания от скамьи
+                // из-за спины", which are different exercises with different numbers.
+                name.contains("брусь") -> DIPS
                 name.contains("жим") && name.contains("леж") -> BENCH
                 name.contains("армейский") || (name.contains("жим") && name.contains("стоя")) -> OVERHEAD
                 name.contains("тяга") && name.contains("наклон") -> ROW
@@ -69,8 +73,8 @@ data class LiftSession(
  * (estimated), and what the work is actually being done at.
  *
  * Both are rules, both are arguable, and both were checked against the user's real log
- * (519 sessions of the six lifts, 2021-2026) rather than picked from a textbook and hoped
- * for - see the notes on each below.
+ * (519 sessions of the tracked lifts, 2021-2026) rather than picked from a textbook and
+ * hoped for - see the notes on each below.
  */
 object StrengthAnalytics {
 
