@@ -41,9 +41,17 @@ data class StrengthSet(
     /** Exercise name exactly as the log spells it - the audit trail for [lift]. */
     val exerciseName: String,
     /**
-     * Which of the tracked base lifts this is, or "" for everything else. Resolved at
-     * import by [com.fitnessapp.summary.analytics.StrengthLift.match]; the raw name stays
-     * alongside so a mapping fix is a re-import, not a lost row.
+     * Which tracked base lift this was at import time, or "" - a **denormalised copy**,
+     * not the source of truth. Nothing that draws a chart may filter on it.
+     *
+     * This is a scar: adding dips to the tracked lifts left every already-imported row
+     * of "Отжимания на брусьях" marked "", the query filtered on this column, and the
+     * exercise silently did not appear until the file was imported again. Derived data in
+     * a row is only ever as fresh as the last write to that row. The mapping now lives
+     * where it belongs - resolved from [exerciseName] at read time, by
+     * [com.fitnessapp.summary.analytics.StrengthLift.match] - and this column is kept
+     * only as a hint in the export and as an index for anything that legitimately wants a
+     * coarse pre-filter.
      */
     val lift: String,
     /** 1-based position within the exercise, as printed in the log. */
@@ -60,12 +68,18 @@ interface StrengthSetDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(rows: List<StrengthSet>)
 
-    /** Only the tracked lifts, which is all the strength screen ever draws. */
+    /**
+     * Every set in the window, tracked lift or not. Deliberately NOT filtered on [StrengthSet.lift]:
+     * that column is only as current as the last import, and filtering on it is exactly
+     * how dips stayed invisible after being added to the catalogue. Which sets matter is
+     * decided in Kotlin from the exercise name - a few thousand rows over five years,
+     * cheap enough that correctness wins.
+     */
     @Query(
-        "SELECT * FROM strength_sets WHERE lift != '' AND dateEpochDay BETWEEN :fromEpochDay AND :toEpochDay " +
+        "SELECT * FROM strength_sets WHERE dateEpochDay BETWEEN :fromEpochDay AND :toEpochDay " +
             "ORDER BY startMillis ASC, setIndex ASC"
     )
-    fun observeTrackedRange(fromEpochDay: Long, toEpochDay: Long): Flow<List<StrengthSet>>
+    fun observeRange(fromEpochDay: Long, toEpochDay: Long): Flow<List<StrengthSet>>
 
     @Query("SELECT * FROM strength_sets ORDER BY startMillis ASC, setIndex ASC")
     suspend fun getAllOnce(): List<StrengthSet>

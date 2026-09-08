@@ -3,6 +3,7 @@ package com.fitnessapp.summary.export
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
+import com.fitnessapp.summary.analytics.StrengthLift
 import com.fitnessapp.summary.data.AppDatabase
 import com.fitnessapp.summary.data.SummaryRepository
 import com.fitnessapp.summary.data.WorkoutRepository
@@ -349,7 +350,8 @@ object DataExporter {
                         putDate(set.dateEpochDay)
                         put("start", DateTimeFormatter.ISO_INSTANT.format(Instant.ofEpochMilli(set.startMillis)))
                         put("exercise", set.exerciseName)
-                        put("lift", set.lift)
+                        // Live mapping, not the copy frozen into the row at import time.
+                        put("lift", StrengthLift.match(set.exerciseName)?.key.orEmpty())
                         put("setIndex", set.setIndex)
                         put("weightKg", set.weightKg.toDouble())
                         put("reps", set.reps)

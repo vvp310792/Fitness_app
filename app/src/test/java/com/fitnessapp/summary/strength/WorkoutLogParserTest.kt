@@ -131,6 +131,16 @@ class WorkoutLogParserTest {
     }
 
     @Test
+    fun `a lift added after the import still shows up without re-importing`() {
+        // The regression that shipped: rows imported before dips existed carry lift="",
+        // and anything filtering on that column loses them for good. Analytics must map
+        // from the exercise name, so an old row is picked up by a new catalogue entry.
+        val stale = parse().sets.map { it.copy(lift = "") }
+        assertEquals(1, StrengthAnalytics.sessionsOf(stale, StrengthLift.SQUAT).size)
+        assertEquals(1, StrengthAnalytics.sessionsOf(stale, StrengthLift.PULL_UP).size)
+    }
+
+    @Test
     fun `sets past the rep cap do not produce a one-rep-max estimate`() {
         assertEquals(0f, StrengthAnalytics.estimateOneRm(60f, 20), 0.001f)
         assertEquals(60f, StrengthAnalytics.estimateOneRm(60f, 1), 0.001f)

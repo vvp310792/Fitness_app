@@ -141,9 +141,14 @@ object StrengthAnalytics {
      * a lift done twice in one session (a variant switch, a second exercise mapping to
      * the same lift) becomes one session, which is what the trend line wants - one day,
      * one point.
+     *
+     * Matching is done here, from the exercise name, and NOT from the stored
+     * [StrengthSet.lift]: that copy is frozen at import time, so a lift added to the
+     * catalogue later would be missing from every row already in the database. That is
+     * not hypothetical - it is what happened when dips were added.
      */
     fun sessionsOf(sets: List<StrengthSet>, lift: StrengthLift): List<LiftSession> =
-        sets.filter { it.lift == lift.key }
+        sets.filter { StrengthLift.match(it.exerciseName) == lift }
             .groupBy { it.startMillis }
             .toSortedMap()
             .values

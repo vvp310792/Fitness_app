@@ -94,7 +94,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     val activities by remember(windowDays) { app.database.garminActivityDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val healthDays by remember(windowDays) { app.summaryRepository.observeRange(from, today) }.collectAsState(initial = emptyList())
     val scaleWeights by remember(windowDays) { app.database.scaleMeasurementDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
-    val strengthSets by remember(windowDays) { app.database.strengthSetDao().observeTrackedRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
+    val strengthSets by remember(windowDays) { app.database.strengthSetDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
 
     // Sessions per lift, recomputed only when the imported sets or the window change.
     val liftSessions = remember(strengthSets) {
