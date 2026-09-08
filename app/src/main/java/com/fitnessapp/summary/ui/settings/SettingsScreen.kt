@@ -3,6 +3,7 @@ package com.fitnessapp.summary.ui.settings
 import android.content.ActivityNotFoundException
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -857,6 +858,13 @@ private fun ScaleSection(app: FitnessSummaryApp) {
 
     var uploadToGarmin by remember { mutableStateOf(app.scaleSync.uploadToGarmin) }
     var showHelp by remember { mutableStateOf(false) }
+    var showImport by remember { mutableStateOf(false) }
+    var archivePassword by remember { mutableStateOf("") }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            app.launchPersistent { app.scaleSync.importFrom(uri, archivePassword.takeIf { it.isNotBlank() }) }
+        }
+    }
     var showZepp by remember { mutableStateOf(app.zeppAuth.isLoggedIn) }
     val syncState by app.scaleSync.state.collectAsState()
     val count by remember { app.database.scaleMeasurementDao().observeCount() }.collectAsState(initial = 0)
@@ -1018,6 +1026,39 @@ private fun ScaleSection(app: FitnessSummaryApp) {
             modifier = Modifier.padding(top = 6.dp)
         ) {
             Text("Синхронизировать")
+        }
+
+        // ---- import of the Zepp Life data export -----------------------------------
+        TextButton(onClick = { showImport = !showImport }) {
+            Text(if (showImport) "Скрыть импорт истории" else "Импорт всей истории из файла Zepp Life")
+        }
+        if (showImport) {
+            Text(
+                text = "Health Connect отдаёт только то, что Google Fit переслал после подключения. " +
+                    "Всю историю до этого можно взять из выгрузки Zepp Life:\n" +
+                    "1. Zepp Life → Профиль → ⚙ Настройки → Аккаунт и безопасность → Экспорт данных.\n" +
+                    "2. На почту аккаунта придёт архив .zip и пароль к нему — сохраните архив в телефон.\n" +
+                    "3. Введите пароль ниже и выберите этот .zip (или файл BODY_*.csv, если распаковали сами).\n" +
+                    "Взвешивания, которые уже есть, не задвоятся — ни здесь, ни в Garmin. Из выгрузки " +
+                    "приходят вес, ИМТ, жир, вода, костная масса, мышечная масса, базовый обмен и " +
+                    "висцеральный жир; белка, оценки тела и импеданса в файле нет.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = archivePassword,
+                onValueChange = { archivePassword = it },
+                label = { Text("Пароль архива (из письма Zepp)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            )
+            Button(
+                onClick = { importLauncher.launch(arrayOf("*/*")) },
+                enabled = !running,
+                modifier = Modifier.padding(top = 8.dp)
+            ) {
+                Text("Выбрать файл выгрузки")
+            }
         }
 
         // ---- optional: Zepp Life cloud directly ------------------------------------

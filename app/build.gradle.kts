@@ -102,6 +102,16 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        unitTests {
+            // JVM unit tests run against a stub android.jar whose every method throws.
+            // The parsers under test are plain Kotlin, but they log through AppLog ->
+            // android.util.Log, which would fail the test for a reason that has nothing
+            // to do with what it checks.
+            isReturnDefaultValues = true
+        }
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -181,6 +191,13 @@ dependencies {
     // (definition messages, scaled fields, CRC) is exactly the kind of thing not worth
     // hand-rolling when the format's owner publishes the encoder on Maven Central.
     implementation("com.garmin:fit:21.214.0")
+
+    // Reads the password-protected .zip that Zepp Life mails as a data export
+    // (see scale/ZeppExportParser.kt). Those archives use WinZip AES, which
+    // java.util.zip cannot open at all - it fails with "unsupported compression
+    // method 99" - so the alternative would be making the user unzip by hand on
+    // the phone, which most Android file managers also cannot do.
+    implementation("net.lingala.zip4j:zip4j:2.11.5")
 
     // Encrypted on-device storage for the Garmin OAuth1 token (see garmin/GarminAuthClient.kt).
     // The Garmin *password* is never stored anywhere, only ever held in memory for the

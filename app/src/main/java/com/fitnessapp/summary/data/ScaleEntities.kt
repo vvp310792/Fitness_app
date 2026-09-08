@@ -73,6 +73,9 @@ data class ScaleMeasurement(
 
         /** Read from Health Connect (health/HealthConnectScaleReader.kt) - the primary path. */
         const val SOURCE_HEALTH_CONNECT = "health_connect"
+
+        /** Imported from a Zepp Life data export file (scale/ZeppExportParser.kt). */
+        const val SOURCE_ZEPP_FILE = "zepp_file"
     }
 }
 
