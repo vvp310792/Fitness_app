@@ -500,6 +500,67 @@ object LifestyleAnalytics {
     }
     fun intensityMinutesTrend(list: List<GarminDailyExtra>) = list.map { TrendPoint(it.dateEpochDay, it.intensityMinutesWeighted.toFloat()) }
 
+    // ---- Smoothing ----------------------------------------------------------------------------
+
+    /**
+     * A centred moving average of [points], for drawing the trend through the noise.
+     *
+     * The window is a span of **calendar days**, not a count of points, and that is the
+     * whole design: these series have holes in them (a night without the watch, a week
+     * on the charger), and an N-point window silently stretches across such a hole,
+     * averaging together days that are a month apart while claiming to be a week's mean.
+     * A day window can't - it averages what actually happened near that date, and where
+     * there is nothing near, it declines to answer.
+     *
+     * "Declines" is [minPoints]: fewer than this inside the window and no smoothed value
+     * is produced for that day. Without it, a single stray reading in an empty stretch
+     * would draw a confident line through a period the data says nothing about.
+     *
+     * At the very ends of the range the window is necessarily half-full (there is no data
+     * after today), so the last stretch of the curve is an average of fewer days than the
+     * middle. That's inherent to a centred average and the reason the raw points stay
+     * drawn underneath: the curve is a reading of the data, never a replacement for it.
+     */
+    fun smoothTrend(points: List<TrendPoint>, windowDays: Int, minPoints: Int = 3): List<TrendPoint> {
+        if (windowDays < 2 || points.size < minPoints) return emptyList()
+        val sorted = points.sortedBy { it.epochDay }
+        val half = (windowDays / 2).toLong()
+        val out = ArrayList<TrendPoint>(sorted.size)
+        var lo = 0
+        var hi = 0
+        var sum = 0.0
+        for (point in sorted) {
+            while (hi < sorted.size && sorted[hi].epochDay <= point.epochDay + half) {
+                sum += sorted[hi].value
+                hi++
+            }
+            while (lo < hi && sorted[lo].epochDay < point.epochDay - half) {
+                sum -= sorted[lo].value
+                lo++
+            }
+            val count = hi - lo
+            if (count >= minPoints) out += TrendPoint(point.epochDay, (sum / count).toFloat())
+        }
+        return out
+    }
+
+    /**
+     * How many days to average over for a chart covering [spanDays].
+     *
+     * Scaled to the window rather than fixed, because the question changes with the span:
+     * over four weeks "is this week worse than last" needs a week's smoothing, and over
+     * three years a week's smoothing is still just noise - there the question is seasons,
+     * so the window grows to two months. Roughly a quarter of the span at the short end,
+     * flattening out long before it could swallow a year.
+     */
+    fun smoothWindowDaysFor(spanDays: Int): Int = when {
+        spanDays <= 35 -> 7
+        spanDays <= 120 -> 14
+        spanDays <= 250 -> 21
+        spanDays <= 400 -> 30
+        else -> 60
+    }
+
     // ---- helpers ------------------------------------------------------------------------------
 
     private fun restingRates(summaries: List<GarminDailyExtra>, healthDays: List<DailySummary>): List<Int> {

@@ -10,6 +10,11 @@ private val MONTHS_GENITIVE = listOf(
     "июля", "августа", "сентября", "октября", "ноября", "декабря"
 )
 
+private val MONTHS_SHORT = listOf(
+    "янв", "фев", "мар", "апр", "май", "июн",
+    "июл", "авг", "сен", "окт", "ноя", "дек"
+)
+
 /**
  * Monday of the week [date] falls in. The whole app is Monday-first (ISO), matching
  * both the weekday labels above and how Garmin Connect itself groups a training week.
@@ -26,6 +31,12 @@ fun weekDates(date: LocalDate): List<LocalDate> {
 
 /** "7 сентября" */
 fun formatDayMonth(date: LocalDate): String = "${date.dayOfMonth} ${MONTHS_GENITIVE[date.monthValue - 1]}"
+
+/**
+ * "сен 2024" - for axis ends of a multi-year chart, where the day is noise and the year
+ * is the whole point: "8 сентября" at both ends of a three-year span says nothing.
+ */
+fun formatMonthYear(date: LocalDate): String = "${MONTHS_SHORT[date.monthValue - 1]} ${date.year}"
 
 /** "Сегодня" / "Вчера" / "пт, 5 сентября" - relative to [today] so it stays testable. */
 fun formatDayHeader(date: LocalDate, today: LocalDate = LocalDate.now()): String = when (date) {

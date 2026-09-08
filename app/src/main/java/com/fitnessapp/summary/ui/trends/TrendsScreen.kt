@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -39,18 +41,23 @@ import com.fitnessapp.summary.ui.components.StatRow
 import com.fitnessapp.summary.ui.components.TrendChart
 import com.fitnessapp.summary.ui.theme.metricPalette
 import com.fitnessapp.summary.util.formatCount
+import com.fitnessapp.summary.util.formatDays
 import com.fitnessapp.summary.util.formatDecimal
 import com.fitnessapp.summary.util.formatSleepDuration
 import java.time.LocalDate
 
 // Now that the history walk pulls everything Garmin has rather than a fixed 90 days,
-// the windows go past a quarter: a year of weight or VO2max is a different picture from
-// twelve weeks of it. A window with no data just draws "нет данных за этот период".
+// the windows go past a quarter and then past a year: weight, VO2max or resting heart
+// rate across three years show a shape - a slow drift, last winter against this one -
+// that no twelve-week view contains. Depth costs nothing here: the rows are already in
+// Room, and a window with no data behind it just draws "нет данных за этот период".
 private val WINDOWS = listOf(
     28 to "4 недели",
     84 to "12 недель",
     182 to "полгода",
-    365 to "год"
+    365 to "год",
+    730 to "2 года",
+    1095 to "3 года"
 )
 
 /**
@@ -61,6 +68,9 @@ private val WINDOWS = listOf(
  * drawn from. Everything here is Garmin-derived and therefore gated on the Garmin login -
  * an install without it gets a pointer to the Я tab, not an empty grid of charts.
  */
+// FlowRow is still marked experimental in Compose Foundation 1.7 (BOM 2024.12.01), but
+// it is the layout for the window chips: they must wrap, not scroll off the edge.
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TrendsScreen(app: FitnessSummaryApp) {
     val today = remember { LocalDate.now() }
@@ -69,6 +79,8 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     val from = today.minusDays((windowDays - 1).toLong())
     val fromEpoch = from.toEpochDay()
     val toEpoch = today.toEpochDay()
+
+    val smoothWindow = LifestyleAnalytics.smoothWindowDaysFor(windowDays)
 
     val summaries by remember(windowDays) { app.database.garminDailyExtraDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val sleeps by remember(windowDays) { app.database.garminSleepDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
@@ -94,7 +106,12 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Six labels no longer fit one line on a phone - they wrap rather than
+            // scroll sideways, so the longest window is never hidden off the edge.
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 WINDOWS.forEachIndexed { index, (_, label) ->
                     val selected = index == windowIndex
                     Text(
@@ -136,40 +153,49 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         }
 
         item { SectionHeader("Тренды за ${WINDOWS[windowIndex].second}") }
+        item {
+            Text(
+                text = "Плавная линия на графиках — скользящее среднее за ${formatDays(smoothWindow)}: " +
+                    "точки показывают, что было в конкретный день, линия — куда идёт дело. " +
+                    "Окно среднего растёт вместе с периодом.",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
-        trendCard("Готовность к тренировке", LifestyleAnalytics.readinessTrend(readiness), fromEpoch, toEpoch, palette.readiness, floorAtZero = true) { it.toInt().toString() }
-        trendCard("Sleep Score", LifestyleAnalytics.sleepScoreTrend(sleeps), fromEpoch, toEpoch, palette.sleep, floorAtZero = true) { it.toInt().toString() }
-        trendCard("Длительность сна", LifestyleAnalytics.sleepDurationTrend(sleeps), fromEpoch, toEpoch, palette.sleep, goal = 480f) { formatSleepDuration(it.toInt()) }
+        trendCard("Готовность к тренировке", LifestyleAnalytics.readinessTrend(readiness), fromEpoch, toEpoch, palette.readiness, smoothWindow, floorAtZero = true) { it.toInt().toString() }
+        trendCard("Sleep Score", LifestyleAnalytics.sleepScoreTrend(sleeps), fromEpoch, toEpoch, palette.sleep, smoothWindow, floorAtZero = true) { it.toInt().toString() }
+        trendCard("Длительность сна", LifestyleAnalytics.sleepDurationTrend(sleeps), fromEpoch, toEpoch, palette.sleep, smoothWindow, goal = 480f) { formatSleepDuration(it.toInt()) }
 
         val latestHrv = hrvs.lastOrNull { it.hasBaseline }
         trendCard(
             "ВСР за ночь, мс",
-            LifestyleAnalytics.hrvTrend(hrvs), fromEpoch, toEpoch, palette.hrv,
+            LifestyleAnalytics.hrvTrend(hrvs), fromEpoch, toEpoch, palette.hrv, smoothWindow,
             band = latestHrv?.let { it.baselineBalancedLow.toFloat()..it.baselineBalancedUpper.toFloat() },
             footnote = latestHrv?.let { "Закрашено: ваша базовая линия ${it.baselineBalancedLow}–${it.baselineBalancedUpper} мс" }
         ) { it.toInt().toString() }
 
-        trendCard("Пульс покоя", LifestyleAnalytics.restingHeartRateTrend(summaries, healthDays), fromEpoch, toEpoch, palette.heart) { it.toInt().toString() }
-        trendCard("Стресс, средний за день", LifestyleAnalytics.stressTrend(summaries), fromEpoch, toEpoch, palette.stress, floorAtZero = true, goal = 50f, footnote = "Пунктир: 50 — граница зоны низкого стресса по Garmin") { it.toInt().toString() }
-        trendCard("Body Battery при пробуждении", LifestyleAnalytics.bodyBatteryWakeTrend(summaries), fromEpoch, toEpoch, palette.bodyBattery, floorAtZero = true, goal = 50f) { it.toInt().toString() }
-        trendCard("Шаги", LifestyleAnalytics.stepsTrend(summaries, healthDays), fromEpoch, toEpoch, palette.steps, floorAtZero = true, goal = 10000f) { formatCount(it.toLong()) }
-        trendCard("Интенсивные минуты за день", LifestyleAnalytics.intensityMinutesTrend(summaries), fromEpoch, toEpoch, palette.workout, floorAtZero = true, footnote = "Интенсивные минуты считаются вдвое, как в Garmin. Недельная цель — на вкладке «Неделя».") { it.toInt().toString() }
+        trendCard("Пульс покоя", LifestyleAnalytics.restingHeartRateTrend(summaries, healthDays), fromEpoch, toEpoch, palette.heart, smoothWindow) { it.toInt().toString() }
+        trendCard("Стресс, средний за день", LifestyleAnalytics.stressTrend(summaries), fromEpoch, toEpoch, palette.stress, smoothWindow, floorAtZero = true, goal = 50f, footnote = "Пунктир: 50 — граница зоны низкого стресса по Garmin") { it.toInt().toString() }
+        trendCard("Body Battery при пробуждении", LifestyleAnalytics.bodyBatteryWakeTrend(summaries), fromEpoch, toEpoch, palette.bodyBattery, smoothWindow, floorAtZero = true, goal = 50f) { it.toInt().toString() }
+        trendCard("Шаги", LifestyleAnalytics.stepsTrend(summaries, healthDays), fromEpoch, toEpoch, palette.steps, smoothWindow, floorAtZero = true, goal = 10000f) { formatCount(it.toLong()) }
+        trendCard("Интенсивные минуты за день", LifestyleAnalytics.intensityMinutesTrend(summaries), fromEpoch, toEpoch, palette.workout, smoothWindow, floorAtZero = true, footnote = "Интенсивные минуты считаются вдвое, как в Garmin. Недельная цель — на вкладке «Неделя».") { it.toInt().toString() }
 
         val vo2 = LifestyleAnalytics.vo2MaxTrend(training)
-        if (vo2.isNotEmpty()) trendCard("VO2max", vo2, fromEpoch, toEpoch, palette.training) { formatDecimal(it) }
+        if (vo2.isNotEmpty()) trendCard("VO2max", vo2, fromEpoch, toEpoch, palette.training, smoothWindow) { formatDecimal(it) }
 
         val acute = LifestyleAnalytics.acuteLoadTrend(training)
         if (acute.isNotEmpty()) {
             val latest = training.lastOrNull { it.hasLoad }
             trendCard(
-                "Острая нагрузка (7 дней)", acute, fromEpoch, toEpoch, palette.training, floorAtZero = true,
+                "Острая нагрузка (7 дней)", acute, fromEpoch, toEpoch, palette.training, smoothWindow, floorAtZero = true,
                 goal = latest?.dailyTrainingLoadChronic?.takeIf { it > 0 }?.toFloat(),
                 footnote = latest?.let { "Пунктир: хроническая нагрузка ${it.dailyTrainingLoadChronic}. Оптимум по Garmin — острая в пределах 0,8–1,3 от хронической." }
             ) { it.toInt().toString() }
         }
 
         val weightPoints = LifestyleAnalytics.weightTrend(weights, scaleWeights)
-        if (weightPoints.isNotEmpty()) trendCard("Вес, кг", weightPoints, fromEpoch, toEpoch, palette.weight) { formatDecimal(it) }
+        if (weightPoints.isNotEmpty()) trendCard("Вес, кг", weightPoints, fromEpoch, toEpoch, palette.weight, smoothWindow) { formatDecimal(it) }
 
         item {
             Text(
@@ -188,6 +214,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trendCard(
     fromEpoch: Long,
     toEpoch: Long,
     accent: Color,
+    smoothWindowDays: Int,
     floorAtZero: Boolean = false,
     goal: Float? = null,
     band: ClosedFloatingPointRange<Float>? = null,
@@ -203,6 +230,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trendCard(
                 accent = accent,
                 formatValue = formatValue,
                 floorAtZero = floorAtZero,
+                smoothWindowDays = smoothWindowDays,
                 goal = goal,
                 band = band,
                 modifier = Modifier.padding(top = 4.dp)

@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -25,20 +26,36 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.fitnessapp.summary.analytics.LifestyleAnalytics
 import com.fitnessapp.summary.analytics.TrendPoint
 import com.fitnessapp.summary.util.formatDayMonth
+import com.fitnessapp.summary.util.formatMonthYear
 import java.time.LocalDate
 import kotlin.math.max
 import kotlin.math.min
 
 /**
- * One measure over a run of days, as a line with a dot per day that had data.
+ * One measure over a run of days: the daily values, and the moving average through them.
  *
  * The same rules as [WeekBarChart]: a single series, no legend (the card title names the
  * measure), no second axis. Numbers live in text under the chart - the minimum, the
  * maximum and the latest value - rather than on every point, and in ink tokens rather
- * than the series colour. Days without data are gaps, not zeros: the line connects the
- * points that exist, and a missing morning simply isn't drawn.
+ * than the series colour.
+ *
+ * **The smoothed curve is the message, the daily values are the evidence.** Day-to-day
+ * readings of readiness or resting heart rate swing far enough that a raw line answers
+ * "what happened on Tuesday" while hiding "which way is this going" - which is the only
+ * question a months-long view is asked. So with [smoothWindowDays] set, the raw line and
+ * its dots drop back to a faint texture and the average is drawn over them at full
+ * weight. Same colour for both, because it is the same measure (one colour = one metric,
+ * everywhere); the difference in weight, not hue, says which is the reading and which is
+ * the data. With no smoothing possible - too few points to average honestly - the raw
+ * line steps back up to full weight rather than leaving a nearly invisible chart.
+ *
+ * Days without data are gaps, not zeros, and past [maxGapDays] apart the line genuinely
+ * breaks rather than drawing one long straight segment across a month nobody wore the
+ * watch. Dots are drawn only while they can still be told apart; past that the daily
+ * values are the texture of the line itself.
  *
  * [band] shades a reference range (an HRV baseline), [goal] draws a dashed reference
  * line (a step or intensity target). Both are recessive: present enough to read the
@@ -55,9 +72,14 @@ fun TrendChart(
     height: Int = 96,
     band: ClosedFloatingPointRange<Float>? = null,
     goal: Float? = null,
-    floorAtZero: Boolean = false
+    floorAtZero: Boolean = false,
+    smoothWindowDays: Int = 0
 ) {
     val sorted = points.filter { it.epochDay in fromEpochDay..toEpochDay }.sortedBy { it.epochDay }
+    val smoothed = remember(sorted, smoothWindowDays) {
+        if (smoothWindowDays >= 2) LifestyleAnalytics.smoothTrend(sorted, smoothWindowDays) else emptyList()
+    }
+    val hasSmooth = smoothed.size >= 2
     val ink = MaterialTheme.colorScheme.onSurfaceVariant
     val baseline = ink.copy(alpha = 0.25f)
 
@@ -83,8 +105,25 @@ fun TrendChart(
     val yMin = if (floorAtZero) min(lo, 0f) else lo - pad
     val yMax = hi + pad
 
-    val span = (toEpochDay - fromEpochDay).coerceAtLeast(1L).toFloat()
+    val spanDays = (toEpochDay - fromEpochDay).coerceAtLeast(1L)
+    val span = spanDays.toFloat()
     val latest = sorted.last()
+
+    // Past a week apart, or past the smoothing window, two readings no longer describe
+    // one continuous stretch - the line breaks instead of inventing the middle.
+    val maxGapDays = max(7, smoothWindowDays).toLong()
+    // 3dp dots need ~6dp of room each; past that they merge into a bar and stop being dots.
+    val showDots = !hasSmooth || sorted.size <= 100
+    // Only worth marking year boundaries once a span actually crosses more than one.
+    val yearMarks = if (spanDays > 400) {
+        val first = LocalDate.ofEpochDay(fromEpochDay).year + 1
+        val last = LocalDate.ofEpochDay(toEpochDay).year
+        (first..last).map { LocalDate.of(it, 1, 1).toEpochDay() }
+    } else {
+        emptyList()
+    }
+    val labelStart = if (spanDays > 180) formatMonthYear(LocalDate.ofEpochDay(fromEpochDay)) else formatDayMonth(LocalDate.ofEpochDay(fromEpochDay))
+    val labelEnd = if (spanDays > 180) formatMonthYear(LocalDate.ofEpochDay(toEpochDay)) else formatDayMonth(LocalDate.ofEpochDay(toEpochDay))
 
     Column(modifier = modifier.fillMaxWidth()) {
         Canvas(
@@ -115,22 +154,47 @@ fun TrendChart(
                     pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 8f))
                 )
             }
+            yearMarks.forEach { day ->
+                drawLine(
+                    color = baseline,
+                    start = Offset(x(day), 0f),
+                    end = Offset(x(day), h),
+                    strokeWidth = 1.dp.toPx()
+                )
+            }
             drawLine(color = baseline, start = Offset(0f, h), end = Offset(w, h), strokeWidth = 1.dp.toPx())
 
-            if (sorted.size > 1) {
+            /** One series, broken wherever the data is. */
+            fun drawSeries(series: List<TrendPoint>, color: Color, widthDp: Float) {
+                if (series.size < 2) return
                 val path = Path()
-                sorted.forEachIndexed { index, p ->
-                    if (index == 0) path.moveTo(x(p.epochDay), y(p.value)) else path.lineTo(x(p.epochDay), y(p.value))
+                var previousDay = Long.MIN_VALUE
+                series.forEach { p ->
+                    val px = x(p.epochDay)
+                    val py = y(p.value)
+                    if (previousDay == Long.MIN_VALUE || p.epochDay - previousDay > maxGapDays) {
+                        path.moveTo(px, py)
+                    } else {
+                        path.lineTo(px, py)
+                    }
+                    previousDay = p.epochDay
                 }
                 drawPath(
                     path = path,
-                    color = accent.copy(alpha = 0.7f),
-                    style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    color = color,
+                    style = Stroke(width = widthDp.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
                 )
             }
-            sorted.forEach { p ->
-                drawCircle(color = accent, radius = 3.dp.toPx(), center = Offset(x(p.epochDay), y(p.value)))
+
+            drawSeries(sorted, accent.copy(alpha = if (hasSmooth) 0.3f else 0.7f), if (hasSmooth) 1.5f else 2f)
+            if (showDots) {
+                val dotColor = if (hasSmooth) accent.copy(alpha = 0.55f) else accent
+                val dotRadius = if (hasSmooth) 2.5f else 3f
+                sorted.forEach { p ->
+                    drawCircle(color = dotColor, radius = dotRadius.dp.toPx(), center = Offset(x(p.epochDay), y(p.value)))
+                }
             }
+            drawSeries(smoothed, accent, 2.5f)
             drawCircle(color = accent, radius = 5.dp.toPx(), center = Offset(x(latest.epochDay), y(latest.value)))
         }
 
@@ -140,8 +204,8 @@ fun TrendChart(
                 .padding(top = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(formatDayMonth(LocalDate.ofEpochDay(fromEpochDay)), style = MaterialTheme.typography.labelMedium, color = ink)
-            Text(formatDayMonth(LocalDate.ofEpochDay(toEpochDay)), style = MaterialTheme.typography.labelMedium, color = ink)
+            Text(labelStart, style = MaterialTheme.typography.labelMedium, color = ink)
+            Text(labelEnd, style = MaterialTheme.typography.labelMedium, color = ink)
         }
         Row(
             modifier = Modifier

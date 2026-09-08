@@ -98,3 +98,23 @@ fun formatPace(distanceMeters: Int, durationMinutes: Int): String? {
         "$wholeMinutes:${seconds.toString().padStart(2, '0')} /км"
     }
 }
+
+/**
+ * Russian plural agreement: 1 день, 2 дня, 5 дней, 21 день, 14 дней.
+ * Needed wherever a number of days is written into a sentence the user reads -
+ * "среднее за 21 дней" is the kind of small wrongness that makes a whole screen
+ * look machine-made.
+ */
+fun pluralRu(count: Int, one: String, few: String, many: String): String {
+    val n = kotlin.math.abs(count)
+    val lastTwo = n % 100
+    if (lastTwo in 11..14) return many
+    return when (n % 10) {
+        1 -> one
+        2, 3, 4 -> few
+        else -> many
+    }
+}
+
+/** "21 день" / "30 дней" */
+fun formatDays(count: Int): String = "$count ${pluralRu(count, "день", "дня", "дней")}"
