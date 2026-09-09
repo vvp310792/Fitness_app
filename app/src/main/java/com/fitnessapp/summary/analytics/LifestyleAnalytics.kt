@@ -500,6 +500,33 @@ object LifestyleAnalytics {
     }
     fun intensityMinutesTrend(list: List<GarminDailyExtra>) = list.map { TrendPoint(it.dateEpochDay, it.intensityMinutesWeighted.toFloat()) }
 
+    /**
+     * Calories burned per day, from whichever source has the day - Garmin's own summary
+     * wins over the Health Connect copy of it, the same precedence as steps and resting
+     * heart rate.
+     *
+     * [active] picks the active-only figure instead of the total. Both are kilocalories
+     * on the same axis, which is exactly why they belong on one chart as a line and its
+     * dashed twin: the gap between them IS the resting burn, and a total that climbs while
+     * the active part sits still is a different story from both of them rising.
+     */
+    fun caloriesTrend(
+        summaries: List<GarminDailyExtra>,
+        healthDays: List<DailySummary>,
+        active: Boolean
+    ): List<TrendPoint> {
+        val byDay = mutableMapOf<Long, Int>()
+        healthDays.forEach { day ->
+            val value = if (active) day.activeCaloriesKcal else day.totalCaloriesKcal
+            if (value > 0) byDay[day.dateEpochDay] = value
+        }
+        summaries.forEach { extra ->
+            val value = if (active) extra.activeKilocalories else extra.totalKilocalories
+            if (value > 0) byDay[extra.dateEpochDay] = value
+        }
+        return byDay.entries.sortedBy { it.key }.map { TrendPoint(it.key, it.value.toFloat()) }
+    }
+
     // ---- Smoothing ----------------------------------------------------------------------------
 
     /**

@@ -24,6 +24,16 @@ data class WeekSummary(
     val totalSteps: Long,
     val avgSteps: Int,
     val totalActiveCaloriesKcal: Int,
+    /**
+     * Every kilocalorie the day burned, resting metabolism included - Garmin's own
+     * "total", not the active part. Kept beside [totalActiveCaloriesKcal] rather than
+     * instead of it: they answer different questions ("how hard was the week" vs "what did
+     * the week cost"), and one derived from the other by subtraction is the resting burn,
+     * which is worth showing too.
+     */
+    val totalCaloriesKcal: Int,
+    val avgTotalCaloriesKcal: Int,
+    val avgActiveCaloriesKcal: Int,
     val totalDistanceMeters: Int,
 
     val avgRestingHeartRate: Int,
@@ -122,6 +132,11 @@ class SummaryRepository(
                 totalSteps = totalSteps,
                 avgSteps = withMovement.averageIntOf { it.steps.toInt() },
                 totalActiveCaloriesKcal = inWeek.sumOf { it.activeCaloriesKcal },
+                totalCaloriesKcal = inWeek.sumOf { it.totalCaloriesKcal },
+                // Averaged over the days that actually recorded calories, like every
+                // other average here - a day on the charger must not halve the mean.
+                avgTotalCaloriesKcal = inWeek.filter { it.totalCaloriesKcal > 0 }.averageIntOf { it.totalCaloriesKcal },
+                avgActiveCaloriesKcal = inWeek.filter { it.activeCaloriesKcal > 0 }.averageIntOf { it.activeCaloriesKcal },
                 totalDistanceMeters = inWeek.sumOf { it.distanceMeters },
 
                 avgRestingHeartRate = withResting.averageIntOf { it.restingHeartRate },

@@ -108,6 +108,12 @@ fun WeekScreen(app: FitnessSummaryApp) {
     val weekToEpoch = selectedWeekStart.plusDays(6).toEpochDay()
     val garminDays by remember(selectedWeekStart) { app.database.garminDailyExtraDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
     val garminSleeps by remember(selectedWeekStart) { app.database.garminSleepDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
+    // The previous week's nights too, so the "К прошлой неделе" sleep chip compares the
+    // same merged number the card above shows. Comparing a Health-Connect-only average
+    // against a Garmin-backed one is how the two disagreed in the first place.
+    val previousGarminSleeps by remember(selectedWeekStart) {
+        app.database.garminSleepDao().observeRange(weekFromEpoch - 7, weekToEpoch - 7)
+    }.collectAsState(initial = emptyList())
     val garminHrvs by remember(selectedWeekStart) { app.database.garminHrvDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
     val garminReadiness by remember(selectedWeekStart) { app.database.garminReadinessDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
     val garminActivities by remember(selectedWeekStart) { app.database.garminActivityDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
@@ -164,14 +170,22 @@ fun WeekScreen(app: FitnessSummaryApp) {
         }
 
         if (!week.isEmpty) {
-            item { WeekTotals(week, previousWeek, palette) }
+            item {
+                WeekTotals(
+                    week = week,
+                    previous = previousWeek,
+                    sleepMinutes = mergedSleepMinutes(days, garminSleeps, selectedWeekStart),
+                    previousSleepMinutes = mergedSleepMinutes(days, previousGarminSleeps, selectedWeekStart.minusWeeks(1)),
+                    palette = palette
+                )
+            }
         }
         if (!garminWeek.isEmpty) {
             item { GarminWeekSection(garminWeek, garminDays, garminSleeps, selectedWeekStart, today, palette) }
         }
         if (!week.isEmpty) {
             item { StepsChart(week, days, selectedWeekStart, today, palette) }
-            item { SleepSection(week, days, selectedWeekStart, today, palette) }
+            item { SleepSection(week, days, garminSleeps, selectedWeekStart, today, palette) }
             item { HeartSection(week) }
         }
 
@@ -339,7 +353,14 @@ private fun GarminWeekSection(
 }
 
 @Composable
-private fun WeekTotals(week: WeekSummary, previous: WeekSummary, palette: MetricPalette) {
+private fun WeekTotals(
+    week: WeekSummary,
+    previous: WeekSummary,
+    /** Merged across both sleep sources - see [mergedSleepMinutes]; the chip must not disagree with the card. */
+    sleepMinutes: List<Int>,
+    previousSleepMinutes: List<Int>,
+    palette: MetricPalette
+) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             MetricCard(
@@ -361,10 +382,22 @@ private fun WeekTotals(week: WeekSummary, previous: WeekSummary, palette: Metric
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             MetricCard(
                 emoji = "🔥",
-                label = "Активные калории",
-                value = if (week.totalActiveCaloriesKcal > 0) formatCount(week.totalActiveCaloriesKcal) else "-",
+                label = "Калории за неделю",
+                // The total, with the active part underneath: "how much did this week
+                // cost" is the number people mean by calories, and the active share is
+                // what training changed. Showing only the active half made the card
+                // answer a question nobody had asked.
+                value = if (week.totalCaloriesKcal > 0) {
+                    formatCount(week.totalCaloriesKcal)
+                } else if (week.totalActiveCaloriesKcal > 0) {
+                    formatCount(week.totalActiveCaloriesKcal)
+                } else "-",
                 accent = palette.calories,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                caption = buildList {
+                    if (week.totalActiveCaloriesKcal > 0) add("активные ${formatCount(week.totalActiveCaloriesKcal)}")
+                    if (week.avgTotalCaloriesKcal > 0) add("${formatCount(week.avgTotalCaloriesKcal)} в день")
+                }.joinToString(" · ").ifBlank { null }
             )
             MetricCard(
                 emoji = "🏋",
@@ -383,7 +416,8 @@ private fun WeekTotals(week: WeekSummary, previous: WeekSummary, palette: Metric
             percentChange(week.totalSteps, previous.totalSteps)?.let { add("Шаги" to it) }
             percentChange(week.totalDistanceMeters, previous.totalDistanceMeters)?.let { add("Дистанция" to it) }
             percentChange(week.workoutMinutes, previous.workoutMinutes)?.let { add("Тренировки" to it) }
-            percentChange(week.avgSleepMinutes, previous.avgSleepMinutes)?.let { add("Сон" to it) }
+            percentChange(sleepMinutes.averageOrZero(), previousSleepMinutes.averageOrZero())
+                ?.let { add("Сон" to it) }
         }
         if (comparisons.isNotEmpty()) {
             InfoCard(title = "К прошлой неделе") {
@@ -437,15 +471,48 @@ private fun StepsChart(
 }
 
 @Composable
+/**
+ * The week's sleep, from **both** sources with Garmin's own night winning.
+ *
+ * Health Connect alone was wrong here, and visibly so: Garmin Connect writes sleep into
+ * Health Connect only sporadically on this account - eight nights out of fifty-six in one
+ * real log - so the bars were mostly empty and the average was built from whichever few
+ * nights happened to get through. The Day screen already preferred the Garmin night; this
+ * card did not, and the two screens disagreed about the same week.
+ *
+ * Precedence is Garmin first because it is the watch's own scoring of the night, and
+ * Health Connect's copy is at best the same number arriving by a longer road. A night
+ * missing from Garmin still falls back to Health Connect rather than showing zero.
+ */
 private fun SleepSection(
     week: WeekSummary,
     days: List<com.fitnessapp.summary.data.DailySummary>,
+    garminSleeps: List<GarminSleep>,
     weekStart: LocalDate,
     today: LocalDate,
     palette: MetricPalette
 ) {
+    val healthByDay = days.associateBy { it.dateEpochDay }
+    val garminByDay = garminSleeps.associateBy { it.dateEpochDay }
+
+    val nights = (0..6).map { weekStart.plusDays(it.toLong()) }
+    val minutes = nights.map { sleepMinutesOn(it.toEpochDay(), healthByDay, garminByDay) }
+    val recorded = minutes.filter { it > 0 }
+    // Deep and REM come from whichever source supplied that night's total, so the parts
+    // are never quoted against a whole they don't belong to.
+    val deep = nights.mapNotNull { date ->
+        val day = date.toEpochDay()
+        garminByDay[day]?.takeIf { it.sleepMinutes > 0 }?.deepMinutes
+            ?: healthByDay[day]?.sleepDeepMinutes
+    }.filter { it > 0 }
+    val rem = nights.mapNotNull { date ->
+        val day = date.toEpochDay()
+        garminByDay[day]?.takeIf { it.sleepMinutes > 0 }?.remMinutes
+            ?: healthByDay[day]?.sleepRemMinutes
+    }.filter { it > 0 }
+
     InfoCard(title = "Сон") {
-        if (week.nightsWithSleep == 0) {
+        if (recorded.isEmpty()) {
             Text(
                 text = "За эту неделю записей сна нет.",
                 style = MaterialTheme.typography.bodyMedium,
@@ -455,7 +522,7 @@ private fun SleepSection(
         }
 
         Text(
-            text = formatSleepDuration(week.avgSleepMinutes),
+            text = formatSleepDuration(recorded.average().toInt()),
             style = MaterialTheme.typography.headlineMedium,
             color = MaterialTheme.colorScheme.onSurface
         )
@@ -463,17 +530,15 @@ private fun SleepSection(
             // Says what the average is actually over. A "7 ч 10 мин" built from three
             // nights is a different claim than one built from seven, and hiding that
             // makes the number look more solid than it is.
-            text = "в среднем за ${week.nightsWithSleep} ${declineDays(week.nightsWithSleep)} с записью",
+            text = "в среднем за ${recorded.size} ${declineDays(recorded.size)} с записью",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        val byDay = days.associateBy { it.dateEpochDay }
-        val bars = (0..6).map { offset ->
-            val date = weekStart.plusDays(offset.toLong())
+        val bars = nights.mapIndexed { offset, date ->
             BarDatum(
                 label = WEEKDAY_LABELS[offset],
-                value = (byDay[date.toEpochDay()]?.sleepTotalMinutes ?: 0).toLong(),
+                value = minutes[offset].toLong(),
                 highlighted = date == today
             )
         }
@@ -485,14 +550,46 @@ private fun SleepSection(
             barAreaHeight = 90
         )
 
-        if (week.avgDeepSleepMinutes > 0 || week.avgRemSleepMinutes > 0) {
+        if (deep.isNotEmpty() || rem.isNotEmpty()) {
             Column(modifier = Modifier.padding(top = 10.dp)) {
-                StatRow("Глубокий в среднем", formatDuration(week.avgDeepSleepMinutes))
-                StatRow("Быстрый в среднем", formatDuration(week.avgRemSleepMinutes))
+                if (deep.isNotEmpty()) StatRow("Глубокий в среднем", formatDuration(deep.average().toInt()))
+                if (rem.isNotEmpty()) StatRow("Быстрый в среднем", formatDuration(rem.average().toInt()))
             }
         }
     }
 }
+
+/**
+ * One night's sleep in minutes, Garmin's own scoring first and Health Connect as the
+ * fallback, or 0 when neither source has that night.
+ *
+ * The precedence exists because Garmin Connect writes sleep into Health Connect only
+ * sporadically on some accounts - eight nights out of fifty-six in one real log - so
+ * reading Health Connect alone made most nights look like zero.
+ */
+private fun sleepMinutesOn(
+    epochDay: Long,
+    healthByDay: Map<Long, com.fitnessapp.summary.data.DailySummary>,
+    garminByDay: Map<Long, GarminSleep>
+): Int = garminByDay[epochDay]?.sleepMinutes?.takeIf { it > 0 }
+    ?: healthByDay[epochDay]?.sleepTotalMinutes
+    ?: 0
+
+/** The recorded nights of one week, merged across both sources - nights with nothing are left out. */
+private fun mergedSleepMinutes(
+    days: List<com.fitnessapp.summary.data.DailySummary>,
+    garminSleeps: List<GarminSleep>,
+    weekStart: LocalDate
+): List<Int> {
+    val healthByDay = days.associateBy { it.dateEpochDay }
+    val garminByDay = garminSleeps.associateBy { it.dateEpochDay }
+    return (0..6)
+        .map { sleepMinutesOn(weekStart.plusDays(it.toLong()).toEpochDay(), healthByDay, garminByDay) }
+        .filter { it > 0 }
+}
+
+/** Mean, or 0 for an empty week - `average()` on an empty list is NaN, which percentChange would happily divide by. */
+private fun List<Int>.averageOrZero(): Double = if (isEmpty()) 0.0 else average()
 
 @Composable
 private fun HeartSection(week: WeekSummary) {

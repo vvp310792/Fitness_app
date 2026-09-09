@@ -473,6 +473,29 @@ interface GarminSyncMarkDao {
     )
     suspend fun marksInRange(fromEpochDay: Long, toEpochDay: Long, logicVersion: Int): List<GarminSyncMark>
 
+    /**
+     * How many days are settled per section, and the oldest/newest of them - the compact
+     * form of a table that can hold tens of thousands of rows. This is what the JSON
+     * export carries instead of the rows themselves: it answers "what does the app think
+     * it already has", which is the question every sync bug so far has turned on, without
+     * making the export ten times bigger than the data it is about.
+     */
+    @Query(
+        "SELECT section, COUNT(*) AS days, SUM(CASE WHEN hasData THEN 1 ELSE 0 END) AS daysWithData, " +
+            "MIN(dateEpochDay) AS firstDay, MAX(dateEpochDay) AS lastDay " +
+            "FROM garmin_sync_marks GROUP BY section ORDER BY section"
+    )
+    suspend fun sectionCoverage(): List<GarminSectionCoverage>
+
     @Query("DELETE FROM garmin_sync_marks")
     suspend fun clear()
 }
+
+/** One row of [GarminSyncMarkDao.sectionCoverage] - see its doc for why this shape. */
+data class GarminSectionCoverage(
+    val section: String,
+    val days: Int,
+    val daysWithData: Int,
+    val firstDay: Long,
+    val lastDay: Long
+)

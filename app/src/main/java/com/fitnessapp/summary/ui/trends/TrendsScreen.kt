@@ -221,6 +221,24 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         trendCard("Стресс, средний за день", LifestyleAnalytics.stressTrend(summaries), fromEpoch, toEpoch, palette.stress, smoothWindow, floorAtZero = true, goal = 50f, footnote = "Пунктир: 50 — граница зоны низкого стресса по Garmin") { it.toInt().toString() }
         trendCard("Body Battery при пробуждении", LifestyleAnalytics.bodyBatteryWakeTrend(summaries), fromEpoch, toEpoch, palette.bodyBattery, smoothWindow, floorAtZero = true, goal = 50f) { it.toInt().toString() }
         trendCard("Шаги", LifestyleAnalytics.stepsTrend(summaries, healthDays), fromEpoch, toEpoch, palette.steps, smoothWindow, floorAtZero = true, goal = 10000f) { formatCount(it.toLong()) }
+
+        // Total and active on one chart: same unit, same metric seen two ways, and the
+        // gap between the lines is the resting burn. Solid is the total because that is
+        // what "калории за день" means; dashed is the part training moved.
+        val totalCalories = LifestyleAnalytics.caloriesTrend(summaries, healthDays, active = false)
+        val activeCalories = LifestyleAnalytics.caloriesTrend(summaries, healthDays, active = true)
+        if (totalCalories.isNotEmpty() || activeCalories.isNotEmpty()) {
+            trendCard(
+                "Калории за день",
+                totalCalories.ifEmpty { activeCalories },
+                fromEpoch, toEpoch, palette.calories, smoothWindow,
+                floorAtZero = true,
+                secondary = if (totalCalories.isEmpty()) emptyList() else activeCalories,
+                footnote = if (totalCalories.isNotEmpty() && activeCalories.isNotEmpty()) {
+                    "Сплошная линия — всего за день, пунктир — активные. Расстояние между ними — расход в покое."
+                } else null
+            ) { formatCount(it.toLong()) }
+        }
         trendCard("Интенсивные минуты за день", LifestyleAnalytics.intensityMinutesTrend(summaries), fromEpoch, toEpoch, palette.workout, smoothWindow, floorAtZero = true, footnote = "Интенсивные минуты считаются вдвое, как в Garmin. Недельная цель — на вкладке «Неделя».") { it.toInt().toString() }
 
         val vo2 = LifestyleAnalytics.vo2MaxTrend(training)
@@ -263,6 +281,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trendCard(
     floorAtZero: Boolean = false,
     goal: Float? = null,
     band: ClosedFloatingPointRange<Float>? = null,
+    secondary: List<TrendPoint> = emptyList(),
     footnote: String? = null,
     formatValue: (Float) -> String
 ) {
@@ -278,6 +297,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trendCard(
                 smoothWindowDays = smoothWindowDays,
                 goal = goal,
                 band = band,
+                secondary = secondary,
                 modifier = Modifier.padding(top = 4.dp)
             )
             if (footnote != null && points.isNotEmpty()) {

@@ -50,7 +50,7 @@ object DataExporter {
 
         val root = JSONObject().apply {
             put("app", "fitness-summary")
-            put("schemaVersion", 2)
+            put("schemaVersion", 3)
             put("exportedAt", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
             put("sources", JSONArray(listOf("Health Connect", "Garmin Connect (unofficial)", "Zepp Life (unofficial, optional)", "журнал силовых тренировок (импорт)")))
             put("dayCount", days.size)
@@ -87,6 +87,9 @@ object DataExporter {
                 array.put(
                     JSONObject().apply {
                         put("date", ISO_DATE.format(LocalDate.ofEpochDay(workout.dateEpochDay)))
+                        // The Health Connect record id: what makes a row here joinable
+                        // with the same session in another export or another device.
+                        put("recordId", workout.recordId)
                         put("startTime", DateTimeFormatter.ISO_INSTANT.format(Instant.ofEpochMilli(workout.startTimeMillis)))
                         put("endTime", DateTimeFormatter.ISO_INSTANT.format(Instant.ofEpochMilli(workout.endTimeMillis)))
                         put("exerciseType", workout.exerciseType)
@@ -286,6 +289,10 @@ object DataExporter {
                         put("activityId", a.activityId)
                         putDate(a.dateEpochDay)
                         put("startTime", DateTimeFormatter.ISO_INSTANT.format(Instant.ofEpochMilli(a.startTimeMillis)))
+                        // False means the per-activity detail call never landed, which is
+                        // why Training Effect and load are missing on this row - a
+                        // different fact from "this sport has no Training Effect".
+                        put("detailsLoaded", a.detailsLoaded)
                         put("name", a.name)
                         put("typeKey", a.typeKey)
                         put("typeName", garminSportName(a.typeKey))
@@ -337,6 +344,9 @@ object DataExporter {
                         put("deviceId", m.deviceId)
                         put("source", m.source)
                         put("uploadedToGarmin", m.isUploadedToGarmin)
+                        if (m.garminUploadedAtMillis > 0) {
+                            put("garminUploadedAt", DateTimeFormatter.ISO_INSTANT.format(Instant.ofEpochMilli(m.garminUploadedAtMillis)))
+                        }
                     })
                 }
             })
@@ -355,6 +365,37 @@ object DataExporter {
                         put("setIndex", set.setIndex)
                         put("weightKg", set.weightKg.toDouble())
                         put("reps", set.reps)
+                    })
+                }
+            })
+        })
+
+        // What the app believes about its own sync state. Not user data, but every
+        // Garmin problem so far ("тренировки не приходят", "история не углубляется") was
+        // answered by exactly these numbers, and an export that carries the data but not
+        // the bookkeeping still needs a log file beside it to be diagnosable.
+        root.put("diagnostics", JSONObject().apply {
+            put("rowCounts", JSONObject().apply {
+                put("days", days.size)
+                put("workouts", workouts.size)
+                put("garminDays", database.garminDailyExtraDao().getAllOnce().size)
+                put("garminSleep", database.garminSleepDao().getAllOnce().size)
+                put("garminHrv", database.garminHrvDao().getAllOnce().size)
+                put("garminReadiness", database.garminReadinessDao().getAllOnce().size)
+                put("garminTraining", database.garminTrainingDao().getAllOnce().size)
+                put("garminBodyComposition", database.garminBodyCompositionDao().getAllOnce().size)
+                put("garminActivities", database.garminActivityDao().getAllOnce().size)
+                put("scaleMeasurements", database.scaleMeasurementDao().getAllOnce().size)
+                put("strengthSets", database.strengthSetDao().getAllOnce().size)
+            })
+            put("garminSyncCoverage", JSONArray().also { array ->
+                for (row in database.garminSyncMarkDao().sectionCoverage()) {
+                    array.put(JSONObject().apply {
+                        put("section", row.section)
+                        put("daysSettled", row.days)
+                        put("daysWithData", row.daysWithData)
+                        put("firstDay", ISO_DATE.format(LocalDate.ofEpochDay(row.firstDay)))
+                        put("lastDay", ISO_DATE.format(LocalDate.ofEpochDay(row.lastDay)))
                     })
                 }
             })

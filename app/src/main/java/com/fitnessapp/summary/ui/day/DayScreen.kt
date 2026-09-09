@@ -279,11 +279,26 @@ private fun DayMetrics(day: DailySummary, extra: GarminDailyExtra?, palette: Met
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             MetricCard(
                 emoji = "🔥",
-                label = "Активные калории",
-                value = if (day.activeCaloriesKcal > 0) formatCount(day.activeCaloriesKcal) else "-",
+                label = "Калории",
+                // The total leads, the split explains it. Only the active number used to
+                // be shown large, which is the smaller half of the day and not what
+                // "калории" means to a reader glancing at a tile.
+                value = if (day.totalCaloriesKcal > 0) {
+                    formatCount(day.totalCaloriesKcal)
+                } else if (day.activeCaloriesKcal > 0) {
+                    formatCount(day.activeCaloriesKcal)
+                } else "-",
                 accent = palette.calories,
                 modifier = Modifier.weight(1f),
-                caption = if (day.totalCaloriesKcal > 0) "всего ${formatCount(day.totalCaloriesKcal)} ккал" else null
+                caption = when {
+                    // Resting is what the body spends doing nothing; Garmin reports the
+                    // total and the active part, so the rest is the difference, not a
+                    // separate reading.
+                    day.totalCaloriesKcal > 0 && day.activeCaloriesKcal > 0 ->
+                        "${formatCount(day.activeCaloriesKcal)} активных · ${formatCount(day.totalCaloriesKcal - day.activeCaloriesKcal)} в покое"
+                    day.activeCaloriesKcal > 0 -> "${formatCount(day.activeCaloriesKcal)} активных"
+                    else -> null
+                }
             )
             MetricCard(
                 emoji = "❤️",
