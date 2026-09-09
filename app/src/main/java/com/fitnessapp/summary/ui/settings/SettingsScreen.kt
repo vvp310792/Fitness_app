@@ -465,6 +465,14 @@ private fun GarminSection(app: FitnessSummaryApp) {
                         // saying "nothing here" or a call that failed. Without this the
                         // only symptom of a dead endpoint is a screen that quietly lacks
                         // a card, which is indistinguishable from "you slept badly".
+                        state.historyNote?.let { note ->
+                            Text(
+                                text = note,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
                         val quiet = state.sections.filter { it.stored == 0 && (it.noData > 0 || it.failed > 0) }
                         quiet.forEach { section ->
                             Text(
@@ -512,11 +520,28 @@ private fun GarminSection(app: FitnessSummaryApp) {
                         Text("Вся история")
                     }
                 }
+                // Recomputed whenever the sync state changes, so the depth reached updates
+                // as soon as a run ends. This is the answer to "did pressing it again do
+                // anything" - previously the only evidence was a counter that restarted
+                // from zero every time, which said the opposite of the truth.
+                val historyFrontier = remember(syncState) { app.garminSync.historyProgress() }
+                historyFrontier.oldestCovered?.let { oldest ->
+                    Text(
+                        text = if (historyFrontier.complete) {
+                            "История пройдена до конца (глубже $oldest у Garmin данных нет)."
+                        } else {
+                            "История загружена до $oldest — следующее нажатие «Вся история» продолжит отсюда, а не с сегодняшнего дня."
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = metricPalette().distance,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                }
                 Text(
                     text = "«Вся история» идёт назад по 30 дней и останавливается там, где у Garmin " +
                         "кончаются данные — глубина не ограничена, дата начала аккаунта определяется " +
-                        "сама. Уже загруженные дни повторно не запрашиваются, поэтому прерванная " +
-                        "загрузка продолжается с того же места: можно просто нажать ещё раз. " +
+                        "сама. Пройденная глубина запоминается: прерванная загрузка продолжается " +
+                        "с того же места, а не начинается заново — можно просто нажать ещё раз. " +
                         "Последние дни перечитываются всегда — Garmin дописывает их задним числом.",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -6,6 +6,7 @@ import com.fitnessapp.summary.debug.AppLog
 import com.fitnessapp.summary.data.SummaryRepository
 import com.fitnessapp.summary.data.WorkoutRepository
 import com.fitnessapp.summary.garmin.GarminApiClient
+import com.fitnessapp.summary.garmin.GarminHistoryStore
 import com.fitnessapp.summary.garmin.GarminAuthClient
 import com.fitnessapp.summary.garmin.GarminSyncManager
 import com.fitnessapp.summary.garmin.GarminTokenStore
@@ -82,7 +83,8 @@ class FitnessSummaryApp : Application() {
     val garminTokenStore: GarminTokenStore by lazy { GarminTokenStore(this) }
     val garminAuth: GarminAuthClient by lazy { GarminAuthClient(garminTokenStore) }
     private val garminApi: GarminApiClient by lazy { GarminApiClient(garminAuth) }
-    val garminSync: GarminSyncManager by lazy { GarminSyncManager(garminApi, database) }
+    val garminHistoryStore: GarminHistoryStore by lazy { GarminHistoryStore(this) }
+    val garminSync: GarminSyncManager by lazy { GarminSyncManager(garminApi, database, garminHistoryStore) }
 
     // Smart-scale weigh-ins (scale/): primarily out of Health Connect, where Zepp Life
     // lands via Google Fit; optionally straight from the Zepp Life cloud. And the one
