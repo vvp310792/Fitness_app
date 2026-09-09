@@ -52,6 +52,7 @@ import com.fitnessapp.summary.util.formatDays
 import com.fitnessapp.summary.util.formatDecimal
 import com.fitnessapp.summary.util.formatDistance
 import com.fitnessapp.summary.util.formatSleepDuration
+import com.fitnessapp.summary.util.garminSportName
 import java.time.LocalDate
 
 // Now that the history walk pulls everything Garmin has rather than a fixed 90 days,
@@ -111,6 +112,10 @@ fun TrendsScreen(app: FitnessSummaryApp) {
             .map { it to SportDistanceAnalytics.weeks(it, merged, from, today) }
             .filter { (_, weeks) -> weeks.any { it.meters > 0 } }
     }
+    // Sports with real distance that matched no bucket. Named on screen rather than
+    // silently dropped: an unrecognised Garmin sport key looks exactly like a sport that
+    // was never synced, and that ambiguity is what cost months of missing rides once.
+    val unclassifiedSports = remember(activities) { SportDistanceAnalytics.unclassified(activities) }
 
     // Sessions per lift, recomputed only when the imported sets or the window change.
     val liftSessions = remember(strengthSets) {
@@ -173,7 +178,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
             }
             // Both of these have their own sources - Health Connect workouts and an
             // imported gym log - so no Garmin data is no reason to hide either.
-            sportDistanceSection(sportWeeks, fromEpoch, toEpoch, smoothWindow, palette.distance)
+            sportDistanceSection(sportWeeks, unclassifiedSports, fromEpoch, toEpoch, smoothWindow, palette.distance)
             strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
             return@LazyColumn
         }
@@ -230,7 +235,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         val weightPoints = LifestyleAnalytics.weightTrend(weights, scaleWeights)
         if (weightPoints.isNotEmpty()) trendCard("Вес, кг", weightPoints, fromEpoch, toEpoch, palette.weight, smoothWindow) { formatDecimal(it) }
 
-        sportDistanceSection(sportWeeks, fromEpoch, toEpoch, smoothWindow, palette.distance)
+        sportDistanceSection(sportWeeks, unclassifiedSports, fromEpoch, toEpoch, smoothWindow, palette.distance)
         strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
 
         item {
@@ -307,6 +312,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trendCard(
  */
 private fun androidx.compose.foundation.lazy.LazyListScope.sportDistanceSection(
     sportWeeks: List<Pair<DistanceSport, List<SportWeek>>>,
+    unclassified: Map<String, Int>,
     fromEpoch: Long,
     toEpoch: Long,
     smoothWindowDays: Int,
@@ -318,11 +324,25 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sportDistanceSection(
     item {
         Text(
             text = "Сумма расстояния за календарную неделю (пн–вс), точка — на понедельник этой недели. " +
+                "Бассейн и открытая вода — одно плавание; дорожка, трейл и улица — один бег. " +
                 "Неделя без тренировки — это ноль, а не пропуск: именно так видно, когда вид спорта " +
                 "выпадал. Последняя неделя ещё идёт, поэтому она обычно ниже остальных.",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+
+    // Everything with distance that isn't one of the three, named outright. Without this a
+    // sport key the matcher doesn't know is indistinguishable from a sport that never synced.
+    if (unclassified.isNotEmpty()) {
+        item(key = "sport-unclassified") {
+            Text(
+                text = "Не вошли в эти три вида (есть расстояние, но другой спорт): " +
+                    unclassified.entries.joinToString(", ") { "${garminSportName(it.key)} — ${it.value}" },
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 
     sportWeeks.forEach { (sport, weeks) ->

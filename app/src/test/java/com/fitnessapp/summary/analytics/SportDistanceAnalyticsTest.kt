@@ -35,6 +35,70 @@ class SportDistanceAnalyticsTest {
         distanceMeters = meters
     )
 
+    /**
+     * The seventeen sports this account's own Garmin export actually contains, each with
+     * the bucket it must land in. Written from the export rather than from imagination:
+     * the counts in the comments are the real ones, and they are why each line matters -
+     * 185 treadmill runs and 228 pool swims are not a rounding error to get wrong.
+     */
+    @Test
+    fun `the real sport mix of this account lands where it should`() {
+        val expected = mapOf(
+            // 151 outdoor, 185 treadmill, 42 trail, 1 indoor - all one sport.
+            "running" to DistanceSport.RUN,
+            "treadmill_running" to DistanceSport.RUN,
+            "trail_running" to DistanceSport.RUN,
+            "indoor_running" to DistanceSport.RUN,
+            // 172 outdoor, 1 indoor.
+            "cycling" to DistanceSport.BIKE,
+            "indoor_cycling" to DistanceSport.BIKE,
+            // Not in this export, but the keys Garmin uses elsewhere for the same sport.
+            // road_biking contains "bik" and NOT "bike" - the whole reason the check is
+            // written on the shorter stem.
+            "road_biking" to DistanceSport.BIKE,
+            "mountain_biking" to DistanceSport.BIKE,
+            "gravel_cycling" to DistanceSport.BIKE,
+            "virtual_ride" to DistanceSport.BIKE,
+            // 228 pool, 10 open water - one sport, as the user asked.
+            "lap_swimming" to DistanceSport.SWIM,
+            "open_water_swimming" to DistanceSport.SWIM,
+            // Everything else in the export carries no distance, or is not one of the three.
+            "strength_training" to null,
+            "walking" to null,
+            "hiking" to null,
+            "indoor_rowing" to null,
+            "cross_country_classic_skiing" to null,
+            "floor_climbing" to null,
+            "multi_sport" to null,
+            "cardio" to null,
+            "other" to null
+        )
+        expected.forEach { (key, sport) -> assertEquals(key, sport, DistanceSport.ofGarmin(key)) }
+    }
+
+    /** "cycl" must not claim a motorbike - it is the one word that would wrongly match. */
+    @Test
+    fun `motorcycling is not cycling`() {
+        assertNull(DistanceSport.ofGarmin("motorcycling"))
+        assertNull(DistanceSport.ofGarmin("motor_cycling"))
+    }
+
+    /** The trace that stops an unknown sport key from failing silently. */
+    @Test
+    fun `sports with distance that match nothing are reported`() {
+        val unclassified = SportDistanceAnalytics.unclassified(
+            listOf(
+                garmin(monday, "indoor_rowing", 5_000),
+                garmin(monday, "indoor_rowing", 4_000, hour = 18),
+                garmin(monday, "cross_country_classic_skiing", 12_000, hour = 11),
+                // Matched sports and distance-less sessions never appear here.
+                garmin(monday, "cycling", 30_000, hour = 14),
+                garmin(monday, "strength_training", 0, hour = 20)
+            )
+        )
+        assertEquals(mapOf("indoor_rowing" to 2, "cross_country_classic_skiing" to 1), unclassified)
+    }
+
     @Test
     fun `every garmin spelling of the three sports is recognised`() {
         listOf("running", "trail_running", "treadmill_running", "track_running", "indoor_running")

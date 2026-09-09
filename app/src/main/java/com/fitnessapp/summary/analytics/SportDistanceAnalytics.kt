@@ -30,15 +30,31 @@ enum class DistanceSport(val key: String, val title: String, val emoji: String) 
     SWIM("swim", "Плавание", "🏊");
 
     companion object {
-        /** From a Garmin `activityType.typeKey`, or null when the sport isn't one of the three. */
+        /**
+         * From a Garmin `activityType.typeKey`, or null when the sport isn't one of the
+         * three. Verified against this account's own Garmin export, which contains
+         * seventeen distinct sports: pool and open-water swimming, outdoor / treadmill /
+         * trail / indoor running, outdoor and indoor cycling all land where they should,
+         * and strength, walking, hiking, rowing, skiing, cardio and floor-climbing all
+         * correctly land nowhere.
+         */
         fun ofGarmin(typeKey: String): DistanceSport? {
             val key = typeKey.lowercase()
             return when {
+                // A motorbike is not a bicycle, and "cycl" would otherwise claim it.
+                key.contains("motor") -> null
+                // Pool and open water are one sport: it is the same training, and the
+                // user tracks the weekly metres, not where the water was.
                 key.contains("swim") -> SWIM
-                // "ride" catches virtual_ride; "bike"/"biking" the road/mountain/gravel keys.
-                key.contains("cycl") || key.contains("bike") || key.contains("biking") || key.contains("ride") -> BIKE
-                // Checked last: nothing above contains "run", and this must not swallow
-                // walking or hiking, which are their own thing.
+                // "bik", not "bike": road_biking / mountain_biking contain the first and
+                // NOT the second, and matching on "bike" alone silently dropped every
+                // road ride - caught only because a test names the real keys.
+                // "cycl" covers cycling/indoor_cycling/gravel_cycling/handcycling,
+                // "ride" covers virtual_ride.
+                key.contains("cycl") || key.contains("bik") || key.contains("ride") -> BIKE
+                // Checked last: nothing above contains "run". Treadmill, trail, track and
+                // indoor running are all running - the surface is not a different sport.
+                // Must not swallow walking or hiking, which are deliberately their own thing.
                 key.contains("run") -> RUN
                 else -> null
             }
@@ -180,6 +196,26 @@ object SportDistanceAnalytics {
      */
     fun trend(weeks: List<SportWeek>): List<TrendPoint> =
         weeks.map { TrendPoint(it.weekStartEpochDay, it.km) }
+
+    /**
+     * Sports carrying real distance that landed in none of the three buckets, as
+     * typeKey -> session count.
+     *
+     * A keyword matcher is only as good as the keys it has seen, and a key it has not seen
+     * fails the same way a missing sync does: the sport simply is not on the screen, with
+     * nothing anywhere saying why. This is the trace - the same rule as GarminFetch.NoData
+     * and runCatchingRead, applied to classification instead of fetching. On this account
+     * it correctly lists rowing, skiing and the like; the day it starts listing something
+     * that reads like a bike, the keyword list is what needs a line, and it will be
+     * obvious rather than guessed at.
+     */
+    fun unclassified(garmin: List<GarminActivity>): Map<String, Int> = garmin
+        .filter { it.distanceMeters > 0 && DistanceSport.ofGarmin(it.typeKey) == null }
+        .groupingBy { it.typeKey.ifBlank { "(без типа)" } }
+        .eachCount()
+        .toList()
+        .sortedByDescending { it.second }
+        .toMap()
 
     /** Average kilometres per week over [weeks], counting the zero weeks - they are training too. */
     fun averageKmPerWeek(weeks: List<SportWeek>): Float =
