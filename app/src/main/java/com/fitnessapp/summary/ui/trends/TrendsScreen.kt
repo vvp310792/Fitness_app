@@ -66,7 +66,11 @@ private val WINDOWS = listOf(
     182 to "полгода",
     365 to "год",
     730 to "2 года",
-    1095 to "3 года"
+    1095 to "3 года",
+    // Five years reaches past the start of this account's Garmin history (Dec 2021), so it
+    // is the window that shows all of it - and the one where a year-on-year shape, rather
+    // than a season, is what the chart is for.
+    1825 to "5 лет"
 )
 
 /**
@@ -138,7 +142,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            // Six labels no longer fit one line on a phone - they wrap rather than
+            // Seven labels no longer fit one line on a phone - they wrap rather than
             // scroll sideways, so the longest window is never hidden off the edge.
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),

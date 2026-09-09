@@ -558,7 +558,11 @@ object LifestyleAnalytics {
         spanDays <= 120 -> 14
         spanDays <= 250 -> 21
         spanDays <= 400 -> 30
-        else -> 60
+        spanDays <= 1200 -> 60
+        // Five years is ~1800 points on a phone-width chart: at 60 days the curve still
+        // carries week-to-week wobble that no longer means anything at that scale, and a
+        // quarter is the unit a multi-year shape is actually read in.
+        else -> 90
     }
 
     // ---- helpers ------------------------------------------------------------------------------
