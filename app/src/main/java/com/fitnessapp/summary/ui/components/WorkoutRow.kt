@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.fitnessapp.summary.analytics.SportDistanceAnalytics
 import com.fitnessapp.summary.data.GarminActivity
 import com.fitnessapp.summary.data.Workout
 import com.fitnessapp.summary.ui.theme.metricPalette
@@ -127,7 +128,11 @@ fun unmatchedGarminActivities(workouts: List<Workout>, candidates: List<GarminAc
     return candidates.filter { it.activityId !in matched }
 }
 
-private const val MATCH_WINDOW_MILLIS = 3 * 60 * 1000L
+/**
+ * Same window, one definition: the weekly-distance charts pair the two sources by exactly
+ * this rule, and two copies of it would drift apart the first time either was tuned.
+ */
+private const val MATCH_WINDOW_MILLIS = SportDistanceAnalytics.WORKOUT_MATCH_WINDOW_MILLIS
 
 /** "TE 3,2 аэробный · 0,8 анаэробный · Темп · нагрузка 85 · BB −12", only the parts present. */
 private fun garminEffectLine(activity: GarminActivity): String? {

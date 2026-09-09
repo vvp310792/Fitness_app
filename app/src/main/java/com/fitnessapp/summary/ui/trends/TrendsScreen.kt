@@ -33,8 +33,11 @@ import com.fitnessapp.summary.analytics.Insight
 import com.fitnessapp.summary.analytics.InsightTone
 import com.fitnessapp.summary.analytics.LifestyleAnalytics
 import com.fitnessapp.summary.analytics.LifestyleInputs
+import com.fitnessapp.summary.analytics.DistanceSport
 import com.fitnessapp.summary.analytics.LiftSession
 import com.fitnessapp.summary.analytics.StrengthAnalytics
+import com.fitnessapp.summary.analytics.SportDistanceAnalytics
+import com.fitnessapp.summary.analytics.SportWeek
 import com.fitnessapp.summary.analytics.StrengthLift
 import com.fitnessapp.summary.analytics.TrendPoint
 import com.fitnessapp.summary.ui.components.EmptyState
@@ -44,8 +47,10 @@ import com.fitnessapp.summary.ui.components.StatRow
 import com.fitnessapp.summary.ui.components.TrendChart
 import com.fitnessapp.summary.ui.theme.metricPalette
 import com.fitnessapp.summary.util.formatCount
+import com.fitnessapp.summary.util.formatDayMonth
 import com.fitnessapp.summary.util.formatDays
 import com.fitnessapp.summary.util.formatDecimal
+import com.fitnessapp.summary.util.formatDistance
 import com.fitnessapp.summary.util.formatSleepDuration
 import java.time.LocalDate
 
@@ -95,6 +100,17 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     val healthDays by remember(windowDays) { app.summaryRepository.observeRange(from, today) }.collectAsState(initial = emptyList())
     val scaleWeights by remember(windowDays) { app.database.scaleMeasurementDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val strengthSets by remember(windowDays) { app.database.strengthSetDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
+    val workouts by remember(windowDays) { app.workoutRepository.observeRange(from, today) }.collectAsState(initial = emptyList())
+
+    // Weekly kilometres per sport, from both sources with the duplicates dropped. Computed
+    // once for all three sports: the de-duplication has to see every session, not one
+    // sport's worth, or a ride would be matched against a run.
+    val sportWeeks = remember(activities, workouts, windowDays) {
+        val merged = SportDistanceAnalytics.sessions(activities, workouts)
+        DistanceSport.entries
+            .map { it to SportDistanceAnalytics.weeks(it, merged, from, today) }
+            .filter { (_, weeks) -> weeks.any { it.meters > 0 } }
+    }
 
     // Sessions per lift, recomputed only when the imported sets or the window change.
     val liftSessions = remember(strengthSets) {
@@ -155,7 +171,9 @@ fun TrendsScreen(app: FitnessSummaryApp) {
                     }
                 )
             }
-            // The gym log is a separate source: no Garmin data is no reason to hide it.
+            // Both of these have their own sources - Health Connect workouts and an
+            // imported gym log - so no Garmin data is no reason to hide either.
+            sportDistanceSection(sportWeeks, fromEpoch, toEpoch, smoothWindow, palette.distance)
             strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
             return@LazyColumn
         }
@@ -212,6 +230,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         val weightPoints = LifestyleAnalytics.weightTrend(weights, scaleWeights)
         if (weightPoints.isNotEmpty()) trendCard("Вес, кг", weightPoints, fromEpoch, toEpoch, palette.weight, smoothWindow) { formatDecimal(it) }
 
+        sportDistanceSection(sportWeeks, fromEpoch, toEpoch, smoothWindow, palette.distance)
         strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
 
         item {
@@ -262,6 +281,73 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trendCard(
             }
             if (points.isNotEmpty()) {
                 StatRow("Дней с данными", points.count { it.epochDay in fromEpoch..toEpoch }.toString())
+            }
+        }
+    }
+}
+
+/**
+ * Weekly kilometres for running, cycling and swimming - the volume question the daily
+ * charts above cannot answer.
+ *
+ * Weekly rather than daily on purpose: someone who runs three times a week has a daily
+ * distance line that is mostly gaps, and "am I riding more than I was in spring" is not
+ * readable from it. One point per week, anchored on its Monday - the same week the
+ * "Неделя" tab uses.
+ *
+ * **A week with no session shows as 0, not as a break in the line** - the only chart here
+ * where that is right. Elsewhere a missing day means the watch wasn't measuring; here the
+ * absence is the measurement, and a gap would let a line sail through a month off the
+ * bike as though nothing had changed. Zeros are only drawn across the stretch that
+ * actually holds sessions, so history that was never synced doesn't masquerade as weeks
+ * of nothing (see [SportDistanceAnalytics.weeks]).
+ *
+ * Independent of the Garmin login: Health Connect workouts carry distance too, and a
+ * session known to both sources is counted once.
+ */
+private fun androidx.compose.foundation.lazy.LazyListScope.sportDistanceSection(
+    sportWeeks: List<Pair<DistanceSport, List<SportWeek>>>,
+    fromEpoch: Long,
+    toEpoch: Long,
+    smoothWindowDays: Int,
+    accent: Color
+) {
+    if (sportWeeks.isEmpty()) return
+
+    item { SectionHeader("Объём по неделям") }
+    item {
+        Text(
+            text = "Сумма расстояния за календарную неделю (пн–вс), точка — на понедельник этой недели. " +
+                "Неделя без тренировки — это ноль, а не пропуск: именно так видно, когда вид спорта " +
+                "выпадал. Последняя неделя ещё идёт, поэтому она обычно ниже остальных.",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+
+    sportWeeks.forEach { (sport, weeks) ->
+        item(key = "sport-${sport.key}") {
+            InfoCard(title = "${sport.emoji} ${sport.title}") {
+                val active = weeks.filter { it.meters > 0 }
+                StatRow("Всего за период", formatDistance(weeks.sumOf { it.meters }))
+                StatRow("В среднем за неделю", formatDistance((SportDistanceAnalytics.averageKmPerWeek(weeks) * 1000).toInt()))
+                weeks.maxByOrNull { it.meters }?.takeIf { it.meters > 0 }?.let {
+                    StatRow("Лучшая неделя", "${formatDistance(it.meters)} · ${formatDayMonth(LocalDate.ofEpochDay(it.weekStartEpochDay))}")
+                }
+                StatRow("Тренировок", weeks.sumOf { it.sessions }.toString())
+                // Weeks that held a session against weeks in the window: "8 из 12" says
+                // more about consistency than any average over the same period does.
+                StatRow("Недель с тренировкой", "${active.size} из ${weeks.size}")
+                TrendChart(
+                    points = SportDistanceAnalytics.trend(weeks),
+                    fromEpochDay = fromEpoch,
+                    toEpochDay = toEpoch,
+                    accent = accent,
+                    formatValue = { "${formatDecimal(it)} км" },
+                    floorAtZero = true,
+                    smoothWindowDays = smoothWindowDays,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
             }
         }
     }
