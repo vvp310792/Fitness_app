@@ -52,10 +52,15 @@ import kotlin.math.min
  * the data. With no smoothing possible - too few points to average honestly - the raw
  * line steps back up to full weight rather than leaving a nearly invisible chart.
  *
- * Days without data are gaps, not zeros, and past [maxGapDays] apart the line genuinely
- * breaks rather than drawing one long straight segment across a month nobody wore the
- * watch. Dots are drawn only while they can still be told apart; past that the daily
- * values are the texture of the line itself.
+ * **The line is continuous.** It used to break wherever two readings sat more than a week
+ * (or a smoothing window) apart, on the theory that a long straight segment across a month
+ * without the watch looks like a measurement that never happened. In practice that read as
+ * a broken chart rather than as an honest one - on the longer windows the smoothed curve
+ * fragmented into disconnected pieces and the shape of the trend, which is the whole point
+ * of the screen, stopped being visible. So gaps are simply spanned, and the dots carry the
+ * honesty instead: they mark where the actual readings are, so a long segment with nothing
+ * on it is visibly a bridge, not data. Dots are drawn only while they can still be told
+ * apart; past that the daily values are the texture of the line itself.
  *
  * [band] shades a reference range (an HRV baseline), [goal] draws a dashed reference
  * line (a step or intensity target). Both are recessive: present enough to read the
@@ -117,9 +122,6 @@ fun TrendChart(
     val span = spanDays.toFloat()
     val latest = sorted.last()
 
-    // Past a week apart, or past the smoothing window, two readings no longer describe
-    // one continuous stretch - the line breaks instead of inventing the middle.
-    val maxGapDays = max(7, smoothWindowDays).toLong()
     // 3dp dots need ~6dp of room each; past that they merge into a bar and stop being dots.
     val showDots = !hasSmooth || sorted.size <= 100
     // Only worth marking year boundaries once a span actually crosses more than one.
@@ -172,20 +174,14 @@ fun TrendChart(
             }
             drawLine(color = baseline, start = Offset(0f, h), end = Offset(w, h), strokeWidth = 1.dp.toPx())
 
-            /** One series, broken wherever the data is. */
+            /** One series, drawn as one unbroken line - see the note on continuity above. */
             fun drawSeries(series: List<TrendPoint>, color: Color, widthDp: Float) {
                 if (series.size < 2) return
                 val path = Path()
-                var previousDay = Long.MIN_VALUE
-                series.forEach { p ->
+                series.forEachIndexed { index, p ->
                     val px = x(p.epochDay)
                     val py = y(p.value)
-                    if (previousDay == Long.MIN_VALUE || p.epochDay - previousDay > maxGapDays) {
-                        path.moveTo(px, py)
-                    } else {
-                        path.lineTo(px, py)
-                    }
-                    previousDay = p.epochDay
+                    if (index == 0) path.moveTo(px, py) else path.lineTo(px, py)
                 }
                 drawPath(
                     path = path,
@@ -204,13 +200,10 @@ fun TrendChart(
             }
             if (sortedSecondary.size >= 2) {
                 val path = Path()
-                var previousDay = Long.MIN_VALUE
-                sortedSecondary.forEach { p ->
+                sortedSecondary.forEachIndexed { index, p ->
                     val px = x(p.epochDay)
                     val py = y(p.value)
-                    if (previousDay == Long.MIN_VALUE || p.epochDay - previousDay > maxGapDays) path.moveTo(px, py)
-                    else path.lineTo(px, py)
-                    previousDay = p.epochDay
+                    if (index == 0) path.moveTo(px, py) else path.lineTo(px, py)
                 }
                 drawPath(
                     path = path,

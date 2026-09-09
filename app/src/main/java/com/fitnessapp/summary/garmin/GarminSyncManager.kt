@@ -256,33 +256,57 @@ class GarminSyncManager(
         val refreshFromEpochDay = LocalDate.now().minusDays((ALWAYS_REFRESH_DAYS - 1).toLong()).toEpochDay()
         var daysWithData = 0
 
-        // A window in which every day and every section is already settled is not walked at
-        // all - not even for the window-shaped calls below. Marks used to spare only the
-        // per-day requests, so re-walking synced history still cost five calls per window,
-        // and on a bad connection those were enough to burn the whole
-        // NETWORK_FAILURE_LIMIT budget before the walk ever reached ground it hadn't seen.
-        if (isFullySettled(from, to, settled, refreshFromEpochDay)) {
-            val days = (to.toEpochDay() - from.toEpochDay() + 1).toInt()
-            listOf(run.summary, run.sleep, run.hrv, run.readiness, run.training).forEach { it.skipped += days }
-            run.daysSkipped += days
-            return daysKnownToHaveData.count { it >= from.toEpochDay() && it <= to.toEpochDay() }
+        val windowDays = (to.toEpochDay() - from.toEpochDay() + 1).toInt()
+        val daysWithDataFromMarks = daysKnownToHaveData.count { it in from.toEpochDay()..to.toEpochDay() }
+
+        // Three independent questions, not one. Skipping a whole window when the per-day
+        // sections were settled ALSO skipped its activity list and its weight - so a window
+        // whose activity list had failed in an earlier pass could never be retried, and
+        // months of workouts stayed missing with nothing in the log to say so. Each
+        // range-shaped section carries its own mark now (see GarminSyncMark.SECTION_ACTIVITIES).
+        val daysSettled = allSettled(from, to, settled, refreshFromEpochDay, GarminSyncMark.DAY_SECTIONS)
+        val activitiesSettled =
+            allSettled(from, to, settled, refreshFromEpochDay, listOf(GarminSyncMark.SECTION_ACTIVITIES))
+        val weightSettled =
+            allSettled(from, to, settled, refreshFromEpochDay, listOf(GarminSyncMark.SECTION_WEIGHT))
+
+        // Nothing left to ask about at all: the window costs zero requests. That is what
+        // keeps a re-walk over synced history from burning the NETWORK_FAILURE_LIMIT budget
+        // before it ever reaches ground it hasn't seen.
+        if (daysSettled && activitiesSettled && weightSettled) {
+            listOf(run.summary, run.sleep, run.hrv, run.readiness, run.training).forEach { it.skipped += windowDays }
+            run.weight.skipped += windowDays
+            run.daysSkipped += windowDays
+            return daysWithDataFromMarks
         }
 
-        // Range-shaped endpoints first, one call per window instead of one per day. Their
-        // results are folded into the per-day summary row below.
-        val stressZones = run.take(run.ranges) { apiClient.stressZones(from, to) } ?: emptyMap()
-        val intensityGoals = run.take(run.ranges) { apiClient.intensityMinutesGoal(from, to) } ?: emptyMap()
-        val hydration = run.take(run.ranges) { apiClient.hydration(from, to) } ?: emptyMap()
+        var stressZones: Map<Long, StressZones> = emptyMap()
+        var intensityGoals: Map<Long, Int> = emptyMap()
+        var hydration: Map<Long, Pair<Int, Int>> = emptyMap()
 
-        // The window calls above go through take() like everything else, so the connection
-        // can already be gone before a single day is asked about. Checking here as well as
-        // in the loop is what stops that case from being reported as a clean finish.
-        if (run.networkLost) {
-            AppLog.w("GarminSyncManager", "Сеть пропала на диапазонных запросах $from..$to - окно прервано")
-            return daysWithData
+        if (!daysSettled) {
+            // Range-shaped endpoints first, one call per window instead of one per day.
+            // Their results are folded into the per-day summary row below - so they are
+            // only worth fetching when there is a day left to fold them into.
+            stressZones = run.take(run.ranges) { apiClient.stressZones(from, to) } ?: emptyMap()
+            intensityGoals = run.take(run.ranges) { apiClient.intensityMinutesGoal(from, to) } ?: emptyMap()
+            hydration = run.take(run.ranges) { apiClient.hydration(from, to) } ?: emptyMap()
+
+            // The window calls above go through take() like everything else, so the
+            // connection can already be gone before a single day is asked about. Checking
+            // here as well as in the loop is what stops that case from being reported as a
+            // clean finish.
+            if (run.networkLost) {
+                AppLog.w("GarminSyncManager", "Сеть пропала на диапазонных запросах $from..$to - окно прервано")
+                return daysWithData
+            }
+        } else {
+            listOf(run.summary, run.sleep, run.hrv, run.readiness, run.training).forEach { it.skipped += windowDays }
+            run.daysSkipped += windowDays
+            daysWithData = daysWithDataFromMarks
         }
 
-        var date = from
+        var date = if (daysSettled) to.plusDays(1) else from
         var index = 0
         while (!date.isAfter(to)) {
             // A backfill that outlives the phone's connectivity used to grind through
@@ -420,31 +444,72 @@ class GarminSyncManager(
             index++
         }
 
-        if (!run.networkLost) {
+        // Both of these are asked once per window, and both now get a per-day mark for the
+        // whole window when the call actually answered. A failure leaves no mark, so the
+        // next pass over this window asks again - the same rule the day sections follow,
+        // and the thing whose absence hid the missing workouts.
+        if (!run.networkLost && !weightSettled) {
+            val daysWithWeight = mutableSetOf<Long>()
             run.take(run.weight) { apiClient.bodyComposition(from, to) }?.let { rows ->
                 val real = rows.filter { !it.isEmpty }
                 if (real.isNotEmpty()) {
                     database.garminBodyCompositionDao().upsertAll(real)
-                    run.weight.stored = real.size
+                    // += , not = : the history walk runs this once per window, and an
+                    // assignment reported only the last window's rows in the summary line.
+                    run.weight.stored += real.size
+                    daysWithWeight += real.map { it.dateEpochDay }
                 }
             }
-            syncActivities(from, to, run)
+            markWindow(from, to, GarminSyncMark.SECTION_WEIGHT, daysWithWeight, run.weight, refreshFromEpochDay)
+        } else if (weightSettled) {
+            run.weight.skipped += windowDays
+        }
+
+        if (!run.networkLost && !activitiesSettled) {
+            val daysWithActivity = syncActivities(from, to, run)
+            markWindow(from, to, GarminSyncMark.SECTION_ACTIVITIES, daysWithActivity, run.activities, refreshFromEpochDay)
         }
 
         return daysWithData
     }
 
     /**
-     * Whether every day in the window has a mark for every section and is old enough to be
-     * skippable at all - i.e. there is literally nothing to ask Garmin about here.
+     * Whether every day in the window carries a mark for every one of [sections] and is old
+     * enough to be skippable at all - i.e. there is nothing left to ask Garmin about for
+     * those sections here.
      */
-    private fun isFullySettled(
+    private fun allSettled(
         from: LocalDate,
         to: LocalDate,
         settled: Set<Pair<Long, String>>,
-        refreshFromEpochDay: Long
+        refreshFromEpochDay: Long,
+        sections: List<String>
     ): Boolean = (from.toEpochDay()..to.toEpochDay()).all { day ->
-        day < refreshFromEpochDay && ALL_SECTIONS.all { (day to it) in settled }
+        day < refreshFromEpochDay && sections.all { (day to it) in settled }
+    }
+
+    /**
+     * Marks a whole window as settled for one range-shaped section, but only when its call
+     * actually answered ([counter] not having failed last) - a failed call must stay
+     * unmarked so the next pass retries it. [daysWithData] are the days the answer put a
+     * row on; the rest are marked as "Garmin has nothing here", which is just as settled.
+     *
+     * Days inside the always-refresh window are left unmarked deliberately: marking them
+     * would be pointless (they are re-read regardless) and would make the mark table churn.
+     */
+    private suspend fun markWindow(
+        from: LocalDate,
+        to: LocalDate,
+        section: String,
+        daysWithData: Set<Long>,
+        counter: Counter,
+        refreshFromEpochDay: Long
+    ) {
+        if (counter.lastCallFailed) return
+        val marks = (from.toEpochDay()..to.toEpochDay())
+            .filter { it < refreshFromEpochDay }
+            .map { GarminSyncMark(it, section, it in daysWithData, LOGIC_VERSION) }
+        if (marks.isNotEmpty()) database.garminSyncMarkDao().upsertAll(marks)
     }
 
     /** Turns the accumulated tallies into the one State a whole sync reports. */
@@ -479,19 +544,21 @@ class GarminSyncManager(
      * (`detailsLoaded`). On a repeated 90-day backfill that is the single biggest saving:
      * one request per activity, every time, for activities that never change.
      */
-    private suspend fun syncActivities(from: LocalDate, to: LocalDate, run: RunState) {
-        val listed = run.take(run.activities) { apiClient.activities(from, to) } ?: return
+    private suspend fun syncActivities(from: LocalDate, to: LocalDate, run: RunState): Set<Long> {
+        val listed = run.take(run.activities) { apiClient.activities(from, to) } ?: return emptySet()
+        val days = listed.map { it.dateEpochDay }.toSet()
         val alreadyDetailed = database.garminActivityDao()
             .detailedIdsInRange(from.toEpochDay(), to.toEpochDay())
             .toSet()
 
         val fresh = listed.filter { it.activityId !in alreadyDetailed }
-        run.activities.skipped = listed.size - fresh.size
-        if (fresh.isEmpty()) return
+        run.activities.skipped += listed.size - fresh.size
+        if (fresh.isEmpty()) return days
 
         val detailed = fresh.map { apiClient.activityDetail(it) }
         database.garminActivityDao().upsertAll(detailed)
-        run.activities.stored = detailed.size
+        run.activities.stored += detailed.size
+        return days
     }
 
     /** Per-run tallies. Mutable and single-threaded - one sync at a time, by construction. */
@@ -578,15 +645,6 @@ class GarminSyncManager(
 
     companion object {
         const val DEFAULT_RECENT_DAYS = 14
-
-        /** Every section that gets a per-day mark - the set [isFullySettled] must see complete. */
-        private val ALL_SECTIONS = listOf(
-            GarminSyncMark.SECTION_SUMMARY,
-            GarminSyncMark.SECTION_SLEEP,
-            GarminSyncMark.SECTION_HRV,
-            GarminSyncMark.SECTION_READINESS,
-            GarminSyncMark.SECTION_TRAINING
-        )
 
         /** One window of the history walk - also the granularity of its stop rule. */
         private const val HISTORY_CHUNK_DAYS = 30

@@ -410,10 +410,22 @@ class GarminApiClient(private val auth: GarminAuthClient) {
     }
 
     /**
-     * garth `Activity.list`: `activitylist-service/activities/search/activities?limit=&start=`,
-     * newest first, paged until the page runs older than [from]. Returns the list-level
-     * fields only; Training Effect, load, power and cadence live behind a per-activity
-     * detail call - see [activityDetail].
+     * `activitylist-service/activities/search/activities`, **filtered by date on the
+     * server**: `startDate`/`endDate` (YYYY-MM-DD) alongside `start`/`limit`. Returns the
+     * list-level fields only; Training Effect, load, power and cadence live behind a
+     * per-activity detail call - see [activityDetail].
+     *
+     * garth's `Activity.list` only ever passes `limit`/`start`, and copying just that was
+     * a real bug: without a date filter the endpoint always begins at the newest activity
+     * and pages backwards through the WHOLE account, so a history window a year and a half
+     * back had to be reached by walking every activity in between. Bounded at
+     * [MAX_ACTIVITY_PAGES] x [ACTIVITY_PAGE_SIZE] activities, that meant deep windows
+     * quietly came back with nothing at all - workouts missing from months of history
+     * with no error anywhere - and the windows that did work cost up to twenty requests
+     * each. `startDate`/`endDate` are what the Garmin Connect web client itself sends, and
+     * what `python-garminconnect`'s `get_activities_by_date` uses (verified in its source,
+     * not assumed); with them a 30-day window is one request that returns exactly that
+     * window.
      */
     suspend fun activities(from: LocalDate, to: LocalDate): GarminFetch<List<GarminActivity>> = withContext(Dispatchers.IO) {
         val fromEpoch = from.toEpochDay()
@@ -425,7 +437,12 @@ class GarminApiClient(private val auth: GarminAuthClient) {
             val page = when (
                 val fetch = fetchArray(
                     "activitylist-service/activities/search/activities",
-                    mapOf("limit" to ACTIVITY_PAGE_SIZE.toString(), "start" to start.toString())
+                    mapOf(
+                        "startDate" to from.toString(),
+                        "endDate" to to.toString(),
+                        "limit" to ACTIVITY_PAGE_SIZE.toString(),
+                        "start" to start.toString()
+                    )
                 )
             ) {
                 is GarminFetch.Ok -> fetch.value.objects()
@@ -434,18 +451,15 @@ class GarminApiClient(private val auth: GarminAuthClient) {
             }
             if (page.isEmpty()) break
 
-            var sawOlder = false
             for (item in page) {
                 val startLocal = parseDateTime(item.str("startTimeLocal")) ?: continue
                 val epochDay = startLocal.toLocalDate().toEpochDay()
-                if (epochDay < fromEpoch) {
-                    sawOlder = true
-                    continue
-                }
-                if (epochDay > toEpoch) continue
+                // The server already filtered by date; this only guards the boundary,
+                // where Garmin's day and the phone's local day can disagree by a few hours.
+                if (epochDay < fromEpoch || epochDay > toEpoch) continue
                 collected += parseActivity(item, epochDay)
             }
-            if (sawOlder || page.size < ACTIVITY_PAGE_SIZE) break
+            if (page.size < ACTIVITY_PAGE_SIZE) break
             start += ACTIVITY_PAGE_SIZE
             pages++
         }
@@ -671,7 +685,11 @@ class GarminApiClient(private val auth: GarminAuthClient) {
          */
         const val DATA_USER_AGENT = "GCM-iOS-5.22.1.4"
         const val ACTIVITY_PAGE_SIZE = 50
-        /** 20 pages x 50 = 1000 activities back, far more than a 90-day backfill can need. */
+        /**
+         * Only a runaway guard now that the request is date-filtered: one 30-day window
+         * holding more than 50 activities is already unusual, and more than 1000 is not a
+         * month of training, it is a server that never stops paging.
+         */
         const val MAX_ACTIVITY_PAGES = 20
     }
 }

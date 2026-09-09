@@ -433,6 +433,32 @@ data class GarminSyncMark(
         const val SECTION_HRV = "hrv"
         const val SECTION_READINESS = "readiness"
         const val SECTION_TRAINING = "training"
+
+        /**
+         * The two range-shaped sections. They are fetched once per WINDOW, not per day,
+         * but they are marked per day like everything else - once the window's call
+         * succeeds, every day it covered gets a mark.
+         *
+         * They need marks at all because of a bug that shipped without them: a window in
+         * which all five per-day sections were settled was skipped whole, including its
+         * activity list, so any window whose list call had failed in an earlier pass could
+         * never be retried - months of workouts missing from the history with nothing in
+         * the log to say so. A section that can fail independently needs a mark of its own,
+         * or "settled" means "settled for the parts we happened to write down".
+         */
+        const val SECTION_ACTIVITIES = "activities"
+        const val SECTION_WEIGHT = "weight"
+
+        /** Every section a day can be settled for. */
+        val ALL_SECTIONS = listOf(
+            SECTION_SUMMARY, SECTION_SLEEP, SECTION_HRV, SECTION_READINESS, SECTION_TRAINING,
+            SECTION_ACTIVITIES, SECTION_WEIGHT
+        )
+
+        /** The per-day ones - the sections the day loop actually asks about. */
+        val DAY_SECTIONS = listOf(
+            SECTION_SUMMARY, SECTION_SLEEP, SECTION_HRV, SECTION_READINESS, SECTION_TRAINING
+        )
     }
 }
 
