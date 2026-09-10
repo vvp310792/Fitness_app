@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -20,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -34,6 +37,8 @@ import com.fitnessapp.summary.analytics.InsightTone
 import com.fitnessapp.summary.analytics.LifestyleAnalytics
 import com.fitnessapp.summary.analytics.LifestyleInputs
 import com.fitnessapp.summary.analytics.DistanceSport
+import com.fitnessapp.summary.analytics.IntensityAnalytics
+import com.fitnessapp.summary.analytics.IntensityBreakdown
 import com.fitnessapp.summary.analytics.LiftSession
 import com.fitnessapp.summary.analytics.StrengthAnalytics
 import com.fitnessapp.summary.analytics.SportDistanceAnalytics
@@ -45,11 +50,14 @@ import com.fitnessapp.summary.ui.components.InfoCard
 import com.fitnessapp.summary.ui.components.SectionHeader
 import com.fitnessapp.summary.ui.components.StatRow
 import com.fitnessapp.summary.ui.components.TrendChart
+import com.fitnessapp.summary.analytics.ZoneShare
+import com.fitnessapp.summary.ui.theme.MetricPalette
 import com.fitnessapp.summary.ui.theme.metricPalette
 import com.fitnessapp.summary.util.formatCount
 import com.fitnessapp.summary.util.formatDayMonth
 import com.fitnessapp.summary.util.formatDays
 import com.fitnessapp.summary.util.formatDecimal
+import com.fitnessapp.summary.util.formatDuration
 import com.fitnessapp.summary.util.formatDistance
 import com.fitnessapp.summary.util.formatSleepDuration
 import com.fitnessapp.summary.util.garminSportName
@@ -121,6 +129,20 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     // was never synced, and that ambiguity is what cost months of missing rides once.
     val unclassifiedSports = remember(activities) { SportDistanceAnalytics.unclassified(activities) }
 
+    // Every recorded session of the window, from both sources, de-duplicated once - the
+    // same merge the distance charts do, but keeping all sports rather than three.
+    val intensitySessions = remember(activities, workouts) {
+        IntensityAnalytics.sessions(activities, workouts)
+    }
+    // The user's set maximum wins; otherwise the 95th percentile of their own recorded
+    // maxima, which is a floor rather than an estimate - hence the wording on the card.
+    val hrMaxOverride by app.heartRateZones.hrMax.collectAsState()
+    val suggestedHrMax = remember(intensitySessions) { IntensityAnalytics.suggestHrMax(intensitySessions) }
+    val hrMax = hrMaxOverride.takeIf { it > 0 } ?: suggestedHrMax
+    val intensity = remember(intensitySessions, hrMax) {
+        hrMax?.let { IntensityAnalytics.breakdown(intensitySessions, it) }
+    }
+
     // Sessions per lift, recomputed only when the imported sets or the window change.
     val liftSessions = remember(strengthSets) {
         StrengthLift.entries
@@ -180,8 +202,9 @@ fun TrendsScreen(app: FitnessSummaryApp) {
                     }
                 )
             }
-            // Both of these have their own sources - Health Connect workouts and an
-            // imported gym log - so no Garmin data is no reason to hide either.
+            // All three of these have their own sources - Health Connect workouts and an
+            // imported gym log - so no Garmin data is no reason to hide any of them.
+            intensitySection(intensity, hrMaxOverride > 0, suggestedHrMax, intensitySessions.size, palette)
             sportDistanceSection(sportWeeks, unclassifiedSports, fromEpoch, toEpoch, smoothWindow, palette.distance)
             strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
             return@LazyColumn
@@ -257,6 +280,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         val weightPoints = LifestyleAnalytics.weightTrend(weights, scaleWeights)
         if (weightPoints.isNotEmpty()) trendCard("Вес, кг", weightPoints, fromEpoch, toEpoch, palette.weight, smoothWindow) { formatDecimal(it) }
 
+        intensitySection(intensity, hrMaxOverride > 0, suggestedHrMax, intensitySessions.size, palette)
         sportDistanceSection(sportWeeks, unclassifiedSports, fromEpoch, toEpoch, smoothWindow, palette.distance)
         strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
 
@@ -313,6 +337,201 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trendCard(
             }
         }
     }
+}
+
+/**
+ * Where the training time of the period actually sat, by heart-rate zone.
+ *
+ * The one question the rest of this screen could not answer. Volume is visible on every
+ * chart above; intensity was visible nowhere, so a period whose hours were cut on purpose
+ * and whose intensity was cut by accident looked exactly like a well-managed one.
+ *
+ * Three things the card has to say out loud, because each of them would otherwise be read
+ * as more than it is:
+ *
+ * 1. **Which HRmax the bands came from** - the user's own number, or a floor estimated
+ *    from what the watch happened to record. Every boundary moves with it.
+ * 2. **That a session is charged whole to the zone of its average.** The app has no
+ *    per-minute heart rate (see [IntensityAnalytics]), so this narrows the distribution
+ *    towards the middle. Printing percentages without that is printing a measurement.
+ * 3. **What carried no heart rate at all.** Swimming usually does not, and a swim block
+ *    quietly missing from "where my training time went" is the same failure mode as an
+ *    unrecognised sport key - which cost this project months of missing rides once.
+ *
+ * Independent of the Garmin login, like the two sections below it: Health Connect
+ * workouts carry an average heart rate too.
+ */
+private fun androidx.compose.foundation.lazy.LazyListScope.intensitySection(
+    breakdown: IntensityBreakdown?,
+    hrMaxIsManual: Boolean,
+    suggestedHrMax: Int?,
+    sessionCount: Int,
+    palette: MetricPalette
+) {
+    if (sessionCount == 0) return
+
+    item { SectionHeader("Пульсовые зоны") }
+
+    // No HRmax at all: too few sessions carry a usable maximum to estimate one, and
+    // guessing from age isn't possible - the app never asks for a birth year. Say what is
+    // missing and where to fix it rather than drawing bands off an invented number.
+    if (breakdown == null) {
+        item(key = "intensity-no-hrmax") {
+            InfoCard(title = "Не задан максимальный пульс") {
+                Text(
+                    text = "Чтобы разложить тренировки по зонам, нужен ваш максимальный пульс — " +
+                        "все пять границ считаются от него. Оценить его по вашим записям пока не " +
+                        "получается: для этого нужно хотя бы " +
+                        "${IntensityAnalytics.MIN_SESSIONS_FOR_SUGGESTION} тренировок с пульсом " +
+                        "(за этот период их меньше). Задайте его вручную во вкладке «Я» → " +
+                        "«Пульсовые зоны».",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        return
+    }
+
+    item {
+        Text(
+            text = "Время тренировок по зонам от максимального пульса ${breakdown.hrMax} уд/мин " +
+                (if (hrMaxIsManual) "(задан вами)." else "(оценка по вашим тренировкам — см. ниже).") +
+                " Зона тренировки определяется по её СРЕДНЕМУ пульсу, и вся её длительность " +
+                "идёт в эту одну зону: поминутный пульс приложение не хранит. Поэтому " +
+                "распределение уже реального — края занижены, середина завышена. " +
+                "Вопрос, на который оно отвечает честно: в какой зоне проходит типичная тренировка.",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+
+    item(key = "intensity-zones") {
+        InfoCard(title = "Распределение времени") {
+            breakdown.zones.forEach { share ->
+                ZoneRow(
+                    share = share,
+                    percent = breakdown.sharePercent(share),
+                    accent = palette.zoneColor(share.zone.number)
+                )
+            }
+            StatRow(
+                "Всего с пульсом",
+                "${formatDuration(breakdown.totalMinutes)} · ${breakdown.totalSessions} трен."
+            )
+
+            // The sessions that could not be placed, named rather than dropped: a wrist
+            // that reads nothing underwater would otherwise silently shrink the swimming
+            // half of the training week and leave the percentages looking complete.
+            if (breakdown.sessionsWithoutHeartRate > 0) {
+                Text(
+                    text = "Без пульса: ${breakdown.sessionsWithoutHeartRate} трен., " +
+                        "${formatDuration(breakdown.minutesWithoutHeartRate)} — в распределение " +
+                        "не вошли (" +
+                        breakdown.sportsWithoutHeartRate.entries.take(5)
+                            .joinToString(", ") { "${garminSportName(it.key)} — ${it.value}" } +
+                        ").",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+
+            if (!hrMaxIsManual && suggestedHrMax != null) {
+                Text(
+                    text = "Максимальный пульс не задан, поэтому взят 95-й процентиль ваших " +
+                        "собственных максимумов за период — $suggestedHrMax уд/мин. Это нижняя " +
+                        "граница, а не оценка: видно только те усилия, которые действительно " +
+                        "были, и после лёгкого сезона число выходит заниженным, а все зоны " +
+                        "вместе с ним — завышенными. Свой настоящий максимум можно задать во " +
+                        "вкладке «Я» → «Пульсовые зоны».",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * One zone as a labelled row: name, its own bpm band, how long and what share of the
+ * period sat there, and a bar whose LENGTH carries the value.
+ *
+ * Deliberately not a stacked bar. Five colours cannot hold both contrast against the
+ * surface and separation from each other (see MetricPalette) - the same wall the sleep
+ * stages hit - so the colour only reinforces an ordering the text already states.
+ */
+@Composable
+private fun ZoneRow(share: ZoneShare, percent: Int, accent: Color) {
+    val range = share.upperBpmExclusive
+        ?.let { "${share.lowerBpm}\u2013${it - 1}" }
+        ?: "${share.lowerBpm} и выше"
+    Column(modifier = Modifier.padding(vertical = 5.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Z${share.zone.number} · ${share.zone.title}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = if (share.minutes > 0) "${formatDuration(share.minutes)} · $percent%" else "-",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "$range уд/мин",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (share.sessions > 0) {
+                Text(
+                    text = "${share.sessions} трен.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp)
+                .height(6.dp)
+                .background(
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    RoundedCornerShape(3.dp)
+                )
+        ) {
+            // A zone nothing landed in keeps its empty track: the missing bar IS the
+            // finding on a period with nothing above the aerobic band.
+            if (percent > 0) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(percent / 100f)
+                        .fillMaxHeight()
+                        .background(accent, RoundedCornerShape(3.dp))
+                )
+            }
+        }
+    }
+}
+
+/** The five zone colours by number, so the ramp is indexed in one place only. */
+private fun MetricPalette.zoneColor(number: Int): Color = when (number) {
+    1 -> zone1
+    2 -> zone2
+    3 -> zone3
+    4 -> zone4
+    else -> zone5
 }
 
 /**

@@ -76,7 +76,18 @@ data class MetricPalette(
     val stressRest: Color,
     val stressLow: Color,
     val stressMedium: Color,
-    val stressHigh: Color
+    val stressHigh: Color,
+    // Heart-rate zones, Garmin's five bands, cool -> hot with intensity. Same rule again,
+    // and for the same measured reason: each of the ten clears 3:1 against its own surface,
+    // but NEIGHBOURING steps sit at 1.03-1.46 to each other - a five-step ramp cannot hold
+    // both surface contrast and step separation, exactly as the sleep ramp couldn't. So
+    // these are only ever drawn as labelled rows carrying zone name, bpm range and
+    // duration in text, with the bar length - not the hue - holding the value.
+    val zone1: Color,
+    val zone2: Color,
+    val zone3: Color,
+    val zone4: Color,
+    val zone5: Color
 )
 
 private val LightMetrics = MetricPalette(
@@ -104,7 +115,13 @@ private val LightMetrics = MetricPalette(
     stressRest = Color(0xFF0891B2),
     stressLow = Color(0xFFA16207),
     stressMedium = Color(0xFFEA580C),
-    stressHigh = Color(0xFFDC2626)
+    stressHigh = Color(0xFFDC2626),
+    // Measured against #FFFFFF: 4.76 / 5.17 / 5.02 / 5.18 / 6.47.
+    zone1 = Color(0xFF64748B),
+    zone2 = Color(0xFF2563EB),
+    zone3 = Color(0xFF15803D),
+    zone4 = Color(0xFFC2410C),
+    zone5 = Color(0xFFB91C1C)
 )
 
 private val DarkMetrics = MetricPalette(
@@ -128,7 +145,13 @@ private val DarkMetrics = MetricPalette(
     stressRest = Color(0xFF22D3EE),
     stressLow = Color(0xFFFACC15),
     stressMedium = Color(0xFFFB923C),
-    stressHigh = Color(0xFFF87171)
+    stressHigh = Color(0xFFF87171),
+    // Measured against #161C1F: 6.71 / 6.77 / 9.88 / 7.61 / 6.22.
+    zone1 = Color(0xFF94A3B8),
+    zone2 = Color(0xFF60A5FA),
+    zone3 = Color(0xFF4ADE80),
+    zone4 = Color(0xFFFB923C),
+    zone5 = Color(0xFFF87171)
 )
 
 @Composable

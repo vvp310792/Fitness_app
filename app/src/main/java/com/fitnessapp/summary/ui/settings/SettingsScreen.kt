@@ -18,6 +18,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,10 +33,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.fitnessapp.summary.BuildConfig
 import com.fitnessapp.summary.FitnessSummaryApp
+import com.fitnessapp.summary.analytics.HeartRateZoneStore
+import com.fitnessapp.summary.analytics.IntensityAnalytics
 import com.fitnessapp.summary.debug.AppLog
 import com.fitnessapp.summary.export.DataExporter
 import com.fitnessapp.summary.garmin.GarminLoginResult
@@ -77,6 +81,7 @@ fun SettingsScreen(app: FitnessSummaryApp) {
         item { SyncSection(app) }
         item { GarminSection(app) }
         item { ScaleSection(app) }
+        item { HeartRateZoneSection(app) }
         item { StrengthSection(app) }
         item { LogsSection() }
         item { AccountSection(app) }
@@ -857,6 +862,155 @@ private fun AboutSection() {
  * and the only place in the app where the numbers come from a text file the user exports
  * by hand, which is worth stating plainly rather than hiding behind a generic "импорт".
  */
+/**
+ * The user's maximum heart rate - the single number every zone boundary on «Тренды» is a
+ * percentage of.
+ *
+ * It lives here rather than on the chart because it is a setting, like every other
+ * configuration in this app, and because the two things it needs saying about it are
+ * long: what the estimate is worth, and why the app will not just adopt it silently.
+ *
+ * The estimate offered alongside is the 95th percentile of the user's own recorded
+ * session maxima over the last year. That is a **floor**, not an estimate of the true
+ * maximum: it can only see efforts that were actually made, so a deliberately easy season
+ * reads 20-30 bpm low and would shift every band down with it, turning easy training into
+ * apparent threshold work. Which is exactly why it is shown as a suggestion with a button,
+ * never written in on the user's behalf.
+ */
+@Composable
+private fun HeartRateZoneSection(app: FitnessSummaryApp) {
+    val today = remember { java.time.LocalDate.now() }
+    val yearAgo = today.minusDays(364)
+    val palette = metricPalette()
+
+    val storedHrMax by app.heartRateZones.hrMax.collectAsState()
+    val activities by remember {
+        app.database.garminActivityDao().observeRange(yearAgo.toEpochDay(), today.toEpochDay())
+    }.collectAsState(initial = emptyList())
+    val workouts by remember { app.workoutRepository.observeRange(yearAgo, today) }
+        .collectAsState(initial = emptyList())
+
+    // Same merge the Тренды card uses, so the suggestion is computed over exactly the
+    // sessions the zones will be computed over - one source of truth, not two.
+    val suggested = remember(activities, workouts) {
+        IntensityAnalytics.suggestHrMax(IntensityAnalytics.sessions(activities, workouts))
+    }
+
+    var input by remember(storedHrMax) { mutableStateOf(if (storedHrMax > 0) storedHrMax.toString() else "") }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    InfoCard(title = "Пульсовые зоны") {
+        Text(
+            text = "На вкладке «Тренды» тренировки раскладываются по пяти зонам Garmin — " +
+                "60 / 70 / 80 / 90 % от максимального пульса. Все границы считаются от " +
+                "одного этого числа, поэтому оно задаётся здесь, а не подбирается само.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        if (storedHrMax > 0) {
+            StatRow("Максимальный пульс", "$storedHrMax уд/мин · задан вами")
+        } else if (suggested != null) {
+            StatRow("Максимальный пульс", "$suggested уд/мин · оценка")
+        } else {
+            StatRow("Максимальный пульс", "не задан")
+        }
+
+        if (suggested != null) {
+            Text(
+                text = "По вашим тренировкам за год 95-й процентиль максимального пульса — " +
+                    "$suggested уд/мин. Это нижняя граница: видно только те усилия, которые " +
+                    "действительно были, поэтому после лёгкого сезона число выходит " +
+                    "заниженным. Если знаете свой настоящий максимум (тест или гонка) — " +
+                    "задайте его, зоны сдвинутся вместе с ним.",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        } else {
+            Text(
+                text = "Оценить по вашим записям пока не получается: нужно хотя бы " +
+                    "${IntensityAnalytics.MIN_SESSIONS_FOR_SUGGESTION} тренировок с пульсом " +
+                    "за последний год. Задайте максимальный пульс вручную — иначе зоны на " +
+                    "«Трендах» не рисуются вовсе.",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+
+        OutlinedTextField(
+            value = input,
+            onValueChange = {
+                input = it.filter { ch -> ch.isDigit() }.take(3)
+                error = null
+            },
+            label = { Text("Максимальный пульс, уд/мин") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            isError = error != null,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp)
+        )
+        error?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+
+        Row(modifier = Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    val value = input.toIntOrNull()
+                    // Rejected, not clamped: a typo of 19 or 900 is not a heart rate
+                    // anybody meant, and quietly turning it into 120 or 230 would hide the
+                    // typo behind bands that look perfectly plausible.
+                    error = if (value != null && app.heartRateZones.set(value)) {
+                        null
+                    } else {
+                        "Введите число от ${HeartRateZoneStore.ALLOWED.first} до ${HeartRateZoneStore.ALLOWED.last}."
+                    }
+                },
+                enabled = input.isNotBlank() && input.toIntOrNull() != storedHrMax
+            ) {
+                Text("Сохранить")
+            }
+            if (storedHrMax > 0) {
+                OutlinedButton(onClick = {
+                    app.heartRateZones.clear()
+                    input = ""
+                    error = null
+                }) {
+                    Text("Сбросить к оценке")
+                }
+            } else if (suggested != null) {
+                OutlinedButton(onClick = {
+                    input = suggested.toString()
+                    error = null
+                }) {
+                    Text("Подставить $suggested")
+                }
+            }
+        }
+
+        if (storedHrMax > 0 && suggested != null && storedHrMax < suggested) {
+            // A stored maximum below an actually recorded percentile means real sessions
+            // sit above "maximum" - the bands are wrong and the top zone is overflowing.
+            Text(
+                text = "Заданный максимум ниже, чем 95-й процентиль ваших записей ($suggested). " +
+                    "Значит часть тренировок проходила выше «максимума» — зоны считаются " +
+                    "неверно, стоит перепроверить число.",
+                style = MaterialTheme.typography.labelMedium,
+                color = palette.stress,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+    }
+}
+
 @Composable
 private fun StrengthSection(app: FitnessSummaryApp) {
     val importState by app.strengthImport.state.collectAsState()

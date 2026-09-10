@@ -1,6 +1,7 @@
 package com.fitnessapp.summary
 
 import android.app.Application
+import com.fitnessapp.summary.analytics.HeartRateZoneStore
 import com.fitnessapp.summary.data.AppDatabase
 import com.fitnessapp.summary.debug.AppLog
 import com.fitnessapp.summary.data.SummaryRepository
@@ -107,6 +108,12 @@ class FitnessSummaryApp : Application() {
             database = database
         )
     }
+
+    /**
+     * The user's own maximum heart rate, which every zone boundary on «Тренды» is a
+     * percentage of. Not derived from anything else in the graph - see the store.
+     */
+    val heartRateZones: HeartRateZoneStore by lazy { HeartRateZoneStore(this) }
 
     /** Imported gym log - the only source the user feeds in by hand. See strength/. */
     val strengthImport: StrengthImportManager by lazy { StrengthImportManager(this, database) }
