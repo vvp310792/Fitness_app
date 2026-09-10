@@ -31,6 +31,7 @@ import com.fitnessapp.summary.data.GarminBodyComposition
 import com.fitnessapp.summary.data.GarminDailyExtra
 import com.fitnessapp.summary.data.GarminHrv
 import com.fitnessapp.summary.data.GarminReadiness
+import com.fitnessapp.summary.data.DayView
 import com.fitnessapp.summary.data.GarminSleep
 import com.fitnessapp.summary.data.GarminTraining
 import com.fitnessapp.summary.data.ScaleMeasurement
@@ -107,11 +108,8 @@ fun DayScreen(app: FitnessSummaryApp) {
 
     val palette = metricPalette()
 
-    // The day as shown: Health Connect when it has anything, otherwise the same numbers
-    // from Garmin's own summary - so a day that never made it to Health Connect still has
-    // its steps and calories on screen instead of an empty state.
-    val healthDay = summary?.takeUnless { it.isEmpty }
-    val displayDay = healthDay ?: garmin?.takeUnless { it.isEmpty }?.let { dailyFromGarmin(it, garminSleep) }
+    // The day as shown: Garmin first, Health Connect filling the gaps - see [DayView].
+    val displayDay = DayView.merge(summary, garmin, garminSleep)
     val extra = garmin?.takeUnless { it.isEmpty }
     val sleep = garminSleep?.takeUnless { it.isEmpty }
 
@@ -190,22 +188,6 @@ fun DayScreen(app: FitnessSummaryApp) {
     }
 }
 
-/** Health-Connect-shaped view of a Garmin day, for the tiles when Health Connect has nothing. */
-private fun dailyFromGarmin(g: GarminDailyExtra, sleep: GarminSleep?): DailySummary = DailySummary(
-    dateEpochDay = g.dateEpochDay,
-    steps = g.totalSteps,
-    activeCaloriesKcal = g.activeKilocalories,
-    totalCaloriesKcal = g.totalKilocalories,
-    distanceMeters = g.totalDistanceMeters,
-    restingHeartRate = g.restingHeartRate,
-    minHeartRate = g.minHeartRate,
-    maxHeartRate = g.maxHeartRate,
-    sleepTotalMinutes = sleep?.sleepMinutes ?: 0,
-    sleepDeepMinutes = sleep?.deepMinutes ?: 0,
-    sleepLightMinutes = sleep?.lightMinutes ?: 0,
-    sleepRemMinutes = sleep?.remMinutes ?: 0,
-    sleepAwakeMinutes = sleep?.awakeMinutes ?: 0
-)
 
 @Composable
 private fun MorningReport(

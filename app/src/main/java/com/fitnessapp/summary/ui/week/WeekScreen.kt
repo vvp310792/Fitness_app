@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import com.fitnessapp.summary.FitnessSummaryApp
 import com.fitnessapp.summary.analytics.GarminWeekSummary
 import com.fitnessapp.summary.analytics.LifestyleAnalytics
+import com.fitnessapp.summary.data.DayView
 import com.fitnessapp.summary.data.GarminDailyExtra
 import com.fitnessapp.summary.data.GarminSleep
 import com.fitnessapp.summary.data.SummaryRepository
@@ -91,29 +92,35 @@ fun WeekScreen(app: FitnessSummaryApp) {
         )
     }.collectAsState(initial = emptyList())
 
-    val week = remember(days, workouts, selectedWeekStart) {
-        SummaryRepository.computeWeekSummary(selectedWeekStart, days, workouts)
+    // Garmin's own numbers, over the same two weeks the Health Connect query covers, so
+    // the previous week is merged from both sources too - a comparison chip built from a
+    // Health-Connect-only baseline against a Garmin-backed current week is how the two
+    // disagreed in the first place. All empty for an install without the Garmin login.
+    val weekFromEpoch = selectedWeekStart.toEpochDay()
+    val weekToEpoch = selectedWeekStart.plusDays(6).toEpochDay()
+    val garminDaysRange by remember(selectedWeekStart) { app.database.garminDailyExtraDao().observeRange(weekFromEpoch - 7, weekToEpoch) }.collectAsState(initial = emptyList())
+    val garminSleepsRange by remember(selectedWeekStart) { app.database.garminSleepDao().observeRange(weekFromEpoch - 7, weekToEpoch) }.collectAsState(initial = emptyList())
+    val garminDays = remember(garminDaysRange, weekFromEpoch) { garminDaysRange.filter { it.dateEpochDay >= weekFromEpoch } }
+    val garminSleeps = remember(garminSleepsRange, weekFromEpoch) { garminSleepsRange.filter { it.dateEpochDay >= weekFromEpoch } }
+
+    // Every number below is computed from the MERGED day, not the Health Connect row:
+    // Garmin is the first source, Health Connect fills its gaps (see [DayView]). Before
+    // this, steps and calories came from a Health Connect copy that other apps also write
+    // into, and sleep came from a copy Garmin fills only sporadically.
+    val mergedDays = remember(days, garminDaysRange, garminSleepsRange) {
+        DayView.mergeRange(days, garminDaysRange, garminSleepsRange)
     }
-    val previousWeek = remember(days, previousWorkouts, selectedWeekStart) {
+
+    val week = remember(mergedDays, workouts, selectedWeekStart) {
+        SummaryRepository.computeWeekSummary(selectedWeekStart, mergedDays, workouts)
+    }
+    val previousWeek = remember(mergedDays, previousWorkouts, selectedWeekStart) {
         SummaryRepository.computeWeekSummary(
             selectedWeekStart.minusWeeks(1),
-            days,
+            mergedDays,
             previousWorkouts
         )
     }
-
-    // Garmin's own numbers for the same seven days. All empty for an install without the
-    // Garmin login, in which case the section below simply doesn't render.
-    val weekFromEpoch = selectedWeekStart.toEpochDay()
-    val weekToEpoch = selectedWeekStart.plusDays(6).toEpochDay()
-    val garminDays by remember(selectedWeekStart) { app.database.garminDailyExtraDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
-    val garminSleeps by remember(selectedWeekStart) { app.database.garminSleepDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
-    // The previous week's nights too, so the "К прошлой неделе" sleep chip compares the
-    // same merged number the card above shows. Comparing a Health-Connect-only average
-    // against a Garmin-backed one is how the two disagreed in the first place.
-    val previousGarminSleeps by remember(selectedWeekStart) {
-        app.database.garminSleepDao().observeRange(weekFromEpoch - 7, weekToEpoch - 7)
-    }.collectAsState(initial = emptyList())
     val garminHrvs by remember(selectedWeekStart) { app.database.garminHrvDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
     val garminReadiness by remember(selectedWeekStart) { app.database.garminReadinessDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
     val garminActivities by remember(selectedWeekStart) { app.database.garminActivityDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
@@ -171,21 +178,15 @@ fun WeekScreen(app: FitnessSummaryApp) {
 
         if (!week.isEmpty) {
             item {
-                WeekTotals(
-                    week = week,
-                    previous = previousWeek,
-                    sleepMinutes = mergedSleepMinutes(days, garminSleeps, selectedWeekStart),
-                    previousSleepMinutes = mergedSleepMinutes(days, previousGarminSleeps, selectedWeekStart.minusWeeks(1)),
-                    palette = palette
-                )
+                WeekTotals(week = week, previous = previousWeek, palette = palette)
             }
         }
         if (!garminWeek.isEmpty) {
             item { GarminWeekSection(garminWeek, garminDays, garminSleeps, selectedWeekStart, today, palette) }
         }
         if (!week.isEmpty) {
-            item { StepsChart(week, days, selectedWeekStart, today, palette) }
-            item { SleepSection(week, days, garminSleeps, selectedWeekStart, today, palette) }
+            item { StepsChart(week, mergedDays, selectedWeekStart, today, palette) }
+            item { SleepSection(week, mergedDays, selectedWeekStart, today, palette) }
             item { HeartSection(week) }
         }
 
@@ -356,9 +357,6 @@ private fun GarminWeekSection(
 private fun WeekTotals(
     week: WeekSummary,
     previous: WeekSummary,
-    /** Merged across both sleep sources - see [mergedSleepMinutes]; the chip must not disagree with the card. */
-    sleepMinutes: List<Int>,
-    previousSleepMinutes: List<Int>,
     palette: MetricPalette
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -416,8 +414,7 @@ private fun WeekTotals(
             percentChange(week.totalSteps, previous.totalSteps)?.let { add("Шаги" to it) }
             percentChange(week.totalDistanceMeters, previous.totalDistanceMeters)?.let { add("Дистанция" to it) }
             percentChange(week.workoutMinutes, previous.workoutMinutes)?.let { add("Тренировки" to it) }
-            percentChange(sleepMinutes.averageOrZero(), previousSleepMinutes.averageOrZero())
-                ?.let { add("Сон" to it) }
+            percentChange(week.avgSleepMinutes, previous.avgSleepMinutes)?.let { add("Сон" to it) }
         }
         if (comparisons.isNotEmpty()) {
             InfoCard(title = "К прошлой неделе") {
@@ -487,29 +484,19 @@ private fun StepsChart(
 private fun SleepSection(
     week: WeekSummary,
     days: List<com.fitnessapp.summary.data.DailySummary>,
-    garminSleeps: List<GarminSleep>,
     weekStart: LocalDate,
     today: LocalDate,
     palette: MetricPalette
 ) {
-    val healthByDay = days.associateBy { it.dateEpochDay }
-    val garminByDay = garminSleeps.associateBy { it.dateEpochDay }
-
+    // `days` is already merged (Garmin first, Health Connect filling gaps - see [DayView]),
+    // so the whole night, stages included, comes from one source and this screen no longer
+    // has its own precedence rule to keep in step with the Day screen's.
+    val byDay = days.associateBy { it.dateEpochDay }
     val nights = (0..6).map { weekStart.plusDays(it.toLong()) }
-    val minutes = nights.map { sleepMinutesOn(it.toEpochDay(), healthByDay, garminByDay) }
+    val minutes = nights.map { byDay[it.toEpochDay()]?.sleepTotalMinutes ?: 0 }
     val recorded = minutes.filter { it > 0 }
-    // Deep and REM come from whichever source supplied that night's total, so the parts
-    // are never quoted against a whole they don't belong to.
-    val deep = nights.mapNotNull { date ->
-        val day = date.toEpochDay()
-        garminByDay[day]?.takeIf { it.sleepMinutes > 0 }?.deepMinutes
-            ?: healthByDay[day]?.sleepDeepMinutes
-    }.filter { it > 0 }
-    val rem = nights.mapNotNull { date ->
-        val day = date.toEpochDay()
-        garminByDay[day]?.takeIf { it.sleepMinutes > 0 }?.remMinutes
-            ?: healthByDay[day]?.sleepRemMinutes
-    }.filter { it > 0 }
+    val deep = nights.mapNotNull { byDay[it.toEpochDay()]?.sleepDeepMinutes }.filter { it > 0 }
+    val rem = nights.mapNotNull { byDay[it.toEpochDay()]?.sleepRemMinutes }.filter { it > 0 }
 
     InfoCard(title = "Сон") {
         if (recorded.isEmpty()) {
@@ -567,29 +554,8 @@ private fun SleepSection(
  * sporadically on some accounts - eight nights out of fifty-six in one real log - so
  * reading Health Connect alone made most nights look like zero.
  */
-private fun sleepMinutesOn(
-    epochDay: Long,
-    healthByDay: Map<Long, com.fitnessapp.summary.data.DailySummary>,
-    garminByDay: Map<Long, GarminSleep>
-): Int = garminByDay[epochDay]?.sleepMinutes?.takeIf { it > 0 }
-    ?: healthByDay[epochDay]?.sleepTotalMinutes
-    ?: 0
 
-/** The recorded nights of one week, merged across both sources - nights with nothing are left out. */
-private fun mergedSleepMinutes(
-    days: List<com.fitnessapp.summary.data.DailySummary>,
-    garminSleeps: List<GarminSleep>,
-    weekStart: LocalDate
-): List<Int> {
-    val healthByDay = days.associateBy { it.dateEpochDay }
-    val garminByDay = garminSleeps.associateBy { it.dateEpochDay }
-    return (0..6)
-        .map { sleepMinutesOn(weekStart.plusDays(it.toLong()).toEpochDay(), healthByDay, garminByDay) }
-        .filter { it > 0 }
-}
 
-/** Mean, or 0 for an empty week - `average()` on an empty list is NaN, which percentChange would happily divide by. */
-private fun List<Int>.averageOrZero(): Double = if (isEmpty()) 0.0 else average()
 
 @Composable
 private fun HeartSection(week: WeekSummary) {
