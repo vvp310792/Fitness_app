@@ -207,4 +207,11 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0")
 
     testImplementation("junit:junit:4.13.2")
+    // The real org.json, for the JVM tests only. android.jar ships org.json too, but
+    // `isReturnDefaultValues = true` above turns every one of its methods into a stub that
+    // answers 0/null - which would make a JSON parser test pass while parsing nothing.
+    // This matters more than usual here: the Garmin heart-rate-zone response is the one
+    // payload in this project whose field names could NOT be verified against a reference
+    // implementation, so its parser has to be pinned against real JSON.
+    testImplementation("org.json:json:20231013")
 }

@@ -38,8 +38,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.fitnessapp.summary.BuildConfig
 import com.fitnessapp.summary.FitnessSummaryApp
+import com.fitnessapp.summary.analytics.HeartRateZone
 import com.fitnessapp.summary.analytics.HeartRateZoneStore
 import com.fitnessapp.summary.analytics.IntensityAnalytics
+import com.fitnessapp.summary.analytics.ZoneSource
 import com.fitnessapp.summary.debug.AppLog
 import com.fitnessapp.summary.export.DataExporter
 import com.fitnessapp.summary.garmin.GarminLoginResult
@@ -58,6 +60,7 @@ import com.fitnessapp.summary.ui.theme.metricPalette
 import com.fitnessapp.summary.update.ApkInstaller
 import com.fitnessapp.summary.update.UpdateCheckResult
 import com.fitnessapp.summary.update.UpdateChecker
+import com.fitnessapp.summary.util.formatDays
 import com.fitnessapp.summary.util.formatTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -880,65 +883,115 @@ private fun AboutSection() {
 @Composable
 private fun HeartRateZoneSection(app: FitnessSummaryApp) {
     val today = remember { java.time.LocalDate.now() }
-    val yearAgo = today.minusDays(364)
+    val sampleFrom = remember { today.minusDays((IntensityAnalytics.HR_MAX_SAMPLE_DAYS - 1).toLong()) }
     val palette = metricPalette()
 
     val storedHrMax by app.heartRateZones.hrMax.collectAsState()
+    val garminZones by remember { app.database.garminHeartRateZoneDao().observeAll() }
+        .collectAsState(initial = emptyList())
     val activities by remember {
-        app.database.garminActivityDao().observeRange(yearAgo.toEpochDay(), today.toEpochDay())
+        app.database.garminActivityDao().observeRange(sampleFrom.toEpochDay(), today.toEpochDay())
     }.collectAsState(initial = emptyList())
-    val workouts by remember { app.workoutRepository.observeRange(yearAgo, today) }
+    val workouts by remember { app.workoutRepository.observeRange(sampleFrom, today) }
         .collectAsState(initial = emptyList())
 
-    // Same merge the Тренды card uses, so the suggestion is computed over exactly the
-    // sessions the zones will be computed over - one source of truth, not two.
+    // The same fixed year the Тренды card samples, so the two screens can never report a
+    // different estimate for the same person.
     val suggested = remember(activities, workouts) {
         IntensityAnalytics.suggestHrMax(IntensityAnalytics.sessions(activities, workouts))
+    }
+    val fromGarmin = remember(garminZones) { IntensityAnalytics.garminDefault(garminZones) }
+    val inForce = remember(garminZones, storedHrMax, suggested) {
+        IntensityAnalytics.resolveBoundaries(garminZones, storedHrMax, suggested)
     }
 
     var input by remember(storedHrMax) { mutableStateOf(if (storedHrMax > 0) storedHrMax.toString() else "") }
     var error by remember { mutableStateOf<String?>(null) }
+    var showRaw by remember { mutableStateOf(false) }
 
     InfoCard(title = "Пульсовые зоны") {
         Text(
-            text = "На вкладке «Тренды» тренировки раскладываются по пяти зонам Garmin — " +
-                "60 / 70 / 80 / 90 % от максимального пульса. Все границы считаются от " +
-                "одного этого числа, поэтому оно задаётся здесь, а не подбирается само.",
+            text = "Зоны читаются прямо из ваших настроек Garmin — там уже задан и " +
+                "максимальный пульс, и границы, и способ их расчёта. Приложение их не " +
+                "моделирует: это тот же принцип, что и везде здесь — Garmin первоисточник. " +
+                "Обновляются одним запросом при каждой синхронизации.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        if (storedHrMax > 0) {
-            StatRow("Максимальный пульс", "$storedHrMax уд/мин · задан вами")
-        } else if (suggested != null) {
-            StatRow("Максимальный пульс", "$suggested уд/мин · оценка")
-        } else {
-            StatRow("Максимальный пульс", "не задан")
-        }
-
-        if (suggested != null) {
+        // What Garmin actually returned - the point of the whole card. Shown verbatim
+        // rather than folded into the numbers, because the field names in this payload
+        // were the one thing that couldn't be verified against a reference implementation.
+        if (fromGarmin != null) {
+            StatRow("Источник зон", "Garmin · профиль ${fromGarmin.sport}")
+            if (fromGarmin.maxHeartRate > 0) StatRow("Максимальный пульс", "${fromGarmin.maxHeartRate} уд/мин")
+            if (fromGarmin.method.isNotBlank()) StatRow("Способ расчёта", fromGarmin.method)
+            HeartRateZone.entries.forEach { zone ->
+                val lower = fromGarmin.lowerBpm(zone)
+                val upper = fromGarmin.upperBpmExclusive(zone)
+                StatRow(
+                    "Z${zone.number} · ${zone.title}",
+                    if (upper != null) "$lower\u2013${upper - 1} уд/мин" else "$lower и выше"
+                )
+            }
+            if (garminZones.size > 1) {
+                Text(
+                    text = "У вас настроено профилей: ${garminZones.size} " +
+                        "(${garminZones.joinToString(", ") { it.sport }}). Для распределения на " +
+                        "«Трендах» берётся DEFAULT: одно распределение по бегу, велосипеду и залу " +
+                        "надо считать по одной лестнице, иначе проценты несравнимы между собой.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+        } else if (garminZones.isNotEmpty()) {
+            // Garmin answered but the floors didn't come out as five ascending numbers.
+            // This is the case the raw response exists for - it says whether Garmin sent
+            // nothing or sent it under names the parser didn't recognise.
             Text(
-                text = "По вашим тренировкам за год 95-й процентиль максимального пульса — " +
-                    "$suggested уд/мин. Это нижняя граница: видно только те усилия, которые " +
-                    "действительно были, поэтому после лёгкого сезона число выходит " +
-                    "заниженным. Если знаете свой настоящий максимум (тест или гонка) — " +
-                    "задайте его, зоны сдвинутся вместе с ним.",
-                style = MaterialTheme.typography.labelMedium,
+                text = "Garmin ответил, но разобрать зоны не удалось — границы пришли не в том " +
+                    "виде, которого ждёт разбор. Это единственный ответ Garmin в приложении, " +
+                    "чьи имена полей не удалось сверить с эталонной реализацией, поэтому " +
+                    "ответ сохранён целиком. Покажите его — по нему разбор чинится за минуту.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+            TextButton(onClick = { showRaw = !showRaw }) {
+                Text(if (showRaw) "Скрыть ответ Garmin" else "Показать ответ Garmin")
+            }
+            if (showRaw) {
+                Text(
+                    text = garminZones.joinToString("\n\n") { it.rawJson },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            Text(
+                text = if (app.garminAuth.isLoggedIn) {
+                    "Зоны из Garmin ещё не загружены. Нажмите «Синхронизировать» в секции " +
+                        "«Garmin напрямую» выше — это один запрос."
+                } else {
+                    "Войдите в Garmin в секции выше, и зоны подтянутся сами. Без входа " +
+                        "остаётся ручной ввод максимального пульса — границы посчитаются от него " +
+                        "по формуле Garmin (60/70/80/90 %)."
+                },
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 6.dp)
             )
-        } else {
-            Text(
-                text = "Оценить по вашим записям пока не получается: нужно хотя бы " +
-                    "${IntensityAnalytics.MIN_SESSIONS_FOR_SUGGESTION} тренировок с пульсом " +
-                    "за последний год. Задайте максимальный пульс вручную — иначе зоны на " +
-                    "«Трендах» не рисуются вовсе.",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 6.dp)
-            )
         }
 
+        // The manual override sits under Garmin's own numbers, not above them in the
+        // reading order: it is the exception now, not the mechanism.
+        Text(
+            text = "Задать максимальный пульс вручную (перекрывает зоны Garmin):",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 10.dp)
+        )
         OutlinedTextField(
             value = input,
             onValueChange = {
@@ -951,7 +1004,7 @@ private fun HeartRateZoneSection(app: FitnessSummaryApp) {
             isError = error != null,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 8.dp)
+                .padding(top = 6.dp)
         )
         error?.let {
             Text(
@@ -984,9 +1037,9 @@ private fun HeartRateZoneSection(app: FitnessSummaryApp) {
                     input = ""
                     error = null
                 }) {
-                    Text("Сбросить к оценке")
+                    Text(if (fromGarmin != null) "Вернуться к зонам Garmin" else "Сбросить")
                 }
-            } else if (suggested != null) {
+            } else if (suggested != null && fromGarmin == null) {
                 OutlinedButton(onClick = {
                     input = suggested.toString()
                     error = null
@@ -996,13 +1049,34 @@ private fun HeartRateZoneSection(app: FitnessSummaryApp) {
             }
         }
 
+        // A manual value quietly shadowing real Garmin zones is exactly the failure this
+        // whole change was made to stop, so it is never silent.
+        if (storedHrMax > 0 && fromGarmin != null) {
+            Text(
+                text = "Сейчас используется ваш ручной максимум $storedHrMax, а не зоны Garmin. " +
+                    "Кнопка выше вернёт гарминовские.",
+                style = MaterialTheme.typography.labelMedium,
+                color = palette.stress,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+
+        if (inForce?.source == ZoneSource.ESTIMATED && suggested != null) {
+            Text(
+                text = "Пока зон нет ни из Garmin, ни вручную, границы считаются от оценки " +
+                    "$suggested уд/мин — это 95-й процентиль ваших максимумов за " +
+                    "${formatDays(IntensityAnalytics.HR_MAX_SAMPLE_DAYS)}. Оценка занижает: видны " +
+                    "только те усилия, которые действительно были.",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+
         if (storedHrMax > 0 && suggested != null && storedHrMax < suggested) {
-            // A stored maximum below an actually recorded percentile means real sessions
-            // sit above "maximum" - the bands are wrong and the top zone is overflowing.
             Text(
                 text = "Заданный максимум ниже, чем 95-й процентиль ваших записей ($suggested). " +
-                    "Значит часть тренировок проходила выше «максимума» — зоны считаются " +
-                    "неверно, стоит перепроверить число.",
+                    "Значит часть тренировок проходила выше «максимума» — стоит перепроверить число.",
                 style = MaterialTheme.typography.labelMedium,
                 color = palette.stress,
                 modifier = Modifier.padding(top = 6.dp)

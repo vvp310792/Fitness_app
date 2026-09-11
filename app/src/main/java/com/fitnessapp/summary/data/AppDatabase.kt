@@ -31,9 +31,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GarminActivity::class,
         GarminSyncMark::class,
         ScaleMeasurement::class,
-        StrengthSet::class
+        StrengthSet::class,
+        GarminHeartRateZone::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -50,6 +51,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun garminSyncMarkDao(): GarminSyncMarkDao
     abstract fun scaleMeasurementDao(): ScaleMeasurementDao
     abstract fun strengthSetDao(): StrengthSetDao
+    abstract fun garminHeartRateZoneDao(): GarminHeartRateZoneDao
 
     companion object {
         @Volatile
@@ -343,6 +345,39 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /** Imported gym log - see data/StrengthEntities.kt. Additive, like every migration here. */
+        /**
+         * The user's own heart-rate zones as configured in Garmin, one row per sport
+         * profile - see [GarminHeartRateZone]. Added because the zones on «Тренды» were
+         * being modelled from an estimated maximum instead of read from the source that
+         * already had them.
+         *
+         * Additive like every migration here: nothing existing is touched, and an install
+         * that never logs into Garmin just carries one more empty table.
+         */
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS garmin_heart_rate_zones (
+                        sport TEXT NOT NULL,
+                        zone1Floor INTEGER NOT NULL DEFAULT 0,
+                        zone2Floor INTEGER NOT NULL DEFAULT 0,
+                        zone3Floor INTEGER NOT NULL DEFAULT 0,
+                        zone4Floor INTEGER NOT NULL DEFAULT 0,
+                        zone5Floor INTEGER NOT NULL DEFAULT 0,
+                        maxHeartRateUsed INTEGER NOT NULL DEFAULT 0,
+                        restingHeartRateUsed INTEGER NOT NULL DEFAULT 0,
+                        lactateThresholdHeartRateUsed INTEGER NOT NULL DEFAULT 0,
+                        method TEXT NOT NULL DEFAULT '',
+                        rawJson TEXT NOT NULL DEFAULT '',
+                        updatedAtMillis INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(sport)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         private val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
@@ -372,7 +407,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "fitness_summary.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .build()
                 INSTANCE = instance
                 instance

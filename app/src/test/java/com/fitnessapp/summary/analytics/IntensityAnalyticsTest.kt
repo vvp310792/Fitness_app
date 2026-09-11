@@ -1,6 +1,7 @@
 package com.fitnessapp.summary.analytics
 
 import com.fitnessapp.summary.data.GarminActivity
+import com.fitnessapp.summary.data.GarminHeartRateZone
 import com.fitnessapp.summary.data.Workout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -18,6 +19,10 @@ import org.junit.Test
 class IntensityAnalyticsTest {
 
     private val hrMax = 190
+
+    // The percentage fallback at this account's HRmax - the model used when Garmin has no
+    // zones to give. Garmin's own floors are pinned separately in GarminZoneParserTest.
+    private val bounds = ZoneBoundaries.fromHrMax(hrMax, ZoneSource.ESTIMATED)
 
     private fun garmin(
         id: Long,
@@ -68,7 +73,7 @@ class IntensityAnalyticsTest {
             195 to HeartRateZone.Z5
         )
         expected.forEach { (bpm, zone) ->
-            assertEquals("$bpm bpm at HRmax $hrMax", zone, HeartRateZone.of(bpm, hrMax))
+            assertEquals("$bpm bpm at HRmax $hrMax", zone, HeartRateZone.of(bpm, bounds))
         }
     }
 
@@ -80,17 +85,18 @@ class IntensityAnalyticsTest {
     @Test
     fun `printed lower bound is the bound that classifies`() {
         listOf(175, 186, 190, 201, 207).forEach { max ->
+            val b = ZoneBoundaries.fromHrMax(max, ZoneSource.ESTIMATED)
             HeartRateZone.entries.forEach { zone ->
-                val lower = zone.lowerBpm(max)
+                val lower = b.lowerBpm(zone)
                 assertEquals(
                     "HRmax $max, ${zone.name} starts at $lower",
                     zone,
-                    HeartRateZone.of(lower, max)
+                    HeartRateZone.of(lower, b)
                 )
                 if (zone != HeartRateZone.Z1) {
                     assertTrue(
                         "HRmax $max: ${lower - 1} must fall below ${zone.name}",
-                        HeartRateZone.of(lower - 1, max).ordinal < zone.ordinal
+                        HeartRateZone.of(lower - 1, b).ordinal < zone.ordinal
                     )
                 }
             }
@@ -101,11 +107,11 @@ class IntensityAnalyticsTest {
     @Test
     fun `the five bands tile the range without gap or overlap`() {
         HeartRateZone.entries.forEach { zone ->
-            val upper = zone.upperBpmExclusive(hrMax)
+            val upper = bounds.upperBpmExclusive(zone)
             if (zone == HeartRateZone.Z5) {
                 assertNull(upper)
             } else {
-                assertEquals(HeartRateZone.entries[zone.ordinal + 1].lowerBpm(hrMax), upper)
+                assertEquals(bounds.lowerBpm(HeartRateZone.entries[zone.ordinal + 1]), upper)
             }
         }
     }
@@ -117,7 +123,7 @@ class IntensityAnalyticsTest {
             listOf(garmin(1, minutes = 60, avgHr = 120)),
             emptyList()
         )
-        val breakdown = IntensityAnalytics.breakdown(sessions, hrMax)
+        val breakdown = IntensityAnalytics.breakdown(sessions, bounds)
         assertEquals(5, breakdown.zones.size)
         assertEquals(60, breakdown.zones.first { it.zone == HeartRateZone.Z2 }.minutes)
         assertEquals(0, breakdown.zones.first { it.zone == HeartRateZone.Z5 }.minutes)
@@ -139,7 +145,7 @@ class IntensityAnalyticsTest {
             ),
             emptyList()
         )
-        val breakdown = IntensityAnalytics.breakdown(sessions, hrMax)
+        val breakdown = IntensityAnalytics.breakdown(sessions, bounds)
         assertEquals(200, breakdown.totalMinutes)
         assertEquals(0, breakdown.zones.first { it.zone == HeartRateZone.Z3 }.minutes)
         assertEquals(0, breakdown.zones.first { it.zone == HeartRateZone.Z4 }.minutes)
@@ -164,7 +170,7 @@ class IntensityAnalyticsTest {
             ),
             emptyList()
         )
-        val breakdown = IntensityAnalytics.breakdown(sessions, hrMax)
+        val breakdown = IntensityAnalytics.breakdown(sessions, bounds)
         assertEquals(0, breakdown.zones.first { it.zone == HeartRateZone.Z1 }.minutes)
         assertEquals(30, breakdown.totalMinutes)
         assertEquals(1, breakdown.totalSessions)
@@ -185,7 +191,7 @@ class IntensityAnalyticsTest {
         )
         assertEquals(0, sessions.single().avgHeartRate)
         assertEquals(0, sessions.single().maxHeartRate)
-        val breakdown = IntensityAnalytics.breakdown(sessions, hrMax)
+        val breakdown = IntensityAnalytics.breakdown(sessions, bounds)
         assertEquals(0, breakdown.zones.first { it.zone == HeartRateZone.Z5 }.minutes)
         assertEquals(40, breakdown.minutesWithoutHeartRate)
     }
@@ -214,7 +220,7 @@ class IntensityAnalyticsTest {
             listOf(workout(5, minutes = 30, avgHr = 120, startMillis = start + 4 * 60_000L))
         )
         assertEquals(2, sessions.size)
-        val breakdown = IntensityAnalytics.breakdown(sessions, hrMax)
+        val breakdown = IntensityAnalytics.breakdown(sessions, bounds)
         assertEquals(90, breakdown.totalMinutes)
     }
 
@@ -226,7 +232,7 @@ class IntensityAnalyticsTest {
             listOf(workout(2, minutes = 0, avgHr = 150, startMillis = 99 * 86_400_000L))
         )
         assertTrue(sessions.isEmpty())
-        assertTrue(IntensityAnalytics.breakdown(sessions, hrMax).isEmpty)
+        assertTrue(IntensityAnalytics.breakdown(sessions, bounds).isEmpty)
     }
 
     /**
@@ -273,8 +279,117 @@ class IntensityAnalyticsTest {
     /** Nothing at all is an empty breakdown, not a division by zero. */
     @Test
     fun `an empty period is empty rather than broken`() {
-        val breakdown = IntensityAnalytics.breakdown(emptyList(), hrMax)
+        val breakdown = IntensityAnalytics.breakdown(emptyList(), bounds)
         assertTrue(breakdown.isEmpty)
         assertEquals(0, breakdown.sharePercent(breakdown.zones.first()))
+    }
+}
+
+/**
+ * Which ladder ends up in force, given everything that might know it.
+ *
+ * This is where the original bug lived: the app modelled zones from a maximum it had to
+ * guess, while Garmin had the real ones on its server the whole time. The priority below
+ * is the fix, and it is pinned because each fallback looks perfectly plausible on screen.
+ */
+class ZoneBoundarySourceTest {
+
+    private fun garminRow(
+        sport: String,
+        floors: List<Int> = listOf(95, 114, 133, 152, 171),
+        maxHr: Int = 190
+    ) = GarminHeartRateZone(
+        sport = sport,
+        zone1Floor = floors[0],
+        zone2Floor = floors[1],
+        zone3Floor = floors[2],
+        zone4Floor = floors[3],
+        zone5Floor = floors[4],
+        maxHeartRateUsed = maxHr
+    )
+
+    /** Garmin's own zones beat an estimate - the entire point of reading them. */
+    @Test
+    fun `Garmin zones win over the estimate`() {
+        val bounds = IntensityAnalytics.resolveBoundaries(
+            garminZones = listOf(garminRow("DEFAULT")),
+            manualHrMax = 0,
+            estimatedHrMax = 160
+        )
+        assertEquals(ZoneSource.GARMIN, bounds?.source)
+        assertEquals(listOf(95, 114, 133, 152, 171), bounds?.floors)
+        assertEquals(190, bounds?.maxHeartRate)
+    }
+
+    /** A number the user typed is an explicit act and stays on top - but never silently. */
+    @Test
+    fun `a manual maximum overrides Garmin`() {
+        val bounds = IntensityAnalytics.resolveBoundaries(
+            garminZones = listOf(garminRow("DEFAULT")),
+            manualHrMax = 200,
+            estimatedHrMax = 160
+        )
+        assertEquals(ZoneSource.MANUAL, bounds?.source)
+        assertEquals(200, bounds?.maxHeartRate)
+    }
+
+    @Test
+    fun `without Garmin or a manual value the estimate is used and labelled as such`() {
+        val bounds = IntensityAnalytics.resolveBoundaries(emptyList(), manualHrMax = 0, estimatedHrMax = 181)
+        assertEquals(ZoneSource.ESTIMATED, bounds?.source)
+        assertEquals(181, bounds?.maxHeartRate)
+    }
+
+    /** Nothing knows: null, so the card can say so instead of inventing a ladder. */
+    @Test
+    fun `nothing known produces no boundaries at all`() {
+        assertNull(IntensityAnalytics.resolveBoundaries(emptyList(), manualHrMax = 0, estimatedHrMax = null))
+    }
+
+    /** One distribution has to be counted against one ladder, so DEFAULT is the one. */
+    @Test
+    fun `the DEFAULT profile is chosen among several sports`() {
+        val bounds = IntensityAnalytics.resolveBoundaries(
+            garminZones = listOf(
+                garminRow("RUNNING", listOf(99, 118, 137, 156, 175)),
+                garminRow("DEFAULT", listOf(95, 114, 133, 152, 171)),
+                garminRow("CYCLING", listOf(90, 109, 128, 147, 166))
+            ),
+            manualHrMax = 0,
+            estimatedHrMax = null
+        )
+        assertEquals("DEFAULT", bounds?.sport)
+        assertEquals(listOf(95, 114, 133, 152, 171), bounds?.floors)
+    }
+
+    /** An account with no DEFAULT profile still gets zones rather than nothing. */
+    @Test
+    fun `the first usable profile is used when there is no DEFAULT`() {
+        val bounds = IntensityAnalytics.resolveBoundaries(
+            garminZones = listOf(garminRow("RUNNING", listOf(99, 118, 137, 156, 175))),
+            manualHrMax = 0,
+            estimatedHrMax = null
+        )
+        assertEquals("RUNNING", bounds?.sport)
+    }
+
+    /** A row that didn't parse must fall through to the estimate, not be used half-read. */
+    @Test
+    fun `an unusable Garmin row falls through instead of being trusted`() {
+        val broken = garminRow("DEFAULT", listOf(95, 114, 0, 0, 0))
+        val bounds = IntensityAnalytics.resolveBoundaries(listOf(broken), manualHrMax = 0, estimatedHrMax = 181)
+        assertEquals(ZoneSource.ESTIMATED, bounds?.source)
+    }
+
+    /**
+     * Garmin's zone 1 starts near half of maximum, not at zero, and an easy session below
+     * that floor still has to land somewhere. Zone 1 is open at the bottom.
+     */
+    @Test
+    fun `a session below Garmin's zone 1 floor is still zone 1`() {
+        val bounds = ZoneBoundaries.fromGarmin(garminRow("DEFAULT"))!!
+        assertEquals(HeartRateZone.Z1, HeartRateZone.of(70, bounds))
+        assertEquals(HeartRateZone.Z1, HeartRateZone.of(94, bounds))
+        assertEquals(HeartRateZone.Z2, HeartRateZone.of(114, bounds))
     }
 }

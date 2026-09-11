@@ -39,6 +39,7 @@ import com.fitnessapp.summary.analytics.LifestyleInputs
 import com.fitnessapp.summary.analytics.DistanceSport
 import com.fitnessapp.summary.analytics.IntensityAnalytics
 import com.fitnessapp.summary.analytics.IntensityBreakdown
+import com.fitnessapp.summary.analytics.ZoneSource
 import com.fitnessapp.summary.analytics.LiftSession
 import com.fitnessapp.summary.analytics.StrengthAnalytics
 import com.fitnessapp.summary.analytics.SportDistanceAnalytics
@@ -134,13 +135,31 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     val intensitySessions = remember(activities, workouts) {
         IntensityAnalytics.sessions(activities, workouts)
     }
-    // The user's set maximum wins; otherwise the 95th percentile of their own recorded
-    // maxima, which is a floor rather than an estimate - hence the wording on the card.
+
+    // The zones the user actually has configured in Garmin - the authoritative ladder,
+    // read rather than modelled (see analytics/ZoneBoundaries).
+    val garminZones by remember { app.database.garminHeartRateZoneDao().observeAll() }
+        .collectAsState(initial = emptyList())
     val hrMaxOverride by app.heartRateZones.hrMax.collectAsState()
-    val suggestedHrMax = remember(intensitySessions) { IntensityAnalytics.suggestHrMax(intensitySessions) }
-    val hrMax = hrMaxOverride.takeIf { it > 0 } ?: suggestedHrMax
-    val intensity = remember(intensitySessions, hrMax) {
-        hrMax?.let { IntensityAnalytics.breakdown(intensitySessions, it) }
+
+    // The fallback estimate is computed over a FIXED year, not over the selected period.
+    // Reading it off the chip window made every boundary move when the period changed, and
+    // made this screen and the Я tab disagree about the same number.
+    val sampleFrom = remember { today.minusDays((IntensityAnalytics.HR_MAX_SAMPLE_DAYS - 1).toLong()) }
+    val sampleActivities by remember {
+        app.database.garminActivityDao().observeRange(sampleFrom.toEpochDay(), toEpoch)
+    }.collectAsState(initial = emptyList())
+    val sampleWorkouts by remember { app.workoutRepository.observeRange(sampleFrom, today) }
+        .collectAsState(initial = emptyList())
+    val suggestedHrMax = remember(sampleActivities, sampleWorkouts) {
+        IntensityAnalytics.suggestHrMax(IntensityAnalytics.sessions(sampleActivities, sampleWorkouts))
+    }
+
+    val boundaries = remember(garminZones, hrMaxOverride, suggestedHrMax) {
+        IntensityAnalytics.resolveBoundaries(garminZones, hrMaxOverride, suggestedHrMax)
+    }
+    val intensity = remember(intensitySessions, boundaries) {
+        boundaries?.let { IntensityAnalytics.breakdown(intensitySessions, it) }
     }
 
     // Sessions per lift, recomputed only when the imported sets or the window change.
@@ -204,7 +223,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
             }
             // All three of these have their own sources - Health Connect workouts and an
             // imported gym log - so no Garmin data is no reason to hide any of them.
-            intensitySection(intensity, hrMaxOverride > 0, suggestedHrMax, intensitySessions.size, palette)
+            intensitySection(intensity, suggestedHrMax, intensitySessions.size, palette)
             sportDistanceSection(sportWeeks, unclassifiedSports, fromEpoch, toEpoch, smoothWindow, palette.distance)
             strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
             return@LazyColumn
@@ -280,7 +299,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         val weightPoints = LifestyleAnalytics.weightTrend(weights, scaleWeights)
         if (weightPoints.isNotEmpty()) trendCard("Вес, кг", weightPoints, fromEpoch, toEpoch, palette.weight, smoothWindow) { formatDecimal(it) }
 
-        intensitySection(intensity, hrMaxOverride > 0, suggestedHrMax, intensitySessions.size, palette)
+        intensitySection(intensity, suggestedHrMax, intensitySessions.size, palette)
         sportDistanceSection(sportWeeks, unclassifiedSports, fromEpoch, toEpoch, smoothWindow, palette.distance)
         strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
 
@@ -363,7 +382,6 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trendCard(
  */
 private fun androidx.compose.foundation.lazy.LazyListScope.intensitySection(
     breakdown: IntensityBreakdown?,
-    hrMaxIsManual: Boolean,
     suggestedHrMax: Int?,
     sessionCount: Int,
     palette: MetricPalette
@@ -372,19 +390,18 @@ private fun androidx.compose.foundation.lazy.LazyListScope.intensitySection(
 
     item { SectionHeader("Пульсовые зоны") }
 
-    // No HRmax at all: too few sessions carry a usable maximum to estimate one, and
-    // guessing from age isn't possible - the app never asks for a birth year. Say what is
-    // missing and where to fix it rather than drawing bands off an invented number.
+    // Nothing knows the boundaries: no zones configured in Garmin, no manual maximum, and
+    // too few sessions carry a usable maximum to estimate one. Guessing from age isn't
+    // possible - the app never asks for a birth year. Say what is missing, don't invent it.
     if (breakdown == null) {
         item(key = "intensity-no-hrmax") {
-            InfoCard(title = "Не задан максимальный пульс") {
+            InfoCard(title = "Зоны пока не из чего построить") {
                 Text(
-                    text = "Чтобы разложить тренировки по зонам, нужен ваш максимальный пульс — " +
-                        "все пять границ считаются от него. Оценить его по вашим записям пока не " +
-                        "получается: для этого нужно хотя бы " +
-                        "${IntensityAnalytics.MIN_SESSIONS_FOR_SUGGESTION} тренировок с пульсом " +
-                        "(за этот период их меньше). Задайте его вручную во вкладке «Я» → " +
-                        "«Пульсовые зоны».",
+                    text = "Обычно они читаются прямо из Garmin — там они уже настроены. " +
+                        "Если вы вошли в Garmin, нажмите «Синхронизировать» во вкладке «Я»: " +
+                        "зоны подтягиваются одним запросом. Если входа нет, задайте " +
+                        "максимальный пульс вручную там же, в «Пульсовые зоны» — от него " +
+                        "посчитаются границы по формуле Garmin.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -393,14 +410,31 @@ private fun androidx.compose.foundation.lazy.LazyListScope.intensitySection(
         return
     }
 
+    val bounds = breakdown.boundaries
     item {
         Text(
-            text = "Время тренировок по зонам от максимального пульса ${breakdown.hrMax} уд/мин " +
-                (if (hrMaxIsManual) "(задан вами)." else "(оценка по вашим тренировкам — см. ниже).") +
-                " Зона тренировки определяется по её СРЕДНЕМУ пульсу, и вся её длительность " +
-                "идёт в эту одну зону: поминутный пульс приложение не хранит. Поэтому " +
-                "распределение уже реального — края занижены, середина завышена. " +
-                "Вопрос, на который оно отвечает честно: в какой зоне проходит типичная тренировка.",
+            text = buildString {
+                when (bounds.source) {
+                    ZoneSource.GARMIN -> {
+                        append("Границы взяты из ваших настроек Garmin")
+                        if (bounds.sport.isNotBlank() && !bounds.sport.equals("DEFAULT", true)) {
+                            append(" (профиль ${bounds.sport})")
+                        }
+                        append(".")
+                        if (bounds.maxHeartRate > 0) append(" Максимальный пульс ${bounds.maxHeartRate} уд/мин.")
+                    }
+                    ZoneSource.MANUAL ->
+                        append("Границы посчитаны от максимального пульса ${bounds.maxHeartRate} уд/мин, " +
+                            "который вы задали вручную.")
+                    ZoneSource.ESTIMATED ->
+                        append("Garmin не отдал ваши зоны, поэтому границы посчитаны от оценки " +
+                            "максимального пульса ${bounds.maxHeartRate} уд/мин — см. ниже.")
+                }
+                append(" Зона тренировки определяется по её СРЕДНЕМУ пульсу, и вся её длительность ")
+                append("идёт в эту одну зону: поминутный пульс приложение не хранит. Поэтому ")
+                append("распределение уже реального — края занижены, середина завышена. ")
+                append("Вопрос, на который оно отвечает честно: в какой зоне проходит типичная тренировка.")
+            },
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -437,14 +471,14 @@ private fun androidx.compose.foundation.lazy.LazyListScope.intensitySection(
                 )
             }
 
-            if (!hrMaxIsManual && suggestedHrMax != null) {
+            if (bounds.source == ZoneSource.ESTIMATED && suggestedHrMax != null) {
                 Text(
-                    text = "Максимальный пульс не задан, поэтому взят 95-й процентиль ваших " +
-                        "собственных максимумов за период — $suggestedHrMax уд/мин. Это нижняя " +
-                        "граница, а не оценка: видно только те усилия, которые действительно " +
-                        "были, и после лёгкого сезона число выходит заниженным, а все зоны " +
-                        "вместе с ним — завышенными. Свой настоящий максимум можно задать во " +
-                        "вкладке «Я» → «Пульсовые зоны».",
+                    text = "Оценка — 95-й процентиль ваших собственных максимумов за " +
+                        "${formatDays(IntensityAnalytics.HR_MAX_SAMPLE_DAYS)}: $suggestedHrMax уд/мин. " +
+                        "Это нижняя граница, а не оценка максимума: видно только те усилия, которые " +
+                        "действительно были, и после лёгкого сезона число выходит заниженным, а все " +
+                        "зоны вместе с ним — сдвинутыми вниз. Надёжнее взять зоны из Garmin " +
+                        "(«Я» → «Синхронизировать») или задать свой максимум вручную.",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp)

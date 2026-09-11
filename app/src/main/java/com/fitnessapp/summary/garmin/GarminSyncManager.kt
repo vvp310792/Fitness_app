@@ -105,8 +105,28 @@ class GarminSyncManager(
         AppLog.i("GarminSyncManager", "Синк Garmin $from..$to начат")
         val totalDays = (to.toEpochDay() - from.toEpochDay() + 1).toInt().coerceAtLeast(1)
         val run = RunState()
+        syncHeartRateZones(run)
         runWindow(from, to, run, totalDays, 0)
         return finish(run, totalDays)
+    }
+
+    /**
+     * Re-reads the user's own zone configuration from Garmin. One request, every sync.
+     *
+     * Not marked in `garmin_sync_marks` like the per-day sections, and deliberately not
+     * skipped once it has succeeded: zones are a setting, so they change exactly when the
+     * user changes them - re-reading them costs a single request and means a max heart
+     * rate edited in Garmin Connect shows up here on the next sync instead of never.
+     *
+     * A failure here must not fail the sync: everything else on every screen works without
+     * zones, and before this existed the whole app did. The counter records it, and the Я
+     * tab shows the row like any other section.
+     */
+    private suspend fun syncHeartRateZones(run: RunState) {
+        val zones = run.take(run.zones) { apiClient.heartRateZones() } ?: return
+        if (zones.isEmpty()) return
+        database.garminHeartRateZoneDao().upsertAll(zones)
+        run.zones.stored += zones.size
     }
 
     /**
@@ -138,6 +158,10 @@ class GarminSyncManager(
         val resumeFrom = saved.oldestCovered
 
         val run = RunState()
+        // The history walk has its own RunState, so it needs its own zone read: pressing
+        // «Вся история» on a fresh install would otherwise backfill years of days and still
+        // leave the zones card empty.
+        syncHeartRateZones(run)
         var emptyChunks = saved.emptyChunks
         var daysWalked = 0
         // One day older than the oldest window already finished. A window aborted half-way
@@ -572,6 +596,14 @@ class GarminSyncManager(
         val activities = Counter("Тренировки")
 
         /**
+         * The user's configured heart-rate zones - one request per sync, not per day: it
+         * is account configuration, not a daily reading. Its own counter because it fails
+         * on its own terms, and because "Garmin has no zones for this account" has to stay
+         * distinguishable from "the call didn't go through" (GarminFetch, as everywhere).
+         */
+        val zones = Counter("Пульсовые зоны")
+
+        /**
          * The three range endpoints (stress zones, intensity goal, hydration) are folded
          * into the summary row rather than being sections of their own - most people never
          * log water, so counting their silence against "Сводка" would permanently show a
@@ -628,7 +660,7 @@ class GarminSyncManager(
         }
 
         fun sections(): List<SectionOutcome> =
-            listOf(summary, sleep, hrv, readiness, training, weight, activities).map {
+            listOf(summary, sleep, hrv, readiness, training, weight, activities, zones).map {
                 SectionOutcome(it.label, it.stored, it.noData, it.failed, it.skipped)
             }
     }

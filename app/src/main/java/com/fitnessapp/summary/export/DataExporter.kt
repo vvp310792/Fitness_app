@@ -50,7 +50,7 @@ object DataExporter {
 
         val root = JSONObject().apply {
             put("app", "fitness-summary")
-            put("schemaVersion", 3)
+            put("schemaVersion", 4)
             put("exportedAt", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
             put("sources", JSONArray(listOf("Health Connect", "Garmin Connect (unofficial)", "Zepp Life (unofficial, optional)", "журнал силовых тренировок (импорт)")))
             put("dayCount", days.size)
@@ -352,6 +352,26 @@ object DataExporter {
             })
         })
 
+        // The user's own zone configuration as Garmin returned it, raw response included.
+        // The raw is the point: these are the only Garmin field names in the app that
+        // could not be checked against a reference implementation, so an export is what
+        // shows whether a zone read as 0 because Garmin sent nothing or because the parser
+        // did not recognise the name it came under.
+        root.put("heartRateZones", JSONArray().also { array ->
+            for (row in database.garminHeartRateZoneDao().getAllOnce()) {
+                array.put(JSONObject().apply {
+                    put("sport", row.sport)
+                    put("floors", JSONArray().also { floors -> row.floors.forEach { floors.put(it) } })
+                    put("maxHeartRateUsed", row.maxHeartRateUsed)
+                    put("restingHeartRateUsed", row.restingHeartRateUsed)
+                    put("lactateThresholdHeartRateUsed", row.lactateThresholdHeartRateUsed)
+                    put("method", row.method)
+                    put("usable", row.isUsable)
+                    put("raw", row.rawJson)
+                })
+            }
+        })
+
         root.put("strength", JSONObject().apply {
             put("source", "журнал тренировок (импорт из файла)")
             put("sets", JSONArray().also { array ->
@@ -387,6 +407,7 @@ object DataExporter {
                 put("garminActivities", database.garminActivityDao().getAllOnce().size)
                 put("scaleMeasurements", database.scaleMeasurementDao().getAllOnce().size)
                 put("strengthSets", database.strengthSetDao().getAllOnce().size)
+                put("heartRateZoneProfiles", database.garminHeartRateZoneDao().getAllOnce().size)
             })
             put("garminSyncCoverage", JSONArray().also { array ->
                 for (row in database.garminSyncMarkDao().sectionCoverage()) {

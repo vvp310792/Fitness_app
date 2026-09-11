@@ -499,3 +499,73 @@ data class GarminSectionCoverage(
     val firstDay: Long,
     val lastDay: Long
 )
+
+/**
+ * The user's OWN heart-rate zones, as configured in Garmin Connect, for one sport profile.
+ *
+ * This table exists because the app got zones wrong by modelling them. The first version
+ * computed five bands as fixed percentages of a maximum heart rate the app itself
+ * estimated - and the app has never known the user's age, so that estimate was the 95th
+ * percentile of their recorded session maxima, which reads 20-30 bpm low after an easy
+ * season and drags all five boundaries down with it. Meanwhile Garmin has had the real
+ * answer on its server the whole time: the max it uses, the five floors, and which method
+ * they were derived by. Reading it is the same principle the day/week screens already
+ * follow - Garmin is the first source, a local model of it is a copy at best.
+ *
+ * Keyed by [sport] because Garmin configures zones per sport profile: "DEFAULT" plus
+ * whatever else the user has customised (running, cycling, swimming). One row each, so a
+ * profile the user never touched simply isn't here.
+ *
+ * [rawJson] is the response object for this sport, verbatim. It is here on purpose and it
+ * is not a debugging leftover: the field names in this payload are the only ones in the
+ * whole Garmin client that could NOT be checked against garth or python-garminconnect -
+ * neither carries a fixture for it - so the parser matches keys structurally and keeps the
+ * original alongside. If a zone comes back 0, the raw row is what says whether Garmin sent
+ * nothing or sent it under a name the parser didn't recognise. Those two look identical
+ * everywhere else, and telling them apart is exactly what this project keeps paying for.
+ */
+@Entity(tableName = "garmin_heart_rate_zones")
+data class GarminHeartRateZone(
+    /** Garmin's sport profile key, uppercase: "DEFAULT", "RUNNING", "CYCLING", "SWIMMING". */
+    @PrimaryKey val sport: String,
+    /** Lowest bpm of each zone, Z1..Z5. 0 means Garmin didn't give this zone a floor. */
+    val zone1Floor: Int = 0,
+    val zone2Floor: Int = 0,
+    val zone3Floor: Int = 0,
+    val zone4Floor: Int = 0,
+    val zone5Floor: Int = 0,
+    /** The maximum heart rate Garmin used to derive the floors above. */
+    val maxHeartRateUsed: Int = 0,
+    val restingHeartRateUsed: Int = 0,
+    val lactateThresholdHeartRateUsed: Int = 0,
+    /** How Garmin derived them, in its own words - e.g. percent of max HR, of HRR, of LTHR. */
+    val method: String = "",
+    val rawJson: String = "",
+    val updatedAtMillis: Long = System.currentTimeMillis()
+) {
+    /** Floors Z1..Z5 in order. */
+    val floors: List<Int> get() = listOf(zone1Floor, zone2Floor, zone3Floor, zone4Floor, zone5Floor)
+
+    /**
+     * Usable only when the floors actually ascend. A partially parsed row - three floors
+     * found, two left at 0 - would otherwise put every session into whichever band the
+     * zeros collapsed into, which looks like data rather than like a parse failure.
+     */
+    val isUsable: Boolean
+        get() = floors.all { it > 0 } && floors.zipWithNext().all { (a, b) -> b > a }
+}
+
+@Dao
+interface GarminHeartRateZoneDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(zones: List<GarminHeartRateZone>)
+
+    @Query("SELECT * FROM garmin_heart_rate_zones ORDER BY sport ASC")
+    fun observeAll(): Flow<List<GarminHeartRateZone>>
+
+    @Query("SELECT * FROM garmin_heart_rate_zones ORDER BY sport ASC")
+    suspend fun getAllOnce(): List<GarminHeartRateZone>
+
+    @Query("DELETE FROM garmin_heart_rate_zones")
+    suspend fun clear()
+}

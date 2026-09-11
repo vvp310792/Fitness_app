@@ -3,6 +3,7 @@ package com.fitnessapp.summary.garmin
 import com.fitnessapp.summary.data.GarminActivity
 import com.fitnessapp.summary.data.GarminBodyComposition
 import com.fitnessapp.summary.data.GarminDailyExtra
+import com.fitnessapp.summary.data.GarminHeartRateZone
 import com.fitnessapp.summary.data.GarminHrv
 import com.fitnessapp.summary.data.GarminReadiness
 import com.fitnessapp.summary.data.GarminSleep
@@ -642,6 +643,49 @@ class GarminApiClient(private val auth: GarminAuthClient) {
                 GarminFetch.Failed(e.message ?: e.javaClass.simpleName, isNetwork = false)
             }
         }
+
+    /**
+     * The user's OWN heart-rate zones, as configured in Garmin Connect - one entry per
+     * sport profile. `biometric-service/heartRateZones`, the path python-garminconnect
+     * uses for `get_heart_rate_zones`.
+     *
+     * This is the authoritative answer to "where do my zones start", and reading it
+     * replaces the app's own percentage model. That model needed a maximum heart rate the
+     * app had to guess (it has never known the user's age), and a guess there moves all
+     * five boundaries at once.
+     *
+     * Parsing is structural rather than by key name - see [GarminZoneParser] for why this
+     * one payload gets that treatment and nothing else does. The key names are logged when
+     * nothing parses, since the alternative is a screen of zeros with no way to tell
+     * whether Garmin sent nothing or sent it under a name we didn't expect.
+     */
+    suspend fun heartRateZones(): GarminFetch<List<GarminHeartRateZone>> = withContext(Dispatchers.IO) {
+        when (val fetch = fetch("biometric-service/heartRateZones", emptyMap())) {
+            GarminFetch.NoData -> GarminFetch.NoData
+            is GarminFetch.Failed -> fetch
+            is GarminFetch.Ok -> try {
+                val zones = GarminZoneParser.parse(fetch.value)
+                if (zones.isEmpty()) {
+                    AppLog.w(
+                        "GarminApiClient",
+                        "Пульсовые зоны: ответ пришёл, но не разобран. Поля в ответе: " +
+                            GarminZoneParser.keyNames(fetch.value).joinToString(", ").ifBlank { "(нет)" }
+                    )
+                    GarminFetch.NoData
+                } else {
+                    AppLog.i(
+                        "GarminApiClient",
+                        "Пульсовые зоны из Garmin: профилей ${zones.size} " +
+                            "(${zones.joinToString(", ") { it.sport }}), пригодных ${zones.count { it.isUsable }}"
+                    )
+                    GarminFetch.Ok(zones)
+                }
+            } catch (e: Exception) {
+                AppLog.w("GarminApiClient", "Не удалось разобрать пульсовые зоны", e)
+                GarminFetch.Failed(e.message ?: e.javaClass.simpleName, isNetwork = false)
+            }
+        }
+    }
 
     // ---- JSON / date helpers ---------------------------------------------------------
 
