@@ -63,6 +63,8 @@ data class GarminWeekSummary(
     val avgStress: Int,
     val avgBodyBatteryAtWake: Int,
     val avgRestingHeartRate: Int,
+    /** Nights the average above is built on - shown, because 60 from two nights and from seven differ. */
+    val daysWithRestingHeartRate: Int,
     val avgHrvLastNight: Int,
     val latestHrvStatus: String,
     val intensityMinutesWeighted: Int,
@@ -89,6 +91,9 @@ object LifestyleAnalytics {
 
     /** Default weekly Intensity Minutes goal when Garmin hasn't told us the user's own. */
     private const val DEFAULT_INTENSITY_GOAL = 150
+
+    /** Below this many days in either group, the with/without-night difference isn't a measurement. */
+    const val MIN_DAYS_FOR_NIGHT_GAP = 5
 
     /** Fallback Sleep Need when Garmin hasn't computed one for the night (8 h, Garmin's own default baseline). */
     private const val DEFAULT_SLEEP_NEED_MINUTES = 480
@@ -194,22 +199,24 @@ object LifestyleAnalytics {
         }
 
         // --- Resting heart rate drift -----------------------------------------------------------
-        val rhr7 = restingRates(summaries7, inputs.healthDays.filter { it.dateEpochDay >= weekFrom })
+        val nights = nightDays(inputs.sleeps, inputs.healthDays)
+        val rhr7 = restingRates(summaries7, inputs.healthDays.filter { it.dateEpochDay >= weekFrom }, nights)
         val rhrBaseline = restingRates(
             inputs.summaries.filter { it.dateEpochDay in (weekFrom - 21) until weekFrom },
-            inputs.healthDays.filter { it.dateEpochDay in (weekFrom - 21) until weekFrom }
+            inputs.healthDays.filter { it.dateEpochDay in (weekFrom - 21) until weekFrom },
+            nights
         )
         if (rhr7.size >= 3 && rhrBaseline.size >= 7) {
             val delta = (rhr7.average() - rhrBaseline.average()).roundToInt()
             when {
                 delta >= 4 -> out += Insight(
                     "❤️", "Пульс покоя выше обычного на $delta уд/мин",
-                    "Среднее ${rhr7.average().roundToInt()} за ${rhr7.size} ${declineDays(rhr7.size)} против ${rhrBaseline.average().roundToInt()} за предыдущие три недели. Так выглядит усталость, недосып или болезнь.",
+                    "Среднее ${rhr7.average().roundToInt()} за ${rhr7.size} ${declineDays(rhr7.size)} с ночной записью против ${rhrBaseline.average().roundToInt()} за предыдущие три недели. Считаются только ночи, которые часы измерили: в дни без ночи Garmin публикует завышенный пульс покоя. Так выглядит усталость, недосып или болезнь.",
                     InsightTone.ATTENTION
                 )
                 delta <= -3 -> out += Insight(
                     "❤️", "Пульс покоя ниже обычного на ${-delta} уд/мин",
-                    "Среднее ${rhr7.average().roundToInt()} против ${rhrBaseline.average().roundToInt()} за предыдущие три недели — признак роста формы или хорошего восстановления.",
+                    "Среднее ${rhr7.average().roundToInt()} против ${rhrBaseline.average().roundToInt()} за предыдущие три недели (только дни с ночной записью) — признак роста формы или хорошего восстановления.",
                     InsightTone.GOOD
                 )
             }
@@ -437,7 +444,11 @@ object LifestyleAnalytics {
         val a = activities.filter { it.dateEpochDay in start..end }
         val stress = s.filter { it.averageStressLevel > 0 }
         val wake = s.filter { it.bodyBatteryAtWake > 0 }
-        val rhr = s.filter { it.restingHeartRate > 0 }
+        // Same rule as the trend and the insight: a resting rate from a day without a
+        // night record is several beats too high, and a weekly average is exactly where
+        // that quietly becomes a verdict. See [nightDays].
+        val weekNights = nightDays(n, emptyList())
+        val rhr = s.filter { it.restingHeartRate > 0 && it.dateEpochDay in weekNights }
         val needNights = n.filter { it.needActualMinutes > 0 && it.sleepSeconds > 0 }
 
         return GarminWeekSummary(
@@ -450,6 +461,7 @@ object LifestyleAnalytics {
             avgStress = stress.averageIntOf { it.averageStressLevel },
             avgBodyBatteryAtWake = wake.averageIntOf { it.bodyBatteryAtWake },
             avgRestingHeartRate = rhr.averageIntOf { it.restingHeartRate },
+            daysWithRestingHeartRate = rhr.size,
             avgHrvLastNight = h.averageIntOf { it.lastNightAvg },
             latestHrvStatus = hrvs.lastOrNull { it.dateEpochDay in start..end && it.status.isNotBlank() }?.status.orEmpty(),
             intensityMinutesWeighted = s.sumOf { it.intensityMinutesWeighted },
@@ -469,11 +481,80 @@ object LifestyleAnalytics {
     fun hrvTrend(list: List<GarminHrv>) = list.filter { it.lastNightAvg > 0 }.map { TrendPoint(it.dateEpochDay, it.lastNightAvg.toFloat()) }
     fun stressTrend(list: List<GarminDailyExtra>) = list.filter { it.averageStressLevel > 0 }.map { TrendPoint(it.dateEpochDay, it.averageStressLevel.toFloat()) }
     fun bodyBatteryWakeTrend(list: List<GarminDailyExtra>) = list.filter { it.bodyBatteryAtWake > 0 }.map { TrendPoint(it.dateEpochDay, it.bodyBatteryAtWake.toFloat()) }
-    fun restingHeartRateTrend(summaries: List<GarminDailyExtra>, healthDays: List<DailySummary>): List<TrendPoint> {
-        val byDay = mutableMapOf<Long, Float>()
-        healthDays.filter { it.restingHeartRate > 0 }.forEach { byDay[it.dateEpochDay] = it.restingHeartRate.toFloat() }
-        summaries.filter { it.restingHeartRate > 0 }.forEach { byDay[it.dateEpochDay] = it.restingHeartRate.toFloat() }
-        return byDay.entries.sortedBy { it.key }.map { TrendPoint(it.key, it.value) }
+    /**
+     * Days the watch actually recorded a night for - the only days a resting heart rate
+     * from the daily summary means what it says.
+     *
+     * Garmin derives resting heart rate from the overnight stretch. On a day the watch was
+     * not worn through the night it still publishes a number, computed from the quietest
+     * part of the waking day, and that number is systematically higher. Verified on this
+     * account's own export: median 60 on days with a night record against 68 on days
+     * without (n = 27 / 373 over the last 400 days with a value, p < 10^-5 in the original
+     * analysis). Mixing the two makes a rising "resting heart rate" trend out of nothing
+     * but a change in wearing habits.
+     */
+    fun nightDays(sleeps: List<GarminSleep>, healthDays: List<DailySummary>): Set<Long> =
+        sleeps.filter { it.sleepSeconds > 0 }.map { it.dateEpochDay }.toSet() +
+            healthDays.filter { it.sleepTotalMinutes > 0 }.map { it.dateEpochDay }.toSet()
+
+    /**
+     * Resting heart rate on days with a night record - the trustworthy series.
+     *
+     * Pass [nightDays] = null to get every day regardless, which is only for the case where
+     * the window holds no night at all and an empty chart would read as a broken screen
+     * rather than as the finding it is.
+     */
+    fun restingHeartRateTrend(
+        summaries: List<GarminDailyExtra>,
+        healthDays: List<DailySummary>,
+        nightDays: Set<Long>?
+    ): List<TrendPoint> = restingByDay(summaries, healthDays)
+        .filter { nightDays == null || it.key in nightDays }
+        .entries.sortedBy { it.key }.map { TrendPoint(it.key, it.value.toFloat()) }
+
+    /** The same metric on days WITHOUT a night record - drawn dashed, never averaged in. */
+    fun restingHeartRateNoNightTrend(
+        summaries: List<GarminDailyExtra>,
+        healthDays: List<DailySummary>,
+        nightDays: Set<Long>
+    ): List<TrendPoint> = restingByDay(summaries, healthDays)
+        .filter { it.key !in nightDays }
+        .entries.sortedBy { it.key }.map { TrendPoint(it.key, it.value.toFloat()) }
+
+    /**
+     * How much higher the no-night days actually run, in this window, measured rather than
+     * assumed - the difference of the two medians. Null when either group is too small to
+     * say anything ([MIN_DAYS_FOR_NIGHT_GAP] days each).
+     *
+     * Named on screen, like every other threshold here: "завышено на 8" is a fact about
+     * this person's data, and stating the number is what lets it be checked.
+     */
+    fun restingHeartRateNightGap(
+        summaries: List<GarminDailyExtra>,
+        healthDays: List<DailySummary>,
+        nightDays: Set<Long>
+    ): Int? {
+        val byDay = restingByDay(summaries, healthDays)
+        val withNight = byDay.filterKeys { it in nightDays }.values.toList()
+        val without = byDay.filterKeys { it !in nightDays }.values.toList()
+        if (withNight.size < MIN_DAYS_FOR_NIGHT_GAP || without.size < MIN_DAYS_FOR_NIGHT_GAP) return null
+        return median(without) - median(withNight)
+    }
+
+    private fun restingByDay(
+        summaries: List<GarminDailyExtra>,
+        healthDays: List<DailySummary>
+    ): Map<Long, Int> {
+        val byDay = mutableMapOf<Long, Int>()
+        healthDays.filter { it.restingHeartRate > 0 }.forEach { byDay[it.dateEpochDay] = it.restingHeartRate }
+        summaries.filter { it.restingHeartRate > 0 }.forEach { byDay[it.dateEpochDay] = it.restingHeartRate }
+        return byDay
+    }
+
+    private fun median(values: List<Int>): Int {
+        val sorted = values.sorted()
+        val mid = sorted.size / 2
+        return if (sorted.size % 2 == 1) sorted[mid] else (sorted[mid - 1] + sorted[mid] + 1) / 2
     }
     fun stepsTrend(summaries: List<GarminDailyExtra>, healthDays: List<DailySummary>): List<TrendPoint> {
         val byDay = mutableMapOf<Long, Float>()
@@ -594,12 +675,17 @@ object LifestyleAnalytics {
 
     // ---- helpers ------------------------------------------------------------------------------
 
-    private fun restingRates(summaries: List<GarminDailyExtra>, healthDays: List<DailySummary>): List<Int> {
-        val byDay = mutableMapOf<Long, Int>()
-        healthDays.filter { it.restingHeartRate > 0 }.forEach { byDay[it.dateEpochDay] = it.restingHeartRate }
-        summaries.filter { it.restingHeartRate > 0 }.forEach { byDay[it.dateEpochDay] = it.restingHeartRate }
-        return byDay.values.toList()
-    }
+    /**
+     * Resting heart rates worth averaging: only days that carry a night record. A day the
+     * watch spent on the charger publishes a resting rate several beats too high (see
+     * [nightDays]), and "пульс покоя выше обычного на 5" built out of two such days is an
+     * alarm about a charging habit.
+     */
+    private fun restingRates(
+        summaries: List<GarminDailyExtra>,
+        healthDays: List<DailySummary>,
+        nightDays: Set<Long>
+    ): List<Int> = restingByDay(summaries, healthDays).filterKeys { it in nightDays }.values.toList()
 
     private fun stepsPerDay(summaries: List<GarminDailyExtra>, healthDays: List<DailySummary>): List<Long> {
         val byDay = mutableMapOf<Long, Long>()

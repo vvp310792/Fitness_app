@@ -340,7 +340,11 @@ private fun GarminWeekSection(
                     StatRow("Статус ВСР", hrvStatusLabel(garmin.latestHrvStatus))
                 }
                 if (garmin.avgRestingHeartRate > 0) {
-                    StatRow("Пульс покоя, средний", "${formatHeartRate(garmin.avgRestingHeartRate)} уд/мин")
+                    StatRow(
+                        "Пульс покоя, средний",
+                        "${formatHeartRate(garmin.avgRestingHeartRate)} уд/мин · " +
+                            "${garmin.daysWithRestingHeartRate} ${declineDays(garmin.daysWithRestingHeartRate)} с ночью"
+                    )
                 }
                 if (garmin.totalTrainingLoad > 0) {
                     StatRow("Нагрузка тренировок за неделю", garmin.totalTrainingLoad.toString())

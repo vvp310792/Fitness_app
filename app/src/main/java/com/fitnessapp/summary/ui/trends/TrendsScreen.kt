@@ -259,7 +259,43 @@ fun TrendsScreen(app: FitnessSummaryApp) {
             footnote = latestHrv?.let { "Закрашено: ваша базовая линия ${it.baselineBalancedLow}–${it.baselineBalancedUpper} мс" }
         ) { it.toInt().toString() }
 
-        trendCard("Пульс покоя", LifestyleAnalytics.restingHeartRateTrend(summaries, healthDays), fromEpoch, toEpoch, palette.heart, smoothWindow) { it.toInt().toString() }
+        // Resting heart rate, split by whether the watch actually recorded that night.
+        //
+        // Garmin publishes a resting rate every day, but on a day the watch spent off the
+        // wrist overnight it is derived from the quietest waking hour instead, and runs
+        // several beats high. Mixing the two produced a confident upward trend that was
+        // mostly a change in wearing habits. Solid line: nights the watch measured. Dashed:
+        // the rest - same metric, same unit, same colour, so it stays inside the one-series
+        // rule while making the artefact visible instead of hiding it.
+        val nights = LifestyleAnalytics.nightDays(sleeps, healthDays)
+        val rhrNights = LifestyleAnalytics.restingHeartRateTrend(summaries, healthDays, nights)
+        val rhrNoNight = LifestyleAnalytics.restingHeartRateNoNightTrend(summaries, healthDays, nights)
+        val rhrGap = LifestyleAnalytics.restingHeartRateNightGap(summaries, healthDays, nights)
+        if (rhrNights.isNotEmpty() || rhrNoNight.isNotEmpty()) {
+            // No night at all in this window: draw what there is rather than an empty chart
+            // that reads as a broken screen, and say plainly that none of it is verified.
+            val nothingVerified = rhrNights.isEmpty()
+            trendCard(
+                "Пульс покоя",
+                if (nothingVerified) rhrNoNight else rhrNights,
+                fromEpoch, toEpoch, palette.heart, smoothWindow,
+                secondary = if (nothingVerified) emptyList() else rhrNoNight,
+                footnote = when {
+                    nothingVerified ->
+                        "За этот период часы не измерили ни одной ночи, поэтому весь график — " +
+                            "дни без ночной записи. В такие дни Garmin считает пульс покоя по самому " +
+                            "тихому часу бодрствования, и он систематически выше настоящего."
+                    rhrNoNight.isEmpty() ->
+                        "Все точки — дни, когда часы измерили ночь."
+                    else ->
+                        "Сплошная линия — ${rhrNights.size} дней, когда часы измерили ночь: только это " +
+                            "настоящий пульс покоя. Пунктир — ${rhrNoNight.size} дней без ночной записи, " +
+                            "там Garmin считает его по самому тихому часу бодрствования" +
+                            (if (rhrGap != null) ", и по вашим данным он выше на $rhrGap уд/мин" else "") +
+                            ". В средние и в выводы выше идут только дни с ночью."
+                }
+            ) { it.toInt().toString() }
+        }
         trendCard("Стресс, средний за день", LifestyleAnalytics.stressTrend(summaries), fromEpoch, toEpoch, palette.stress, smoothWindow, floorAtZero = true, goal = 50f, footnote = "Пунктир: 50 — граница зоны низкого стресса по Garmin") { it.toInt().toString() }
         trendCard("Body Battery при пробуждении", LifestyleAnalytics.bodyBatteryWakeTrend(summaries), fromEpoch, toEpoch, palette.bodyBattery, smoothWindow, floorAtZero = true, goal = 50f) { it.toInt().toString() }
         trendCard("Шаги", LifestyleAnalytics.stepsTrend(summaries, healthDays), fromEpoch, toEpoch, palette.steps, smoothWindow, floorAtZero = true, goal = 10000f) { formatCount(it.toLong()) }
