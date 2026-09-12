@@ -96,6 +96,71 @@ data class ZoneBoundaries(
 }
 
 /**
+ * Every zone ladder in force, and which one applies to a given sport.
+ *
+ * Garmin configures zones **per sport profile**, and the profiles can use different
+ * methods: on this account DEFAULT is a percentage of heart-rate reserve (Karvonen) while
+ * RUNNING is a percentage of the lactate threshold, so the same 185 bpm is Z5 on a run and
+ * Z4 in the gym. One ladder for everything cannot express that, and printing DEFAULT's
+ * ranges next to minutes Garmin counted on the running ladder would contradict the watch.
+ *
+ * So the counting follows Garmin: the seconds it reports are already bucketed on the right
+ * ladder, and the average-based fallback picks the ladder for that sport too.
+ */
+data class ZoneLadders(
+    /** Garmin's own profiles by sport key, uppercase, as configured. */
+    private val byProfile: Map<String, ZoneBoundaries>,
+    /** Used when Garmin has no profile for the sport - its DEFAULT, or the local model. */
+    val primary: ZoneBoundaries
+) {
+    /** Distinct ladders that exist at all, primary first - for the Я tab. */
+    val all: List<ZoneBoundaries>
+        get() = (listOf(primary) + byProfile.values).distinctBy { it.sport to it.floors }
+
+    /**
+     * The ladder Garmin would use for this activity. Matching is by keyword for the same
+     * reason [DistanceSport] matches that way: Garmin spells one sport many ways and adds
+     * new spellings without warning.
+     */
+    fun forSport(typeKey: String): ZoneBoundaries {
+        val key = typeKey.lowercase()
+        val profile = when {
+            key.contains("motor") -> null
+            key.contains("swim") -> "SWIMMING"
+            key.contains("cycl") || key.contains("bik") || key.contains("ride") -> "CYCLING"
+            key.contains("run") -> "RUNNING"
+            else -> null
+        }
+        return profile?.let { byProfile[it] } ?: primary
+    }
+
+    companion object {
+        /**
+         * @param manual a maximum the user typed in. It overrides everything, and it is a
+         *   single ladder for every sport - a hand-entered maximum carries no per-sport
+         *   information and pretending otherwise would invent one.
+         */
+        fun of(
+            garminZones: List<GarminHeartRateZone>,
+            manualHrMax: Int,
+            estimatedHrMax: Int?
+        ): ZoneLadders? {
+            if (manualHrMax > 0) {
+                return ZoneLadders(emptyMap(), ZoneBoundaries.fromHrMax(manualHrMax, ZoneSource.MANUAL))
+            }
+            val usable = garminZones.filter { it.isUsable }.mapNotNull { ZoneBoundaries.fromGarmin(it) }
+            val default = usable.firstOrNull { it.sport.equals("DEFAULT", true) } ?: usable.firstOrNull()
+            if (default != null) {
+                return ZoneLadders(usable.associateBy { it.sport.uppercase() }, default)
+            }
+            return estimatedHrMax?.let {
+                ZoneLadders(emptyMap(), ZoneBoundaries.fromHrMax(it, ZoneSource.ESTIMATED))
+            }
+        }
+    }
+}
+
+/**
  * One recorded session, from whichever source knew about it, with the two numbers this
  * file needs: how long it lasted and what the heart rate was.
  *
@@ -139,7 +204,14 @@ data class ZoneShare(
  * the whole picture.
  */
 data class IntensityBreakdown(
+    /** The headline ladder - Garmin's DEFAULT profile, or the local model. */
     val boundaries: ZoneBoundaries,
+    /**
+     * Every ladder that actually applied to the sessions counted. More than one means the
+     * bpm bounds printed beside a zone would be wrong for some of them, so the screen
+     * prints the zone names and sends the reader to «Я» for the ranges.
+     */
+    val laddersInPlay: List<ZoneBoundaries> = emptyList(),
     val zones: List<ZoneShare>,
     val totalMinutes: Int,
     val totalSessions: Int,
@@ -257,7 +329,7 @@ object IntensityAnalytics {
      * on a year with nothing above the aerobic band, and a chart that simply omits the row
      * hides exactly that.
      */
-    fun breakdown(sessions: List<IntensitySession>, boundaries: ZoneBoundaries): IntensityBreakdown {
+    fun breakdown(sessions: List<IntensitySession>, ladders: ZoneLadders): IntensityBreakdown {
         val (withHr, withoutHr) = sessions.partition { it.hasHeartRate }
 
         // Minutes per zone, preferring Garmin's own per-second count over the average.
@@ -276,21 +348,28 @@ object IntensityAnalytics {
                 // "N тренировок" stays a count of sessions rather than of zone-visits.
                 sessionsPerZone[real.indices.maxBy { real[it] }]++
             } else {
-                val zone = HeartRateZone.of(session.avgHeartRate, boundaries)
+                // The fallback uses the ladder Garmin would have used for THIS sport, not
+                // one ladder for everything - otherwise the two halves of a mixed period
+                // would be bucketed by different rules without saying so.
+                val zone = HeartRateZone.of(session.avgHeartRate, ladders.forSport(session.typeKey))
                 minutes[zone.ordinal] += session.minutes.toDouble()
                 sessionsPerZone[zone.ordinal]++
             }
         }
 
+        // Which ladders actually applied to the sessions counted - if more than one, a
+        // single pair of bpm bounds next to a zone would contradict at least one of them.
+        val applied = withHr.map { ladders.forSport(it.typeKey) }.distinctBy { it.sport to it.floors }
         return IntensityBreakdown(
-            boundaries = boundaries,
+            boundaries = ladders.primary,
+            laddersInPlay = applied.ifEmpty { listOf(ladders.primary) },
             zones = HeartRateZone.entries.map { zone ->
                 ZoneShare(
                     zone = zone,
                     minutes = Math.round(minutes[zone.ordinal]).toInt(),
                     sessions = sessionsPerZone[zone.ordinal],
-                    lowerBpm = boundaries.lowerBpm(zone),
-                    upperBpmExclusive = boundaries.upperBpmExclusive(zone)
+                    lowerBpm = ladders.primary.lowerBpm(zone),
+                    upperBpmExclusive = ladders.primary.upperBpmExclusive(zone)
                 )
             },
             totalMinutes = Math.round(minutes.sum()).toInt(),

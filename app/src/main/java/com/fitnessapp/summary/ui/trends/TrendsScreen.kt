@@ -39,6 +39,7 @@ import com.fitnessapp.summary.analytics.LifestyleInputs
 import com.fitnessapp.summary.analytics.DistanceSport
 import com.fitnessapp.summary.analytics.IntensityAnalytics
 import com.fitnessapp.summary.analytics.IntensityBreakdown
+import com.fitnessapp.summary.analytics.ZoneLadders
 import com.fitnessapp.summary.analytics.ZoneSource
 import com.fitnessapp.summary.analytics.LiftSession
 import com.fitnessapp.summary.analytics.StrengthAnalytics
@@ -155,11 +156,13 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         IntensityAnalytics.suggestHrMax(IntensityAnalytics.sessions(sampleActivities, sampleWorkouts))
     }
 
-    val boundaries = remember(garminZones, hrMaxOverride, suggestedHrMax) {
-        IntensityAnalytics.resolveBoundaries(garminZones, hrMaxOverride, suggestedHrMax)
+    // Every ladder Garmin has configured, not just DEFAULT: it counts a run on the running
+    // profile and the gym on the default one, and the card must not contradict that.
+    val ladders = remember(garminZones, hrMaxOverride, suggestedHrMax) {
+        ZoneLadders.of(garminZones, hrMaxOverride, suggestedHrMax)
     }
-    val intensity = remember(intensitySessions, boundaries) {
-        boundaries?.let { IntensityAnalytics.breakdown(intensitySessions, it) }
+    val intensity = remember(intensitySessions, ladders) {
+        ladders?.let { IntensityAnalytics.breakdown(intensitySessions, it) }
     }
 
     // Sessions per lift, recomputed only when the imported sets or the window change.
@@ -495,7 +498,10 @@ private fun androidx.compose.foundation.lazy.LazyListScope.intensitySection(
                 ZoneRow(
                     share = share,
                     percent = breakdown.sharePercent(share),
-                    accent = palette.zoneColor(share.zone.number)
+                    accent = palette.zoneColor(share.zone.number),
+                    // One ladder - print its bounds. Several - printing any one pair would
+                    // be wrong for the other sports, so the zone stands on its name.
+                    showRange = breakdown.laddersInPlay.size <= 1
                 )
             }
             StatRow(
@@ -514,6 +520,18 @@ private fun androidx.compose.foundation.lazy.LazyListScope.intensitySection(
                         breakdown.sportsWithoutHeartRate.entries.take(5)
                             .joinToString(", ") { "${garminSportName(it.key)} — ${it.value}" } +
                         ").",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+
+            if (breakdown.laddersInPlay.size > 1) {
+                Text(
+                    text = "Границы в уд/мин у зон разные по видам спорта — Garmin считает " +
+                        breakdown.laddersInPlay.joinToString(", ") { garminSportName(it.sport) } +
+                        " по своим профилям, и минуты выше посчитаны именно так. " +
+                        "Сами границы — во вкладке «Я» → «Пульсовые зоны».",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp)
@@ -546,7 +564,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.intensitySection(
  * stages hit - so the colour only reinforces an ordering the text already states.
  */
 @Composable
-private fun ZoneRow(share: ZoneShare, percent: Int, accent: Color) {
+private fun ZoneRow(share: ZoneShare, percent: Int, accent: Color, showRange: Boolean = true) {
     val range = share.upperBpmExclusive
         ?.let { "${share.lowerBpm}\u2013${it - 1}" }
         ?: "${share.lowerBpm} и выше"
@@ -572,7 +590,7 @@ private fun ZoneRow(share: ZoneShare, percent: Int, accent: Color) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = "$range уд/мин",
+                text = if (showRange) "$range уд/мин" else "",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

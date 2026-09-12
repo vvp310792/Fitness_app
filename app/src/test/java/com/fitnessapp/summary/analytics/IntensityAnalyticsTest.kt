@@ -23,6 +23,7 @@ class IntensityAnalyticsTest {
     // The percentage fallback at this account's HRmax - the model used when Garmin has no
     // zones to give. Garmin's own floors are pinned separately in GarminZoneParserTest.
     private val bounds = ZoneBoundaries.fromHrMax(hrMax, ZoneSource.ESTIMATED)
+    private val ladders = ZoneLadders(emptyMap(), bounds)
 
     private fun garmin(
         id: Long,
@@ -123,7 +124,7 @@ class IntensityAnalyticsTest {
             listOf(garmin(1, minutes = 60, avgHr = 120)),
             emptyList()
         )
-        val breakdown = IntensityAnalytics.breakdown(sessions, bounds)
+        val breakdown = IntensityAnalytics.breakdown(sessions, ladders)
         assertEquals(5, breakdown.zones.size)
         assertEquals(60, breakdown.zones.first { it.zone == HeartRateZone.Z2 }.minutes)
         assertEquals(0, breakdown.zones.first { it.zone == HeartRateZone.Z5 }.minutes)
@@ -145,7 +146,7 @@ class IntensityAnalyticsTest {
             ),
             emptyList()
         )
-        val breakdown = IntensityAnalytics.breakdown(sessions, bounds)
+        val breakdown = IntensityAnalytics.breakdown(sessions, ladders)
         assertEquals(200, breakdown.totalMinutes)
         assertEquals(0, breakdown.zones.first { it.zone == HeartRateZone.Z3 }.minutes)
         assertEquals(0, breakdown.zones.first { it.zone == HeartRateZone.Z4 }.minutes)
@@ -170,7 +171,7 @@ class IntensityAnalyticsTest {
             ),
             emptyList()
         )
-        val breakdown = IntensityAnalytics.breakdown(sessions, bounds)
+        val breakdown = IntensityAnalytics.breakdown(sessions, ladders)
         assertEquals(0, breakdown.zones.first { it.zone == HeartRateZone.Z1 }.minutes)
         assertEquals(30, breakdown.totalMinutes)
         assertEquals(1, breakdown.totalSessions)
@@ -191,7 +192,7 @@ class IntensityAnalyticsTest {
         )
         assertEquals(0, sessions.single().avgHeartRate)
         assertEquals(0, sessions.single().maxHeartRate)
-        val breakdown = IntensityAnalytics.breakdown(sessions, bounds)
+        val breakdown = IntensityAnalytics.breakdown(sessions, ladders)
         assertEquals(0, breakdown.zones.first { it.zone == HeartRateZone.Z5 }.minutes)
         assertEquals(40, breakdown.minutesWithoutHeartRate)
     }
@@ -220,7 +221,7 @@ class IntensityAnalyticsTest {
             listOf(workout(5, minutes = 30, avgHr = 120, startMillis = start + 4 * 60_000L))
         )
         assertEquals(2, sessions.size)
-        val breakdown = IntensityAnalytics.breakdown(sessions, bounds)
+        val breakdown = IntensityAnalytics.breakdown(sessions, ladders)
         assertEquals(90, breakdown.totalMinutes)
     }
 
@@ -232,7 +233,7 @@ class IntensityAnalyticsTest {
             listOf(workout(2, minutes = 0, avgHr = 150, startMillis = 99 * 86_400_000L))
         )
         assertTrue(sessions.isEmpty())
-        assertTrue(IntensityAnalytics.breakdown(sessions, bounds).isEmpty)
+        assertTrue(IntensityAnalytics.breakdown(sessions, ladders).isEmpty)
     }
 
     /**
@@ -279,7 +280,7 @@ class IntensityAnalyticsTest {
     /** Nothing at all is an empty breakdown, not a division by zero. */
     @Test
     fun `an empty period is empty rather than broken`() {
-        val breakdown = IntensityAnalytics.breakdown(emptyList(), bounds)
+        val breakdown = IntensityAnalytics.breakdown(emptyList(), ladders)
         assertTrue(breakdown.isEmpty)
         assertEquals(0, breakdown.sharePercent(breakdown.zones.first()))
     }
@@ -406,6 +407,7 @@ class ZoneBoundarySourceTest {
 class RealTimeInZonesTest {
 
     private val bounds = ZoneBoundaries.fromHrMax(205, ZoneSource.GARMIN)
+    private val ladders = ZoneLadders(emptyMap(), bounds)
 
     private fun session(minutes: Int, avgHr: Int, zones: List<Int>? = null) = IntensitySession(
         dateEpochDay = 1, startTimeMillis = 0, typeKey = "running",
@@ -417,7 +419,7 @@ class RealTimeInZonesTest {
     fun `a run with real zones is not filed whole into zone 1`() {
         // 45 min: 30 in Z1, 12 in Z2, 3 in Z3 - average 125 would have said "all Z1".
         val run = session(45, 125, listOf(1800, 720, 180, 0, 0))
-        val b = IntensityAnalytics.breakdown(listOf(run), bounds)
+        val b = IntensityAnalytics.breakdown(listOf(run), ladders)
         assertEquals(30, b.zones[0].minutes)
         assertEquals(12, b.zones[1].minutes)
         assertEquals(3, b.zones[2].minutes)
@@ -429,7 +431,7 @@ class RealTimeInZonesTest {
     /** Without a breakdown the old behaviour stands - and is counted separately, to be said. */
     @Test
     fun `a session without a breakdown still falls back to its average`() {
-        val b = IntensityAnalytics.breakdown(listOf(session(60, 150)), bounds)
+        val b = IntensityAnalytics.breakdown(listOf(session(60, 150)), ladders)
         assertEquals(60, b.zones.first { it.zone == HeartRateZone.Z3 }.minutes)
         assertEquals(0, b.sessionsWithRealZones)
         assertEquals(1, b.sessionsFromAverage)
@@ -444,7 +446,7 @@ class RealTimeInZonesTest {
                 session(30, 110),
                 session(20, 165)
             ),
-            bounds
+            ladders
         )
         assertEquals(1, b.sessionsWithRealZones)
         assertEquals(2, b.sessionsFromAverage)
@@ -458,10 +460,127 @@ class RealTimeInZonesTest {
     fun `a session is counted once, in its dominant zone`() {
         val b = IntensityAnalytics.breakdown(
             listOf(session(45, 150, listOf(300, 2100, 300, 0, 0))),
-            bounds
+            ladders
         )
         assertEquals(1, b.totalSessions)
         assertEquals(1, b.zones[1].sessions)
         assertEquals(0, b.zones[0].sessions)
+    }
+}
+
+/**
+ * Per-sport ladders, so nothing on screen contradicts Garmin's own count.
+ *
+ * Garmin configures zones per sport profile and the profiles can use different methods.
+ * On this account DEFAULT is a percentage of heart-rate reserve and RUNNING a percentage
+ * of the lactate threshold, which makes 185 bpm zone 5 on a run and zone 4 in the gym.
+ * Garmin's per-second minutes are already bucketed that way; the app must bucket its
+ * fallback that way too, and must not print one ladder's bpm bounds beside the other's
+ * minutes.
+ */
+class ZoneLaddersTest {
+
+    // This account's real configuration, from its own export.
+    private val default = ZoneBoundaries(
+        floors = listOf(131, 145, 160, 175, 190), maxHeartRate = 205,
+        source = ZoneSource.GARMIN, sport = "DEFAULT", method = "HR_RESERVE"
+    )
+    private val running = ZoneBoundaries(
+        floors = listOf(119, 146, 162, 172, 182), maxHeartRate = 205,
+        source = ZoneSource.GARMIN, sport = "RUNNING", method = "LACTATE_THRESHOLD"
+    )
+    private val ladders = ZoneLadders(mapOf("DEFAULT" to default, "RUNNING" to running), default)
+
+    private fun session(typeKey: String, minutes: Int, avgHr: Int) = IntensitySession(
+        dateEpochDay = 1, startTimeMillis = 0, typeKey = typeKey,
+        minutes = minutes, avgHeartRate = avgHr, maxHeartRate = avgHr
+    )
+
+    /** Every spelling Garmin uses for running must reach the running profile. */
+    @Test
+    fun `running spellings reach the running ladder`() {
+        listOf("running", "trail_running", "treadmill_running", "track_running", "indoor_running")
+            .forEach { assertEquals(it, "RUNNING", ladders.forSport(it).sport) }
+        listOf("strength_training", "lap_swimming", "cycling", "walking")
+            .forEach { assertEquals(it, "DEFAULT", ladders.forSport(it).sport) }
+    }
+
+    /** A motorbike is not a bicycle here either - same guard as the distance buckets. */
+    @Test
+    fun `a motorbike does not take the cycling ladder`() {
+        val withCycling = ZoneLadders(
+            mapOf("DEFAULT" to default, "CYCLING" to running), default
+        )
+        assertEquals("DEFAULT", withCycling.forSport("motorcycling").sport)
+        assertEquals("RUNNING", withCycling.forSport("road_biking").sport)
+    }
+
+    /** A sport with no profile of its own falls to DEFAULT, which is what Garmin does. */
+    @Test
+    fun `a sport without a profile uses the default ladder`() {
+        assertEquals("DEFAULT", ladders.forSport("rowing").sport)
+        assertEquals("DEFAULT", ladders.forSport("").sport)
+    }
+
+    /**
+     * The heart rate that shows the whole point: 185 is zone 5 running, zone 4 otherwise.
+     * Filed on the wrong ladder it would be a whole zone out.
+     */
+    @Test
+    fun `the same heart rate lands in different zones by sport`() {
+        assertEquals(HeartRateZone.Z5, HeartRateZone.of(185, ladders.forSport("running")))
+        assertEquals(HeartRateZone.Z4, HeartRateZone.of(185, ladders.forSport("strength_training")))
+        assertEquals(HeartRateZone.Z2, HeartRateZone.of(160, ladders.forSport("running")))
+        assertEquals(HeartRateZone.Z3, HeartRateZone.of(160, ladders.forSport("strength_training")))
+    }
+
+    /** The average-based fallback uses the per-sport ladder, not one ladder for everything. */
+    @Test
+    fun `the fallback buckets each session on its own ladder`() {
+        val b = IntensityAnalytics.breakdown(
+            listOf(session("running", 30, 185), session("strength_training", 30, 185)),
+            ladders
+        )
+        assertEquals(30, b.zones.first { it.zone == HeartRateZone.Z5 }.minutes)
+        assertEquals(30, b.zones.first { it.zone == HeartRateZone.Z4 }.minutes)
+    }
+
+    /** Two ladders in play is reported, so the screen can drop the contradicting bounds. */
+    @Test
+    fun `the ladders actually used are reported`() {
+        val mixed = IntensityAnalytics.breakdown(
+            listOf(session("running", 30, 150), session("strength_training", 30, 150)),
+            ladders
+        )
+        assertEquals(2, mixed.laddersInPlay.size)
+
+        val runsOnly = IntensityAnalytics.breakdown(listOf(session("running", 30, 150)), ladders)
+        assertEquals(1, runsOnly.laddersInPlay.size)
+        assertEquals("RUNNING", runsOnly.laddersInPlay.single().sport)
+    }
+
+    /**
+     * A hand-entered maximum is one ladder for every sport. It carries no per-sport
+     * information, and inventing some would be worse than the single ladder it replaces.
+     */
+    @Test
+    fun `a manual maximum is a single ladder for everything`() {
+        val manual = ZoneLadders.of(emptyList(), manualHrMax = 200, estimatedHrMax = null)!!
+        assertEquals(ZoneSource.MANUAL, manual.forSport("running").source)
+        assertEquals(manual.forSport("running").floors, manual.forSport("strength_training").floors)
+        assertEquals(1, manual.all.size)
+    }
+
+    /** Garmin's profiles beat the estimate, and all of them survive for the Я tab. */
+    @Test
+    fun `Garmin profiles are all kept and DEFAULT leads`() {
+        val rows = listOf(
+            GarminHeartRateZone("RUNNING", 119, 146, 162, 172, 182, maxHeartRateUsed = 205),
+            GarminHeartRateZone("DEFAULT", 131, 145, 160, 175, 190, maxHeartRateUsed = 205)
+        )
+        val l = ZoneLadders.of(rows, manualHrMax = 0, estimatedHrMax = 181)!!
+        assertEquals("DEFAULT", l.primary.sport)
+        assertEquals(2, l.all.size)
+        assertEquals("RUNNING", l.forSport("trail_running").sport)
     }
 }

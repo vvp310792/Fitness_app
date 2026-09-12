@@ -41,6 +41,7 @@ import com.fitnessapp.summary.FitnessSummaryApp
 import com.fitnessapp.summary.analytics.HeartRateZone
 import com.fitnessapp.summary.analytics.HeartRateZoneStore
 import com.fitnessapp.summary.analytics.IntensityAnalytics
+import com.fitnessapp.summary.analytics.ZoneLadders
 import com.fitnessapp.summary.analytics.ZoneSource
 import com.fitnessapp.summary.debug.AppLog
 import com.fitnessapp.summary.export.DataExporter
@@ -61,6 +62,7 @@ import com.fitnessapp.summary.update.ApkInstaller
 import com.fitnessapp.summary.update.UpdateCheckResult
 import com.fitnessapp.summary.update.UpdateChecker
 import com.fitnessapp.summary.util.formatDays
+import com.fitnessapp.summary.util.garminSportName
 import com.fitnessapp.summary.util.formatTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -902,7 +904,7 @@ private fun HeartRateZoneSection(app: FitnessSummaryApp) {
     }
     val fromGarmin = remember(garminZones) { IntensityAnalytics.garminDefault(garminZones) }
     val inForce = remember(garminZones, storedHrMax, suggested) {
-        IntensityAnalytics.resolveBoundaries(garminZones, storedHrMax, suggested)
+        ZoneLadders.of(garminZones, storedHrMax, suggested)?.primary
     }
 
     var input by remember(storedHrMax) { mutableStateOf(if (storedHrMax > 0) storedHrMax.toString() else "") }
@@ -923,23 +925,35 @@ private fun HeartRateZoneSection(app: FitnessSummaryApp) {
         // rather than folded into the numbers, because the field names in this payload
         // were the one thing that couldn't be verified against a reference implementation.
         if (fromGarmin != null) {
-            StatRow("Источник зон", "Garmin · профиль ${fromGarmin.sport}")
+            // Every profile, not just DEFAULT. Garmin counts a run on the running ladder
+            // and the gym on the default one, so showing only one of them would contradict
+            // the minutes on «Тренды» - which come from Garmin's own per-sport count.
+            val ladders = ZoneLadders.of(garminZones, manualHrMax = 0, estimatedHrMax = null)?.all.orEmpty()
+            StatRow("Источник зон", "Garmin · профилей ${ladders.size}")
             if (fromGarmin.maxHeartRate > 0) StatRow("Максимальный пульс", "${fromGarmin.maxHeartRate} уд/мин")
-            if (fromGarmin.method.isNotBlank()) StatRow("Способ расчёта", fromGarmin.method)
-            HeartRateZone.entries.forEach { zone ->
-                val lower = fromGarmin.lowerBpm(zone)
-                val upper = fromGarmin.upperBpmExclusive(zone)
-                StatRow(
-                    "Z${zone.number} · ${zone.title}",
-                    if (upper != null) "$lower\u2013${upper - 1} уд/мин" else "$lower и выше"
+            ladders.forEach { ladder ->
+                Text(
+                    text = "${zoneProfileName(ladder.sport)} · ${zoneMethodName(ladder.method)}",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(top = 10.dp)
                 )
+                HeartRateZone.entries.forEach { zone ->
+                    val lower = ladder.lowerBpm(zone)
+                    val upper = ladder.upperBpmExclusive(zone)
+                    StatRow(
+                        "Z${zone.number} · ${zone.title}",
+                        if (upper != null) "$lower\u2013${upper - 1} уд/мин" else "$lower и выше"
+                    )
+                }
             }
             if (garminZones.size > 1) {
                 Text(
-                    text = "У вас настроено профилей: ${garminZones.size} " +
-                        "(${garminZones.joinToString(", ") { it.sport }}). Для распределения на " +
-                        "«Трендах» берётся DEFAULT: одно распределение по бегу, велосипеду и залу " +
-                        "надо считать по одной лестнице, иначе проценты несравнимы между собой.",
+                    text = "Профилей больше одного, и считаются они по-разному — поэтому один и тот же " +
+                        "пульс может попадать в разные зоны в зависимости от вида спорта. Минуты на " +
+                        "«Трендах» Garmin считает по этим самым профилям, так что противоречия нет: " +
+                        "там, где лестниц несколько, диапазоны в уд/мин не печатаются рядом с зоной, " +
+                        "а смотрятся здесь.",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp)
@@ -1424,6 +1438,26 @@ private fun ScaleSection(app: FitnessSummaryApp) {
 }
 
 /** Human names for the packages that commonly write weight into Health Connect. */
+/**
+ * Garmin's sport-profile key as a zone-ladder heading. Not [garminSportName]: "DEFAULT" is
+ * not a sport, it is "everything else", and humanising it to "Default" would read as one.
+ */
+private fun zoneProfileName(sport: String): String = when (sport.uppercase()) {
+    "DEFAULT" -> "По умолчанию (всё, кроме перечисленного ниже)"
+    "RUNNING" -> "Бег"
+    "CYCLING" -> "Велосипед"
+    "SWIMMING" -> "Плавание"
+    else -> garminSportName(sport)
+}
+
+/** Garmin's own words for how it derived a ladder. */
+private fun zoneMethodName(method: String): String = when (method.uppercase()) {
+    "HR_RESERVE" -> "от резерва ЧСС"
+    "PERCENT_MAX_HR", "MAX_HR", "PERCENT_MAX" -> "от максимального пульса"
+    "LACTATE_THRESHOLD" -> "от лактатного порога"
+    else -> method.ifBlank { "способ не указан" }
+}
+
 private fun appName(packageName: String): String = when (packageName) {
     "com.google.android.apps.fitness" -> "Google Fit"
     "com.xiaomi.hm.health" -> "Zepp Life"
