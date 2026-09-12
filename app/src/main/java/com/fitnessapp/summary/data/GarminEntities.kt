@@ -290,10 +290,42 @@ data class GarminActivity(
      * Training Effect) would otherwise be re-fetched on every single sync forever.
      */
     val detailsLoaded: Boolean = false,
+
+    /**
+     * Seconds spent in each heart-rate zone, Z1..Z5, as **Garmin itself counted them**
+     * from the per-second heart rate (`activity-service/{id}/hrTimeInZones`).
+     *
+     * This exists because the alternative was wrong in practice. Without it the app had
+     * only one average per session, so a 45-minute run averaging 125 with a peak of 167
+     * was filed whole into zone 1 - and a week that really did hold time in Z2 and Z3 came
+     * out as "100 % Z1". The user caught exactly that. An average cannot answer "how long
+     * was I above threshold", and no amount of care in presenting it makes it able to.
+     *
+     * It also fixes the per-sport problem for free: Garmin counts a run against the running
+     * zone ladder and everything else against the default one, which is what the watch
+     * shows. The app's own fallback can only ever use one ladder for everything.
+     */
+    val zone1Seconds: Int = 0,
+    val zone2Seconds: Int = 0,
+    val zone3Seconds: Int = 0,
+    val zone4Seconds: Int = 0,
+    val zone5Seconds: Int = 0,
+    /**
+     * True once the time-in-zones call has been made for this activity. Stored rather than
+     * inferred from the seconds being non-zero, for the same reason [detailsLoaded] is: a
+     * session that legitimately has none (a pool swim with no wrist heart rate) would
+     * otherwise be re-fetched on every sync forever.
+     */
+    val zonesLoaded: Boolean = false,
     val updatedAtMillis: Long = System.currentTimeMillis()
 ) {
     val durationMinutes: Int get() = durationSeconds / 60
     val hasTrainingEffect: Boolean get() = aerobicTrainingEffect > 0f || anaerobicTrainingEffect > 0f
+
+    /** Z1..Z5 seconds, or null when Garmin has not given this activity a breakdown. */
+    val zoneSeconds: List<Int>?
+        get() = listOf(zone1Seconds, zone2Seconds, zone3Seconds, zone4Seconds, zone5Seconds)
+            .takeIf { it.sum() > 0 }
 }
 
 @Dao
@@ -392,9 +424,28 @@ interface GarminActivityDao {
     @Query("SELECT * FROM garmin_activities ORDER BY startTimeMillis ASC")
     suspend fun getAllOnce(): List<GarminActivity>
 
+    /**
+     * Stored rows by id, so an activity that only needs one of its two enrichment calls
+     * can be rebuilt from what is already known instead of from the list response - the
+     * list carries no Training Effect, and upserting it over a detailed row would erase it.
+     */
+    @Query("SELECT * FROM garmin_activities WHERE activityId IN (:ids)")
+    suspend fun byIds(ids: List<Long>): List<GarminActivity>
+
     /** Ids already enriched with their detail call - see [GarminActivity.detailsLoaded]. */
     @Query("SELECT activityId FROM garmin_activities WHERE dateEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND detailsLoaded = 1")
     suspend fun detailedIdsInRange(fromEpochDay: Long, toEpochDay: Long): List<Long>
+
+    /**
+     * Ids whose time-in-zones question is already settled: either it was fetched, or the
+     * session carries no heart rate at all and never will (a pool swim), so asking Garmin
+     * about its zones would be one wasted request per sync, forever.
+     */
+    @Query(
+        "SELECT activityId FROM garmin_activities WHERE dateEpochDay BETWEEN :fromEpochDay AND :toEpochDay " +
+            "AND (zonesLoaded = 1 OR avgHeartRate <= 0)"
+    )
+    suspend fun zonedIdsInRange(fromEpochDay: Long, toEpochDay: Long): List<Long>
 }
 
 /**

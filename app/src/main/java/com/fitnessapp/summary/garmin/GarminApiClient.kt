@@ -475,8 +475,49 @@ class GarminApiClient(private val auth: GarminAuthClient) {
      * A 90-day backfill re-run would otherwise repeat one request per activity every time,
      * which is most of its cost.
      */
-    suspend fun activityDetail(activity: GarminActivity): GarminActivity = withContext(Dispatchers.IO) {
-        enrichActivity(activity)
+    /**
+     * Fills in whatever this activity is still missing - the detail summary, the real
+     * time-in-zones, or both. Each half is skipped when it is already known, so a
+     * re-walk of settled history costs nothing for it.
+     */
+    suspend fun activityDetail(
+        activity: GarminActivity,
+        needDetails: Boolean = true,
+        needZones: Boolean = true
+    ): GarminActivity = withContext(Dispatchers.IO) {
+        var out = if (needDetails) enrichActivity(activity) else activity
+        if (needZones && out.avgHeartRate > 0) out = enrichTimeInZones(out)
+        out
+    }
+
+    /**
+     * Garmin's own count of seconds per heart-rate zone for one activity, from the
+     * per-second heart rate it recorded.
+     *
+     * `zonesLoaded` is set even when nothing comes back: "Garmin has no breakdown for this
+     * session" is an answer, and re-asking it every sync forever is the failure mode the
+     * detail call already has a flag for.
+     */
+    private suspend fun enrichTimeInZones(activity: GarminActivity): GarminActivity {
+        val fetch = fetch("activity-service/activity/${activity.activityId}/hrTimeInZones", emptyMap())
+        val seconds = (fetch as? GarminFetch.Ok)?.let {
+            try {
+                GarminZoneParser.parseTimeInZones(it.value)
+            } catch (e: Exception) {
+                AppLog.w("GarminApiClient", "Не удалось разобрать время в зонах ${activity.activityId}", e)
+                null
+            }
+        }
+        // A failed request must NOT be marked settled - only a real answer, empty or not.
+        if (fetch is GarminFetch.Failed) return activity
+        return activity.copy(
+            zonesLoaded = true,
+            zone1Seconds = seconds?.getOrNull(0) ?: 0,
+            zone2Seconds = seconds?.getOrNull(1) ?: 0,
+            zone3Seconds = seconds?.getOrNull(2) ?: 0,
+            zone4Seconds = seconds?.getOrNull(3) ?: 0,
+            zone5Seconds = seconds?.getOrNull(4) ?: 0
+        )
     }
 
     private fun parseActivity(item: JSONObject, epochDay: Long): GarminActivity {

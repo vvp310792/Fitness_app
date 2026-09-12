@@ -571,16 +571,32 @@ class GarminSyncManager(
     private suspend fun syncActivities(from: LocalDate, to: LocalDate, run: RunState): Set<Long> {
         val listed = run.take(run.activities) { apiClient.activities(from, to) } ?: return emptySet()
         val days = listed.map { it.dateEpochDay }.toSet()
-        val alreadyDetailed = database.garminActivityDao()
-            .detailedIdsInRange(from.toEpochDay(), to.toEpochDay())
-            .toSet()
+        val dao = database.garminActivityDao()
+        val alreadyDetailed = dao.detailedIdsInRange(from.toEpochDay(), to.toEpochDay()).toSet()
+        // Two independent questions per activity now - the detail summary and the real
+        // time-in-zones - so they are skipped independently. Folding them into one flag
+        // would mean every activity fetched before zones existed could never get them.
+        val alreadyZoned = dao.zonedIdsInRange(from.toEpochDay(), to.toEpochDay()).toSet()
 
-        val fresh = listed.filter { it.activityId !in alreadyDetailed }
+        val fresh = listed.filter { it.activityId !in alreadyDetailed || it.activityId !in alreadyZoned }
         run.activities.skipped += listed.size - fresh.size
         if (fresh.isEmpty()) return days
 
-        val detailed = fresh.map { apiClient.activityDetail(it) }
-        database.garminActivityDao().upsertAll(detailed)
+        // The list response carries no Training Effect, no load, no power - those live
+        // only on the detail call. So an activity that already has its details and needs
+        // only its zones must be rebuilt from the STORED row: upserting the list row over
+        // it would silently erase everything the detail call had filled in.
+        val stored = dao.byIds(fresh.map { it.activityId }).associateBy { it.activityId }
+        val detailed = fresh.map { listedActivity ->
+            val needDetails = listedActivity.activityId !in alreadyDetailed
+            val base = if (needDetails) listedActivity else stored[listedActivity.activityId] ?: listedActivity
+            apiClient.activityDetail(
+                base,
+                needDetails = needDetails,
+                needZones = listedActivity.activityId !in alreadyZoned
+            )
+        }
+        dao.upsertAll(detailed)
         run.activities.stored += detailed.size
         return days
     }

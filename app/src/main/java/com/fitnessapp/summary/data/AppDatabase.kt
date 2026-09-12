@@ -34,7 +34,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         StrengthSet::class,
         GarminHeartRateZone::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -354,6 +354,20 @@ abstract class AppDatabase : RoomDatabase() {
          * Additive like every migration here: nothing existing is touched, and an install
          * that never logs into Garmin just carries one more empty table.
          */
+        /**
+         * Real time-in-zones per activity, counted by Garmin from the per-second heart
+         * rate - see [GarminActivity.zone1Seconds]. Columns on the activity row rather
+         * than a table of their own, following [GarminActivity.detailsLoaded]: it is the
+         * same shape of thing, one extra per-activity call whose result belongs to that row.
+         */
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                listOf("zone1Seconds", "zone2Seconds", "zone3Seconds", "zone4Seconds", "zone5Seconds")
+                    .forEach { db.execSQL("ALTER TABLE garmin_activities ADD COLUMN $it INTEGER NOT NULL DEFAULT 0") }
+                db.execSQL("ALTER TABLE garmin_activities ADD COLUMN zonesLoaded INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         private val MIGRATION_6_7 = object : Migration(6, 7) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
@@ -407,7 +421,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "fitness_summary.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                     .build()
                 INSTANCE = instance
                 instance

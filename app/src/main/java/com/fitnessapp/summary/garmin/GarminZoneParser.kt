@@ -126,6 +126,52 @@ internal object GarminZoneParser {
         )
     }
 
+    /**
+     * Seconds per zone from `activity-service/{id}/hrTimeInZones`, as Z1..Z5, or null when
+     * the response holds no usable breakdown.
+     *
+     * Structural again, and for the same reason as [parse]: no reference implementation
+     * carries a fixture for this body either. The shape is an array of per-zone objects,
+     * so each entry is scanned for a zone number (1-5) and a seconds value, on the words
+     * any naming would have to use.
+     *
+     * **Seconds are read as a floating-point number on purpose** - Garmin returns
+     * `secsInZone` as a float (`1234.0`) on the endpoints this project has already seen,
+     * and an int-only read would drop every value to zero without failing.
+     */
+    fun parseTimeInZones(body: String): List<Int>? {
+        val trimmed = body.trim()
+        val array = when {
+            trimmed.startsWith("[") -> JSONArray(trimmed)
+            trimmed.startsWith("{") -> JSONObject(trimmed).let { obj ->
+                obj.keys().asSequence().map { obj.opt(it) }.filterIsInstance<JSONArray>().firstOrNull()
+            }
+            else -> null
+        } ?: return null
+
+        val seconds = IntArray(5)
+        for (i in 0 until array.length()) {
+            val item = array.optJSONObject(i) ?: continue
+            var number = 0
+            var secs = -1
+            for (key in item.keys()) {
+                val lower = key.lowercase()
+                val value = numberOf(item.opt(key)) ?: continue
+                when {
+                    lower.contains("zonenumber") || lower.contains("zoneindex") || lower == "zone" ->
+                        if (value in 1..5) number = value
+                    // "secs", "seconds", "timeinzone" - but NOT a boundary, which is bpm.
+                    (lower.contains("sec") || lower.contains("time")) && !lower.contains("boundary") ->
+                        if (value >= 0) secs = value
+                }
+            }
+            // Five entries in order need no explicit number, same fallback as the ladder.
+            if (number == 0 && array.length() == 5) number = i + 1
+            if (number in 1..5 && secs >= 0) seconds[number - 1] = secs
+        }
+        return seconds.toList().takeIf { it.sum() > 0 }
+    }
+
     /** `[{zoneNumber: 1, floor: 93}, ...]` - the shape where zones are objects, not keys. */
     private fun readNestedZones(array: JSONArray, floors: IntArray) {
         for (i in 0 until array.length()) {

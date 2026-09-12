@@ -50,7 +50,7 @@ object DataExporter {
 
         val root = JSONObject().apply {
             put("app", "fitness-summary")
-            put("schemaVersion", 4)
+            put("schemaVersion", 5)
             put("exportedAt", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
             put("sources", JSONArray(listOf("Health Connect", "Garmin Connect (unofficial)", "Zepp Life (unofficial, optional)", "журнал силовых тренировок (импорт)")))
             put("dayCount", days.size)
@@ -293,6 +293,11 @@ object DataExporter {
                         // why Training Effect and load are missing on this row - a
                         // different fact from "this sport has no Training Effect".
                         put("detailsLoaded", a.detailsLoaded)
+                        // Garmin's own per-second count, when it has one: the
+                        // difference between real time in zones and the session
+                        // average charged whole to one zone.
+                        put("zoneSeconds", JSONArray().also { z -> a.zoneSeconds?.forEach { z.put(it) } })
+                        put("zonesLoaded", a.zonesLoaded)
                         put("name", a.name)
                         put("typeKey", a.typeKey)
                         put("typeName", garminSportName(a.typeKey))

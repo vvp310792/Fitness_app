@@ -110,9 +110,15 @@ data class IntensitySession(
     val typeKey: String,
     val minutes: Int,
     val avgHeartRate: Int,
-    val maxHeartRate: Int
+    val maxHeartRate: Int,
+    /**
+     * Seconds per zone as Garmin counted them from the per-second heart rate, when it has
+     * them. This is the honest answer, and it is preferred over everything else below.
+     */
+    val zoneSeconds: List<Int>? = null
 ) {
     val hasHeartRate: Boolean get() = avgHeartRate > 0
+    val hasRealZones: Boolean get() = zoneSeconds != null
 }
 
 /** One zone's share of the period. [minutes] is 0 for a zone nothing landed in. */
@@ -139,6 +145,10 @@ data class IntensityBreakdown(
     val totalSessions: Int,
     val minutesWithoutHeartRate: Int,
     val sessionsWithoutHeartRate: Int,
+    /** Sessions whose minutes came from Garmin's own per-second count, not from an average. */
+    val sessionsWithRealZones: Int,
+    /** Sessions still charged whole to the zone of their average, because Garmin had no breakdown. */
+    val sessionsFromAverage: Int,
     /** typeKey -> session count, for the sessions that carried no heart rate. */
     val sportsWithoutHeartRate: Map<String, Int>
 ) {
@@ -212,7 +222,8 @@ object IntensityAnalytics {
                 typeKey = activity.typeKey,
                 minutes = activity.durationMinutes,
                 avgHeartRate = plausible(activity.avgHeartRate),
-                maxHeartRate = plausible(activity.maxHeartRate)
+                maxHeartRate = plausible(activity.maxHeartRate),
+                zoneSeconds = activity.zoneSeconds
             )
         }
         val fromHealth = workouts.mapNotNull { workout ->
@@ -248,23 +259,46 @@ object IntensityAnalytics {
      */
     fun breakdown(sessions: List<IntensitySession>, boundaries: ZoneBoundaries): IntensityBreakdown {
         val (withHr, withoutHr) = sessions.partition { it.hasHeartRate }
-        val byZone = withHr.groupBy { HeartRateZone.of(it.avgHeartRate, boundaries) }
+
+        // Minutes per zone, preferring Garmin's own per-second count over the average.
+        //
+        // The average is not a weaker version of the same thing - it is a different and
+        // wrong answer: a 45-minute run averaging 125 with a peak of 167 has real minutes
+        // in Z2 and Z3, and charging it whole to Z1 reported a week of genuine tempo work
+        // as "100 % Z1". Where Garmin has counted the seconds, they are simply used.
+        val minutes = DoubleArray(5)
+        val sessionsPerZone = IntArray(5)
+        withHr.forEach { session ->
+            val real = session.zoneSeconds
+            if (real != null) {
+                real.forEachIndexed { index, seconds -> minutes[index] += seconds / 60.0 }
+                // The session is counted against the zone it spent most of its time in, so
+                // "N тренировок" stays a count of sessions rather than of zone-visits.
+                sessionsPerZone[real.indices.maxBy { real[it] }]++
+            } else {
+                val zone = HeartRateZone.of(session.avgHeartRate, boundaries)
+                minutes[zone.ordinal] += session.minutes.toDouble()
+                sessionsPerZone[zone.ordinal]++
+            }
+        }
+
         return IntensityBreakdown(
             boundaries = boundaries,
             zones = HeartRateZone.entries.map { zone ->
-                val inZone = byZone[zone].orEmpty()
                 ZoneShare(
                     zone = zone,
-                    minutes = inZone.sumOf { it.minutes },
-                    sessions = inZone.size,
+                    minutes = Math.round(minutes[zone.ordinal]).toInt(),
+                    sessions = sessionsPerZone[zone.ordinal],
                     lowerBpm = boundaries.lowerBpm(zone),
                     upperBpmExclusive = boundaries.upperBpmExclusive(zone)
                 )
             },
-            totalMinutes = withHr.sumOf { it.minutes },
+            totalMinutes = Math.round(minutes.sum()).toInt(),
             totalSessions = withHr.size,
             minutesWithoutHeartRate = withoutHr.sumOf { it.minutes },
             sessionsWithoutHeartRate = withoutHr.size,
+            sessionsWithRealZones = withHr.count { it.hasRealZones },
+            sessionsFromAverage = withHr.count { !it.hasRealZones },
             sportsWithoutHeartRate = withoutHr
                 .groupingBy { it.typeKey.ifBlank { "(без типа)" } }
                 .eachCount()

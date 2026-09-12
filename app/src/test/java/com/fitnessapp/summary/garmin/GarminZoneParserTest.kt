@@ -194,3 +194,84 @@ class GarminZoneParserTest {
         assertEquals(setOf("sport", "mysteryField"), names.toSet())
     }
 }
+
+/**
+ * Real time in zones, `activity-service/{id}/hrTimeInZones`.
+ *
+ * This is the payload that makes the intensity card correct rather than approximately
+ * correct: without it a 45-minute run averaging 125 with a peak of 167 was filed whole
+ * into zone 1, and a week that really did hold Z2 and Z3 work came out as "100 % Z1" - a
+ * wrong answer the user caught on their own training. Its field names are as unverified as
+ * the ladder's, so the same structural treatment and the same pinning applies.
+ */
+class GarminTimeInZonesParserTest {
+
+    @Test
+    fun `the expected shape parses`() {
+        val secs = GarminZoneParser.parseTimeInZones(
+            """[{"zoneNumber":1,"secsInZone":1800.0,"zoneLowBoundary":131},
+                {"zoneNumber":2,"secsInZone":720.0,"zoneLowBoundary":145},
+                {"zoneNumber":3,"secsInZone":180.0,"zoneLowBoundary":160},
+                {"zoneNumber":4,"secsInZone":0.0,"zoneLowBoundary":175},
+                {"zoneNumber":5,"secsInZone":0.0,"zoneLowBoundary":190}]"""
+        )
+        assertEquals(listOf(1800, 720, 180, 0, 0), secs)
+    }
+
+    /**
+     * The boundary is a heart rate, not a duration. Reading `zoneLowBoundary` as seconds
+     * would fill every zone with a plausible-looking number and never fail.
+     */
+    @Test
+    fun `a zone boundary is never mistaken for seconds`() {
+        val secs = GarminZoneParser.parseTimeInZones(
+            """[{"zoneNumber":1,"zoneLowBoundary":131,"secsInZone":600},
+                {"zoneNumber":2,"zoneLowBoundary":145,"secsInZone":300},
+                {"zoneNumber":3,"zoneLowBoundary":160,"secsInZone":0},
+                {"zoneNumber":4,"zoneLowBoundary":175,"secsInZone":0},
+                {"zoneNumber":5,"zoneLowBoundary":190,"secsInZone":0}]"""
+        )
+        assertEquals(listOf(600, 300, 0, 0, 0), secs)
+    }
+
+    /** Garmin sends these as floats elsewhere; an int-only read would zero them silently. */
+    @Test
+    fun `float seconds are rounded, not dropped`() {
+        val secs = GarminZoneParser.parseTimeInZones(
+            """[{"zoneNumber":1,"secsInZone":1799.6},{"zoneNumber":2,"secsInZone":0.4},
+                {"zoneNumber":3,"secsInZone":0},{"zoneNumber":4,"secsInZone":0},
+                {"zoneNumber":5,"secsInZone":0}]"""
+        )
+        assertEquals(listOf(1800, 0, 0, 0, 0), secs)
+    }
+
+    /** Five entries in order carry their own numbering implicitly. */
+    @Test
+    fun `five entries without a number fall back to position`() {
+        val secs = GarminZoneParser.parseTimeInZones(
+            """[{"timeInZone":100},{"timeInZone":200},{"timeInZone":300},
+                {"timeInZone":400},{"timeInZone":500}]"""
+        )
+        assertEquals(listOf(100, 200, 300, 400, 500), secs)
+    }
+
+    /** An array wrapped in an object is still an array. */
+    @Test
+    fun `a wrapped array parses`() {
+        val secs = GarminZoneParser.parseTimeInZones(
+            """{"timeInZones":[{"zoneNumber":1,"secsInZone":60},{"zoneNumber":2,"secsInZone":30},
+                {"zoneNumber":3,"secsInZone":0},{"zoneNumber":4,"secsInZone":0},
+                {"zoneNumber":5,"secsInZone":0}]}"""
+        )
+        assertEquals(listOf(60, 30, 0, 0, 0), secs)
+    }
+
+    /** A session Garmin has no breakdown for must be null, never five zeros presented as data. */
+    @Test
+    fun `nothing usable is null`() {
+        assertNull(GarminZoneParser.parseTimeInZones("[]"))
+        assertNull(GarminZoneParser.parseTimeInZones(""))
+        assertNull(GarminZoneParser.parseTimeInZones("""[{"zoneNumber":1,"secsInZone":0}]"""))
+        assertNull(GarminZoneParser.parseTimeInZones("""{"message":"not found"}"""))
+    }
+}

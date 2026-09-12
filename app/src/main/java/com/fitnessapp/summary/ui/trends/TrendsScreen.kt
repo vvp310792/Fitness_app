@@ -466,10 +466,23 @@ private fun androidx.compose.foundation.lazy.LazyListScope.intensitySection(
                         append("Garmin не отдал ваши зоны, поэтому границы посчитаны от оценки " +
                             "максимального пульса ${bounds.maxHeartRate} уд/мин — см. ниже.")
                 }
-                append(" Зона тренировки определяется по её СРЕДНЕМУ пульсу, и вся её длительность ")
-                append("идёт в эту одну зону: поминутный пульс приложение не хранит. Поэтому ")
-                append("распределение уже реального — края занижены, середина завышена. ")
-                append("Вопрос, на который оно отвечает честно: в какой зоне проходит типичная тренировка.")
+                val real = breakdown.sessionsWithRealZones
+                val avg = breakdown.sessionsFromAverage
+                when {
+                    avg == 0 ->
+                        append(" Минуты посчитал сам Garmin по посекундному пульсу каждой тренировки — " +
+                            "это настоящее время в зонах, а не оценка.")
+                    real == 0 ->
+                        append(" Garmin пока не отдал поминутную раскладку ни по одной тренировке периода, " +
+                            "поэтому зона определяется по СРЕДНЕМУ пульсу сессии и вся её длительность идёт " +
+                            "в одну зону. Так распределение уже реального: края занижены, середина завышена. " +
+                            "Нажмите «Синхронизировать» во вкладке «Я» — раскладка подтягивается по одной " +
+                            "тренировке за раз.")
+                    else ->
+                        append(" По $real ${declineWorkouts(real)} минуты посчитал сам Garmin по посекундному " +
+                            "пульсу; ещё $avg ${declineWorkouts(avg)} раскладки нет, они отнесены целиком к зоне " +
+                            "своего среднего пульса — у них края занижены.")
+                }
             },
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -594,6 +607,10 @@ private fun ZoneRow(share: ZoneShare, percent: Int, accent: Color) {
         }
     }
 }
+
+/** "3 тренировки" / "5 тренировок" - Russian agreement, for the sentence above. */
+private fun declineWorkouts(count: Int): String =
+    com.fitnessapp.summary.util.pluralRu(count, "тренировке", "тренировкам", "тренировкам")
 
 /** The five zone colours by number, so the ramp is indexed in one place only. */
 private fun MetricPalette.zoneColor(number: Int): Color = when (number) {

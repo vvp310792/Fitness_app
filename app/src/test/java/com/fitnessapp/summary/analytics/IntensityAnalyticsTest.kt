@@ -393,3 +393,75 @@ class ZoneBoundarySourceTest {
         assertEquals(HeartRateZone.Z2, HeartRateZone.of(114, bounds))
     }
 }
+
+/**
+ * The correction that prompted all of this: real per-second minutes must beat the session
+ * average wherever Garmin has them.
+ *
+ * The user had runs above zone 1 in a week the app reported as 100 % zone 1. Both numbers
+ * came from the same sessions - the difference is only that one charges a whole run to the
+ * zone of its average and the other counts the seconds. The first is not a rougher version
+ * of the second, it is a different and wrong answer.
+ */
+class RealTimeInZonesTest {
+
+    private val bounds = ZoneBoundaries.fromHrMax(205, ZoneSource.GARMIN)
+
+    private fun session(minutes: Int, avgHr: Int, zones: List<Int>? = null) = IntensitySession(
+        dateEpochDay = 1, startTimeMillis = 0, typeKey = "running",
+        minutes = minutes, avgHeartRate = avgHr, maxHeartRate = avgHr + 40, zoneSeconds = zones
+    )
+
+    /** The exact case from the user's week: average says Z1, the seconds say otherwise. */
+    @Test
+    fun `a run with real zones is not filed whole into zone 1`() {
+        // 45 min: 30 in Z1, 12 in Z2, 3 in Z3 - average 125 would have said "all Z1".
+        val run = session(45, 125, listOf(1800, 720, 180, 0, 0))
+        val b = IntensityAnalytics.breakdown(listOf(run), bounds)
+        assertEquals(30, b.zones[0].minutes)
+        assertEquals(12, b.zones[1].minutes)
+        assertEquals(3, b.zones[2].minutes)
+        assertEquals(45, b.totalMinutes)
+        assertEquals(1, b.sessionsWithRealZones)
+        assertEquals(0, b.sessionsFromAverage)
+    }
+
+    /** Without a breakdown the old behaviour stands - and is counted separately, to be said. */
+    @Test
+    fun `a session without a breakdown still falls back to its average`() {
+        val b = IntensityAnalytics.breakdown(listOf(session(60, 150)), bounds)
+        assertEquals(60, b.zones.first { it.zone == HeartRateZone.Z3 }.minutes)
+        assertEquals(0, b.sessionsWithRealZones)
+        assertEquals(1, b.sessionsFromAverage)
+    }
+
+    /** Mixed periods are normal while the backfill runs; both halves must be counted. */
+    @Test
+    fun `a mixed period reports how many sessions each method covered`() {
+        val b = IntensityAnalytics.breakdown(
+            listOf(
+                session(45, 125, listOf(1800, 720, 180, 0, 0)),
+                session(30, 110),
+                session(20, 165)
+            ),
+            bounds
+        )
+        assertEquals(1, b.sessionsWithRealZones)
+        assertEquals(2, b.sessionsFromAverage)
+        assertEquals(95, b.totalMinutes)
+        // 30 (real Z1) + 30 (average-only session) = 60 in Z1.
+        assertEquals(60, b.zones[0].minutes)
+    }
+
+    /** A session counts once, against the zone it actually spent most of its time in. */
+    @Test
+    fun `a session is counted once, in its dominant zone`() {
+        val b = IntensityAnalytics.breakdown(
+            listOf(session(45, 150, listOf(300, 2100, 300, 0, 0))),
+            bounds
+        )
+        assertEquals(1, b.totalSessions)
+        assertEquals(1, b.zones[1].sessions)
+        assertEquals(0, b.zones[0].sessions)
+    }
+}
