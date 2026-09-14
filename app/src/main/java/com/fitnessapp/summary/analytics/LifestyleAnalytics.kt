@@ -670,7 +670,11 @@ object LifestyleAnalytics {
         // Five years is ~1800 points on a phone-width chart: at 60 days the curve still
         // carries week-to-week wobble that no longer means anything at that scale, and a
         // quarter is the unit a multi-year shape is actually read in.
-        else -> 90
+        spanDays <= 2200 -> 90
+        // Beyond that - the twelve-year window the Strava import made reachable - a quarter
+        // is itself the wobble: 4400 days at 90 still draws every season, and the question
+        // at that scale is which YEARS were trained, not which spring.
+        else -> 180
     }
 
     // ---- helpers ------------------------------------------------------------------------------

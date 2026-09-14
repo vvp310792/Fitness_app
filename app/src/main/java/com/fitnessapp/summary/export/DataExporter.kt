@@ -53,7 +53,7 @@ object DataExporter {
 
         val root = JSONObject().apply {
             put("app", "fitness-summary")
-            put("schemaVersion", 6)
+            put("schemaVersion", 7)
             put("exportedAt", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
             put("sources", JSONArray(listOf("Health Connect", "Garmin Connect (unofficial)", "Zepp Life (unofficial, optional)", "журнал силовых тренировок (импорт)")))
             put("dayCount", days.size)
@@ -424,6 +424,7 @@ object DataExporter {
                 put("scaleMeasurements", database.scaleMeasurementDao().getAllOnce().size)
                 put("strengthSets", database.strengthSetDao().getAllOnce().size)
                 put("heartRateZoneProfiles", database.garminHeartRateZoneDao().getAllOnce().size)
+                put("stravaActivities", database.stravaActivityDao().getAllOnce().size)
             })
             put("garminSyncCoverage", JSONArray().also { array ->
                 for (row in database.garminSyncMarkDao().sectionCoverage()) {
@@ -436,6 +437,27 @@ object DataExporter {
                     })
                 }
             })
+        })
+
+        // The Strava import - sessions from before the watch, stored whole including the
+        // ones Garmin also has. Which of them are duplicates is decided on read, so the
+        // export carries them all and a reader can apply the same ±3 min rule.
+        root.put("strava", JSONArray().also { array ->
+            for (row in database.stravaActivityDao().getAllOnce()) {
+                array.put(JSONObject().apply {
+                    putDate(row.dateEpochDay)
+                    put("activityId", row.activityId)
+                    put("startTime", DateTimeFormatter.ISO_INSTANT.format(Instant.ofEpochMilli(row.startTimeMillis)))
+                    put("name", row.name)
+                    put("type", row.typeRaw)
+                    put("durationSeconds", row.durationSeconds)
+                    put("distanceMeters", row.distanceMeters)
+                    put("calories", row.calories)
+                    put("avgHeartRate", row.avgHeartRate)
+                    put("maxHeartRate", row.maxHeartRate)
+                    put("elevationGainMeters", row.elevationGainMeters)
+                })
+            }
         })
 
         val exportDir = File(context.cacheDir, "export").apply { mkdirs() }

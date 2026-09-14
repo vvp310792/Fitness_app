@@ -32,9 +32,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GarminSyncMark::class,
         ScaleMeasurement::class,
         StrengthSet::class,
-        GarminHeartRateZone::class
+        GarminHeartRateZone::class,
+        StravaActivity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -51,6 +52,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun garminSyncMarkDao(): GarminSyncMarkDao
     abstract fun scaleMeasurementDao(): ScaleMeasurementDao
     abstract fun strengthSetDao(): StrengthSetDao
+
+    abstract fun stravaActivityDao(): StravaActivityDao
     abstract fun garminHeartRateZoneDao(): GarminHeartRateZoneDao
 
     companion object {
@@ -361,6 +364,32 @@ abstract class AppDatabase : RoomDatabase() {
          * same shape of thing, one extra per-activity call whose result belongs to that row.
          */
         /**
+         * The Strava bulk export - the only source that reaches back before the watch.
+         * Its own table, for the same reason every source here has one: see StravaEntities.
+         */
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS strava_activities (
+                        activityId INTEGER NOT NULL PRIMARY KEY,
+                        dateEpochDay INTEGER NOT NULL,
+                        startTimeMillis INTEGER NOT NULL,
+                        name TEXT NOT NULL DEFAULT '',
+                        typeRaw TEXT NOT NULL DEFAULT '',
+                        durationSeconds INTEGER NOT NULL DEFAULT 0,
+                        distanceMeters INTEGER NOT NULL DEFAULT 0,
+                        calories INTEGER NOT NULL DEFAULT 0,
+                        avgHeartRate INTEGER NOT NULL DEFAULT 0,
+                        maxHeartRate INTEGER NOT NULL DEFAULT 0,
+                        elevationGainMeters INTEGER NOT NULL DEFAULT 0
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        /**
          * Provenance for a Health Connect day. Empty means Garmin's own records, which is
          * every row written before this version - hence the default, not a backfill.
          */
@@ -431,7 +460,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "fitness_summary.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
                     .build()
                 INSTANCE = instance
                 instance

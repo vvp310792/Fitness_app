@@ -80,7 +80,12 @@ private val WINDOWS = listOf(
     // Five years reaches past the start of this account's Garmin history (Dec 2021), so it
     // is the window that shows all of it - and the one where a year-on-year shape, rather
     // than a season, is what the chart is for.
-    1825 to "5 лет"
+    1825 to "5 лет",
+    // Twelve reaches the start of the imported Strava history (2015). Added with that
+    // import and not before: a window that cannot contain a single session is not an
+    // empty chart, it is a chart that looks broken - and until the import there was
+    // nothing older than 2021 to put in it.
+    4380 to "12 лет"
 )
 
 /**
@@ -116,12 +121,13 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     val scaleWeights by remember(windowDays) { app.database.scaleMeasurementDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val strengthSets by remember(windowDays) { app.database.strengthSetDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val workouts by remember(windowDays) { app.workoutRepository.observeRange(from, today) }.collectAsState(initial = emptyList())
+    val stravaActivities by remember(windowDays) { app.database.stravaActivityDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
 
     // Weekly kilometres per sport, from both sources with the duplicates dropped. Computed
     // once for all three sports: the de-duplication has to see every session, not one
     // sport's worth, or a ride would be matched against a run.
-    val sportWeeks = remember(activities, workouts, windowDays) {
-        val merged = SportDistanceAnalytics.sessions(activities, workouts)
+    val sportWeeks = remember(activities, workouts, stravaActivities, windowDays) {
+        val merged = SportDistanceAnalytics.sessions(activities, workouts, stravaActivities)
         DistanceSport.entries
             .map { it to SportDistanceAnalytics.weeks(it, merged, from, today) }
             .filter { (_, weeks) -> weeks.any { it.meters > 0 } }
@@ -133,8 +139,8 @@ fun TrendsScreen(app: FitnessSummaryApp) {
 
     // Every recorded session of the window, from both sources, de-duplicated once - the
     // same merge the distance charts do, but keeping all sports rather than three.
-    val intensitySessions = remember(activities, workouts) {
-        IntensityAnalytics.sessions(activities, workouts)
+    val intensitySessions = remember(activities, workouts, stravaActivities) {
+        IntensityAnalytics.sessions(activities, workouts, stravaActivities)
     }
 
     // The zones the user actually has configured in Garmin - the authoritative ladder,

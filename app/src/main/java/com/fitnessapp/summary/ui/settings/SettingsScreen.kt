@@ -51,6 +51,8 @@ import com.fitnessapp.summary.util.DownloadsWriter
 import com.fitnessapp.summary.garmin.GarminLoginResult
 import com.fitnessapp.summary.garmin.GarminSyncManager
 import com.fitnessapp.summary.scale.ScaleSyncManager
+import com.fitnessapp.summary.analytics.DistanceSport
+import com.fitnessapp.summary.strava.StravaImportManager
 import com.fitnessapp.summary.strength.StrengthImportManager
 import com.fitnessapp.summary.util.formatDayMonth
 import com.fitnessapp.summary.scale.ZeppLoginResult
@@ -92,6 +94,7 @@ fun SettingsScreen(app: FitnessSummaryApp) {
         item { ScaleSection(app) }
         item { HeartRateZoneSection(app) }
         item { StrengthSection(app) }
+        item { StravaSection(app) }
         item { LogsSection() }
         item { AccountSection(app) }
         item { ExportSection(app) }
@@ -1211,6 +1214,166 @@ private fun HeartRateZoneSection(app: FitnessSummaryApp) {
                 color = palette.stress,
                 modifier = Modifier.padding(top = 6.dp)
             )
+        }
+    }
+}
+
+/**
+ * The Strava bulk export - the only source in this app that reaches back before the watch.
+ *
+ * Says the overlap out loud instead of promising it away: on this account 1236 of 3028 rows
+ * are sessions Garmin already has, they are stored anyway, and the charts drop them on read.
+ * A number the user can check is worth more than a reassurance, and the count shrinks by
+ * itself as Garmin backfills - which is exactly why it is not decided at import time.
+ */
+@Composable
+private fun StravaSection(app: FitnessSummaryApp) {
+    val importState by app.stravaImport.state.collectAsState()
+    val count by remember { app.database.stravaActivityDao().observeCount() }.collectAsState(initial = 0)
+    var period by remember { mutableStateOf<String?>(null) }
+    var showHelp by remember { mutableStateOf(false) }
+    val palette = metricPalette()
+
+    LaunchedEffect(count) {
+        val dao = app.database.stravaActivityDao()
+        val first = dao.firstDay()
+        val last = dao.lastDay()
+        period = if (first != null && last != null) {
+            "${formatDayMonth(java.time.LocalDate.ofEpochDay(first))} ${java.time.LocalDate.ofEpochDay(first).year} — " +
+                "${formatDayMonth(java.time.LocalDate.ofEpochDay(last))} ${java.time.LocalDate.ofEpochDay(last).year}"
+        } else {
+            null
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) app.launchPersistent { app.stravaImport.importFrom(uri) }
+    }
+
+    InfoCard(title = "История из Strava") {
+        Text(
+            text = "Файл activities.csv из выгрузки Strava — единственный источник за годы до " +
+                "часов. Даёт дату, вид спорта, дистанцию, время и калории каждой тренировки; " +
+                "они попадают в «Объём по неделям» и в «Пульсовые зоны» на «Трендах».\n\n" +
+                "Тренировки, которые уже есть из Garmin, загружаются тоже, но на экранах " +
+                "показываются один раз: совпадение считается при чтении по времени старта " +
+                "(±3 минуты), а не при импорте — какие именно строки окажутся дублями, " +
+                "меняется по мере того, как Garmin догружает свою историю.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        if (count > 0) {
+            StatRow("Тренировок загружено", count.toString())
+            period?.let { StatRow("Период", it) }
+        }
+
+        when (val state = importState) {
+            StravaImportManager.State.Running -> Text(
+                text = "Читаю файл...",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+
+            is StravaImportManager.State.Success -> {
+                val result = state.result
+                val from = java.time.LocalDate.ofEpochDay(result.firstEpochDay)
+                val to = java.time.LocalDate.ofEpochDay(result.lastEpochDay)
+                Column(modifier = Modifier.padding(top = 6.dp)) {
+                    Text(
+                        text = "Загружено ${result.imported} тренировок, " +
+                            "${formatDayMonth(from)} ${from.year} — ${formatDayMonth(to)} ${to.year} " +
+                            "(${formatTime(state.atMillis)}).",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = palette.distance
+                    )
+                    Text(
+                        text = "Новых для приложения: ${result.fresh}. " +
+                            "Уже были из Garmin или Health Connect: ${result.duplicates} — " +
+                            "они не удвоятся ни на одном экране.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                    val distances = app.stravaImport.distanceSummary(result.sports)
+                    if (distances.isNotEmpty()) {
+                        Text(
+                            text = "В объём по неделям: $distances.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                    // Named rather than swallowed, same as the gym log's unidentified
+                    // exercises: a sport that matched no bucket looks exactly like a sport
+                    // that never synced, and that ambiguity has cost this app months of
+                    // missing rides once already.
+                    val other = result.sports.filterKeys { DistanceSport.ofStrava(it) == null }
+                    if (other.isNotEmpty()) {
+                        Text(
+                            text = "Без дистанции в объёме: " +
+                                other.entries.sortedByDescending { it.value }
+                                    .joinToString(", ") { "${it.key.lowercase()} ${it.value}" } +
+                                ". Они сохранены и участвуют в пульсовых зонах.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                    if (result.skippedRows > 0) {
+                        Text(
+                            text = "Пропущено строк: ${result.skippedRows} — без разбираемой даты " +
+                                "или с датой вне разумного диапазона (в выгрузке такие есть).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                }
+            }
+
+            is StravaImportManager.State.Failed -> Text(
+                text = state.reason,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+
+            StravaImportManager.State.Idle -> Unit
+        }
+
+        Button(
+            onClick = { importLauncher.launch(arrayOf("*/*")) },
+            enabled = importState !is StravaImportManager.State.Running,
+            modifier = Modifier.padding(top = 8.dp)
+        ) {
+            Text(if (count > 0) "Обновить из файла" else "Выбрать activities.csv")
+        }
+
+        TextButton(onClick = { showHelp = !showHelp }) {
+            Text(if (showHelp) "Скрыть подробности" else "Где взять файл")
+        }
+        if (showHelp) {
+            Text(
+                text = "Strava → Настройки → Мой аккаунт → «Загрузить или удалить аккаунт» → " +
+                    "«Запросить архив». На почту придёт .zip; внутри нужен один файл — " +
+                    "activities.csv. Остальное (логины, контакты, сообщения, платежи) " +
+                    "приложению не нужно и не читается.\n\n" +
+                    "Пульса в старых годах в выгрузке почти нет — у этого аккаунта 0 из 131 " +
+                    "тренировки в 2015-м и 9 из 223 в 2020-м, — поэтому объём за те годы " +
+                    "построится, а интенсивность нет. Шагов, сна и пульса покоя Strava не " +
+                    "хранит вовсе.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+
+        if (count > 0) {
+            TextButton(onClick = { app.launchPersistent { app.stravaImport.forget() } }) {
+                Text("Удалить импорт Strava")
+            }
         }
     }
 }

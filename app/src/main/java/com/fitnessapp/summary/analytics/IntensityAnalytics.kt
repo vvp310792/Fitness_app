@@ -1,6 +1,7 @@
 package com.fitnessapp.summary.analytics
 
 import com.fitnessapp.summary.data.GarminActivity
+import com.fitnessapp.summary.data.StravaActivity
 import com.fitnessapp.summary.data.GarminHeartRateZone
 import com.fitnessapp.summary.data.Workout
 import kotlin.math.abs
@@ -285,7 +286,11 @@ object IntensityAnalytics {
      * Unlike the distance charts this keeps **every** sport, not three: the question here
      * is where the training time went, and strength work and rowing are training time.
      */
-    fun sessions(garmin: List<GarminActivity>, workouts: List<Workout>): List<IntensitySession> {
+    fun sessions(
+        garmin: List<GarminActivity>,
+        workouts: List<Workout>,
+        strava: List<StravaActivity> = emptyList()
+    ): List<IntensitySession> {
         val fromGarmin = garmin.mapNotNull { activity ->
             if (activity.durationMinutes <= 0) return@mapNotNull null
             IntensitySession(
@@ -316,7 +321,34 @@ object IntensityAnalytics {
                 maxHeartRate = plausible(workout.maxHeartRate)
             )
         }
-        return (fromGarmin + fromHealth).sortedBy { it.startTimeMillis }
+        // Third source, same priority order and the same ±3 min window as the distance
+        // merge. Worth having even though most Strava rows duplicate Garmin: the years
+        // before the watch exist nowhere else. Their heart rate is mostly absent though -
+        // 9 of 223 sessions in 2020 carried one - so those land in "тренировки без пульса"
+        // and are counted apart rather than charged to Z1.
+        val fromStrava = strava.mapNotNull { activity ->
+            if (activity.durationMinutes <= 0) return@mapNotNull null
+            val alreadyKnown =
+                garmin.any {
+                    abs(it.startTimeMillis - activity.startTimeMillis) <=
+                        SportDistanceAnalytics.WORKOUT_MATCH_WINDOW_MILLIS
+                } || workouts.any {
+                    abs(it.startTimeMillis - activity.startTimeMillis) <=
+                        SportDistanceAnalytics.WORKOUT_MATCH_WINDOW_MILLIS
+                }
+            if (alreadyKnown) return@mapNotNull null
+            IntensitySession(
+                dateEpochDay = activity.dateEpochDay,
+                startTimeMillis = activity.startTimeMillis,
+                // Strava's localised sport name. Only used to name the sports that arrived
+                // without a heart rate, and «Бег» reads better there than a blank.
+                typeKey = activity.typeRaw,
+                minutes = activity.durationMinutes,
+                avgHeartRate = plausible(activity.avgHeartRate),
+                maxHeartRate = plausible(activity.maxHeartRate)
+            )
+        }
+        return (fromGarmin + fromHealth + fromStrava).sortedBy { it.startTimeMillis }
     }
 
     /** An artefact or a missing reading both come back as 0 - the app's "no data" everywhere else. */

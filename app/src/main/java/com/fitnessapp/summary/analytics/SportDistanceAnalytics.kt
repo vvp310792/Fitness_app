@@ -2,6 +2,7 @@ package com.fitnessapp.summary.analytics
 
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import com.fitnessapp.summary.data.GarminActivity
+import com.fitnessapp.summary.data.StravaActivity
 import com.fitnessapp.summary.data.Workout
 import com.fitnessapp.summary.util.weekStart
 import java.time.LocalDate
@@ -56,6 +57,32 @@ enum class DistanceSport(val key: String, val title: String, val emoji: String) 
                 // indoor running are all running - the surface is not a different sport.
                 // Must not swallow walking or hiking, which are deliberately their own thing.
                 key.contains("run") -> RUN
+                else -> null
+            }
+        }
+
+        /**
+         * From a Strava export's sport name - **which is localised**, so this matches the
+         * Russian words the user's own file actually contains as well as the English ones.
+         * By keyword again, and for the same reason: Strava adds sports without warning.
+         *
+         * Verified against the twelve sports in that file: `Бег`, `Велосипед` and
+         * `Плавание` land in the three buckets; `Силовая тренировка`, `Ходьба`, `Хайкинг`,
+         * `Гребля`, `Тренировка`, `Лыжи`, `Эллиптический тренажер`, `Парусный спорт` and
+         * `Кроссфит` all correctly land nowhere - walking and hiking above all, which must
+         * never be counted as running.
+         */
+        fun ofStrava(typeRaw: String): DistanceSport? {
+            val key = typeRaw.lowercase()
+            return when {
+                // Same guard as Garmin's: a motorbike, and an e-bike, are not a bicycle.
+                key.contains("мотор") || key.contains("motor") || key.contains("e-bike") -> null
+                key.contains("плав") || key.contains("swim") -> SWIM
+                key.contains("велос") || key.contains("cycl") || key.contains("bik") ||
+                    key.contains("ride") -> BIKE
+                // Last, as with Garmin: nothing above contains "бег"/"run", and this must
+                // not swallow «Ходьба» or «Хайкинг».
+                key.contains("бег") || key.contains("run") -> RUN
                 else -> null
             }
         }
@@ -116,7 +143,11 @@ object SportDistanceAnalytics {
      * Garmin still gets these charts, and a session recorded before the Garmin login was
      * set up still counts.
      */
-    fun sessions(garmin: List<GarminActivity>, workouts: List<Workout>): List<SportSession> {
+    fun sessions(
+        garmin: List<GarminActivity>,
+        workouts: List<Workout>,
+        strava: List<StravaActivity> = emptyList()
+    ): List<SportSession> {
         val fromGarmin = garmin.mapNotNull { activity ->
             val sport = DistanceSport.ofGarmin(activity.typeKey) ?: return@mapNotNull null
             if (activity.distanceMeters <= 0) return@mapNotNull null
@@ -131,7 +162,21 @@ object SportDistanceAnalytics {
             if (alreadyKnown) return@mapNotNull null
             SportSession(sport, workout.dateEpochDay, workout.startTimeMillis, workout.distanceMeters)
         }
-        return (fromGarmin + fromHealth).sortedBy { it.startTimeMillis }
+        // Strava last, and only where neither of the other two already has the session.
+        // Strava receives these rides from Garmin, so on this account 1236 of its 3028 rows
+        // are the same sessions again - and WHICH ones are duplicates keeps changing as
+        // Garmin backfills, which is precisely why the question is answered here, on read,
+        // instead of while importing the file. Same ±3 min window as everywhere else.
+        val fromStrava = strava.mapNotNull { activity ->
+            val sport = DistanceSport.ofStrava(activity.typeRaw) ?: return@mapNotNull null
+            if (activity.distanceMeters <= 0) return@mapNotNull null
+            val alreadyKnown =
+                garmin.any { abs(it.startTimeMillis - activity.startTimeMillis) <= WORKOUT_MATCH_WINDOW_MILLIS } ||
+                    workouts.any { abs(it.startTimeMillis - activity.startTimeMillis) <= WORKOUT_MATCH_WINDOW_MILLIS }
+            if (alreadyKnown) return@mapNotNull null
+            SportSession(sport, activity.dateEpochDay, activity.startTimeMillis, activity.distanceMeters)
+        }
+        return (fromGarmin + fromHealth + fromStrava).sortedBy { it.startTimeMillis }
     }
 
     /**
