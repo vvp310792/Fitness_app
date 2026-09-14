@@ -1,8 +1,6 @@
 package com.fitnessapp.summary.export
 
 import android.content.Context
-import android.content.Intent
-import androidx.core.content.FileProvider
 import com.fitnessapp.summary.analytics.StrengthLift
 import com.fitnessapp.summary.data.AppDatabase
 import com.fitnessapp.summary.data.SummaryRepository
@@ -21,7 +19,12 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
 /**
- * Dumps everything the app holds to a single JSON file the user can share out.
+ * Dumps everything the app holds to a single JSON file.
+ *
+ * Written to the cache first and copied into Downloads by
+ * [com.fitnessapp.summary.util.DownloadsWriter] - building the file and deciding where the
+ * user keeps it are separate questions, and only the second one changed when the share
+ * sheet went away.
  *
  * Two things it deliberately does that a naive dump wouldn't:
  * - dates are written as ISO strings *alongside* the raw epoch day, so the file is
@@ -451,14 +454,6 @@ object DataExporter {
         put("dateEpochDay", epochDay)
     }
 
-    fun shareIntent(context: Context, file: File): Intent {
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-        val send = Intent(Intent.ACTION_SEND).apply {
-            type = "application/json"
-            putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "Экспорт фитнес-данных")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        return Intent.createChooser(send, "Поделиться экспортом")
-    }
+    /** MIME type the saved copy carries in Downloads. */
+    const val MIME_TYPE = "application/json"
 }

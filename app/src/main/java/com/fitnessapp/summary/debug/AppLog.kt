@@ -1,10 +1,9 @@
 package com.fitnessapp.summary.debug
 
 import android.content.Context
-import android.content.Intent
 import android.util.Log
-import androidx.core.content.FileProvider
 import java.io.File
+import java.time.LocalDate
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
@@ -25,7 +24,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  * - an in-memory ring buffer (last [MAX_ENTRIES]) for the in-app log viewer - instant, no I/O
  * - a capped file under [Context.getFilesDir] for [export], so a sync that ran in the
  *   background before anyone opened the app (see MainActivity's launch-time sync) is still
- *   captured, and so the whole thing can be shared as a file rather than a screenshot
+ *   captured, and so the whole thing can be saved to Downloads as a file rather than a
+ *   screenshot
  *
  * Deliberately metadata-only in what it logs: record types, counts, exception messages,
  * permission names, day identifiers - never the actual health values (step counts, heart
@@ -97,18 +97,11 @@ object AppLog {
 
     fun logFileOrNull(): File? = logFile?.takeIf { it.exists() }
 
-    /** Null when there's nothing to share yet - same shape as [com.fitnessapp.summary.export.DataExporter.shareIntent]. */
-    fun shareIntent(context: Context): Intent? {
-        val file = logFileOrNull() ?: return null
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-        val send = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "Логи Фитнес-сводки")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        return Intent.createChooser(send, "Поделиться логами")
-    }
+    /** Name the log is saved under in Downloads - dated, so two reports don't look alike. */
+    fun downloadFileName(): String = "fitness-summary-log_${LocalDate.now()}.txt"
+
+    /** MIME type the saved copy carries in Downloads. */
+    const val MIME_TYPE = "text/plain"
 
     private fun appendToFile(entry: Entry) {
         val file = logFile ?: return

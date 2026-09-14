@@ -47,6 +47,7 @@ import com.fitnessapp.summary.analytics.ZoneLadders
 import com.fitnessapp.summary.analytics.ZoneSource
 import com.fitnessapp.summary.debug.AppLog
 import com.fitnessapp.summary.export.DataExporter
+import com.fitnessapp.summary.util.DownloadsWriter
 import com.fitnessapp.summary.garmin.GarminLoginResult
 import com.fitnessapp.summary.garmin.GarminSyncManager
 import com.fitnessapp.summary.scale.ScaleSyncManager
@@ -650,14 +651,15 @@ private fun GarminSection(app: FitnessSummaryApp) {
 @Composable
 private fun LogsSection() {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var refreshKey by remember { mutableIntStateOf(0) }
     val entries = remember(refreshKey) { AppLog.recentEntries().take(20) }
 
     InfoCard(title = "Логи") {
         Text(
             text = "Что реально произошло при последней синхронизации Health Connect и " +
-                "Firestore. Если какие-то данные Garmin не приходят - нажми «Поделиться " +
-                "логами» и пришли файл, по нему видна точная причина, а не только симптом.",
+                "Firestore. Если какие-то данные Garmin не приходят - нажми «Сохранить в " +
+                "Загрузки» и пришли файл оттуда, по нему видна точная причина, а не только симптом.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -688,15 +690,26 @@ private fun LogsSection() {
             }
             Button(
                 onClick = {
-                    val intent = AppLog.shareIntent(context)
-                    if (intent == null) {
+                    val file = AppLog.logFileOrNull()
+                    if (file == null) {
                         Toast.makeText(context, "Логов пока нет", Toast.LENGTH_SHORT).show()
                     } else {
-                        context.startActivity(intent)
+                        scope.launch {
+                            Toast.makeText(
+                                context,
+                                DownloadsWriter.save(
+                                    context,
+                                    file,
+                                    AppLog.downloadFileName(),
+                                    AppLog.MIME_TYPE
+                                ).message,
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
                     }
                 }
             ) {
-                Text("Поделиться логами")
+                Text("Сохранить в Загрузки")
             }
             TextButton(
                 onClick = {
@@ -791,7 +804,8 @@ private fun ExportSection(app: FitnessSummaryApp) {
     InfoCard(title = "Экспорт данных") {
         Text(
             text = "Выгружает все дни, тренировки и все данные Garmin (сон, ВСР, готовность, " +
-                "статус тренировок, вес, стресс) в один JSON — удобно для анализа.",
+                "статус тренировок, вес, стресс) в один JSON — удобно для анализа. " +
+                "Файл кладётся в папку «Загрузки», откуда его видит любой файловый менеджер.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -803,7 +817,8 @@ private fun ExportSection(app: FitnessSummaryApp) {
                         val file = withContext(Dispatchers.IO) {
                             DataExporter.export(context, app.summaryRepository, app.workoutRepository, app.database)
                         }
-                        context.startActivity(DataExporter.shareIntent(context, file))
+                        val saved = DownloadsWriter.save(context, file, file.name, DataExporter.MIME_TYPE)
+                        Toast.makeText(context, saved.message, Toast.LENGTH_LONG).show()
                     } catch (e: Exception) {
                         Toast.makeText(
                             context,
@@ -818,7 +833,7 @@ private fun ExportSection(app: FitnessSummaryApp) {
             enabled = !exporting,
             modifier = Modifier.padding(top = 8.dp)
         ) {
-            Text(if (exporting) "Готовлю..." else "Выгрузить JSON")
+            Text(if (exporting) "Готовлю..." else "Сохранить JSON в Загрузки")
         }
     }
 }
