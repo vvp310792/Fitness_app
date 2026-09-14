@@ -29,12 +29,22 @@ class HealthSyncManager(
 
     sealed class State {
         data object Idle : State()
-        data class Running(val done: Int, val total: Int) : State()
+
+        /**
+         * @param note what the whole run is doing, when the window alone would misrepresent
+         *   it. The history walk reads a month at a time, so "день 17 из 30" is true of the
+         *   window and says nothing about the walk - and repeated verbatim on every window it
+         *   reads as the same thirty days over and over, which is exactly how the walk that
+         *   never advanced looked from the outside.
+         */
+        data class Running(val done: Int, val total: Int, val note: String = "") : State()
         data class Success(val daysWritten: Int, val atMillis: Long) : State()
         data class Failed(val reason: String) : State()
     }
 
     private val prefs = context.getSharedPreferences("health_sync", Context.MODE_PRIVATE)
+
+    private val historyStore = HealthHistoryStore(context)
 
     private val _state = MutableStateFlow<State>(State.Idle)
     val state: StateFlow<State> = _state.asStateFlow()
@@ -69,6 +79,12 @@ class HealthSyncManager(
         return syncRange(today.minusDays(days.toLong()), today)
     }
 
+    /** Where the frontier of the backwards walk currently stands, for the «Я» tab. */
+    fun historyProgress(): HealthHistoryStore.Frontier = historyStore.read(HISTORY_LOGIC_VERSION)
+
+    /** Forgets the frontier, so the next «Вся история» starts over from today. */
+    fun forgetHistoryDepth() = historyStore.reset()
+
     /**
      * Walks backwards until Health Connect runs out of history, however far back that is.
      *
@@ -79,10 +95,18 @@ class HealthSyncManager(
      * `GarminSyncManager.syncAllHistory`, and the same shape of answer: go backwards and
      * stop when the data does.
      *
-     * "Runs out" is [STOP_AFTER_EMPTY_DAYS] consecutive days with nothing from any source -
-     * long enough that a holiday with the phone left at home, or a dead battery week,
-     * doesn't end the walk. [MAX_HISTORY_DAYS] is only a backstop against a provider that
-     * answers forever.
+     * **The walk resumes from the stored frontier, not from today.** The first version did
+     * start at today every time, and it had no way of advancing: every press re-read the
+     * same first windows, hit the same run of empty months and stopped in the same place.
+     * The user's report of it was exact - "несколько раз просто считается 30 дней" - and
+     * that is what a walk with no memory looks like from the outside. The frontier moves
+     * only per *finished* window: a window read half-way was never claimed, so the next
+     * press walks it again rather than skipping whatever the interruption swallowed.
+     *
+     * "Runs out" is [EMPTY_CHUNKS_TO_STOP] windows in a row with nothing from any source,
+     * counted across runs for the same reason - long enough that a changed phone or a
+     * half-year of Google Fit not syncing doesn't end the walk at the near edge of a real
+     * gap. [MAX_HISTORY_DAYS] is only a backstop against a provider that answers forever.
      *
      * Note this is the expensive path by construction: every empty day costs two reads, the
      * Garmin-scoped one and the unscoped fallback. That is the price of the fallback being
@@ -90,45 +114,88 @@ class HealthSyncManager(
      */
     suspend fun syncAllHistory(): State {
         val today = LocalDate.now()
-        var cursor = today
-        var consecutiveEmpty = 0
+        val saved = historyStore.read(HISTORY_LOGIC_VERSION)
+        val resumeFrom = saved.oldestCovered
+
+        var emptyChunks = saved.emptyChunks
         var totalWritten = 0
-        var oldestWithData: LocalDate? = null
-
-        while (consecutiveEmpty < STOP_AFTER_EMPTY_DAYS &&
-            today.toEpochDay() - cursor.toEpochDay() < MAX_HISTORY_DAYS
-        ) {
-            val windowEnd = cursor
-            val windowStart = cursor.minusDays((HISTORY_WINDOW_DAYS - 1).toLong())
-
-            when (val result = syncRange(windowStart, windowEnd)) {
-                // A failure here is a permission or availability problem, not "no data" -
-                // continuing would spend fifteen years of queries on the same error.
-                is State.Failed -> return result
-                is State.Success -> {
-                    totalWritten += result.daysWritten
-                    if (result.daysWritten > 0) {
-                        consecutiveEmpty = 0
-                        oldestWithData = windowStart
-                    } else {
-                        consecutiveEmpty += HISTORY_WINDOW_DAYS
-                    }
-                }
-                else -> Unit
-            }
-            cursor = windowStart.minusDays(1)
-        }
+        var daysWalked = 0
+        // One day older than the oldest window already finished.
+        var windowEnd = resumeFrom?.minusDays(1) ?: today
+        val alreadyCovered = (today.toEpochDay() - windowEnd.toEpochDay()).toInt().coerceAtLeast(0)
 
         AppLog.i(
             "HealthSyncManager",
+            when {
+                resumeFrom == null -> "Вся история Health Connect: иду назад от $today"
+                saved.complete -> "Вся история Health Connect: до конца уже дошли ($resumeFrom), перечитаю только свежие дни"
+                else -> "Вся история Health Connect: продолжаю с $windowEnd (пройдено $alreadyCovered дней назад от $today)"
+            }
+        )
+
+        while (
+            !saved.complete &&
+            alreadyCovered + daysWalked < MAX_HISTORY_DAYS &&
+            emptyChunks < EMPTY_CHUNKS_TO_STOP
+        ) {
+            val windowStart = windowEnd.minusDays((HISTORY_WINDOW_DAYS - 1).toLong())
+
+            when (val result = syncRange(windowStart, windowEnd, Walk(alreadyCovered + daysWalked))) {
+                // A failure here is a permission or availability problem, not "no data" -
+                // continuing would spend fifteen years of queries on the same error. The
+                // frontier is left where it was, so the next press retries this window.
+                is State.Failed -> return result
+                is State.Success -> {
+                    totalWritten += result.daysWritten
+                    if (result.daysWritten > 0) emptyChunks = 0 else emptyChunks++
+                }
+                else -> Unit
+            }
+
+            daysWalked += HISTORY_WINDOW_DAYS
+            windowEnd = windowStart.minusDays(1)
+            historyStore.advance(
+                oldestCoveredEpochDay = windowStart.toEpochDay(),
+                emptyChunks = emptyChunks,
+                complete = emptyChunks >= EMPTY_CHUNKS_TO_STOP,
+                logicVersion = HISTORY_LOGIC_VERSION
+            )
+        }
+
+        // The recent end, which the walk no longer passes over once it resumes from the
+        // frontier. Cheap by comparison (two weeks), and without it pressing «Вся история»
+        // on an already-deep frontier would skip precisely the days the watch is still
+        // revising.
+        if (resumeFrom != null) {
+            when (val recent = syncRange(today.minusDays((DEFAULT_RECENT_DAYS - 1).toLong()), today)) {
+                is State.Failed -> return recent
+                is State.Success -> totalWritten += recent.daysWritten
+                else -> Unit
+            }
+        }
+
+        // Read back rather than taken from the loop: on an early return the current window
+        // was never claimed, and reporting it as covered is the optimistic bookkeeping that
+        // made the old walk look finished when it wasn't.
+        val frontier = historyStore.read(HISTORY_LOGIC_VERSION)
+        AppLog.i(
+            "HealthSyncManager",
             "Вся история Health Connect: записано дней=$totalWritten, " +
-                "самый ранний с данными=${oldestWithData ?: "нет"}, остановились на $cursor"
+                "пройдено до ${frontier.oldestCovered ?: "нет отметки"}, " +
+                "пустых окон подряд=${frontier.emptyChunks}, до конца=${frontier.complete}"
         )
         lastSyncMillis = System.currentTimeMillis()
         return State.Success(totalWritten, lastSyncMillis).also { _state.value = it }
     }
 
-    suspend fun syncRange(from: LocalDate, to: LocalDate): State {
+    /**
+     * Position of a window inside a longer walk. Progress has to describe the walk: a
+     * window counter alone repeats itself every thirty days and hides whether anything is
+     * moving at all.
+     */
+    data class Walk(val scannedBefore: Int)
+
+    suspend fun syncRange(from: LocalDate, to: LocalDate, walk: Walk? = null): State {
         AppLog.i("HealthSyncManager", "Синк $from..$to начат")
 
         if (!healthConnect.isAvailable) {
@@ -162,7 +229,11 @@ class HealthSyncManager(
             var date = from
             var index = 0
             while (!date.isAfter(to)) {
-                _state.value = State.Running(index, totalDays)
+                _state.value = State.Running(
+                    done = index,
+                    total = totalDays,
+                    note = walk?.let { "Читаю $date - ${it.scannedBefore + index + 1}-й день назад от сегодня" }.orEmpty()
+                )
 
                 // Garmin's own records first - that filter is what keeps the phone's
                 // pedometer from being added on top of the watch's steps.
@@ -227,11 +298,21 @@ class HealthSyncManager(
         private const val HISTORY_WINDOW_DAYS = 30
 
         /**
-         * Four months of nothing at all means the history has ended, not that the user
-         * went on holiday. Shorter would stop inside a real gap; much longer just spends
-         * queries on years that were never recorded.
+         * Six empty months in a row means the history has ended, not that the user went on
+         * holiday. Deliberately longer than the four this started at: a changed phone, or
+         * Google Fit not syncing for a season, is a real gap with real years behind it, and
+         * stopping at its near edge looks identical to having reached the beginning.
+         * Health Connect reads are local, so the extra windows cost time, not battery or
+         * network.
          */
-        private const val STOP_AFTER_EMPTY_DAYS = 120
+        private const val EMPTY_CHUNKS_TO_STOP = 6
+
+        /**
+         * Bumping this invalidates every stored frontier: "Health Connect has nothing older"
+         * is a conclusion of the walk's own logic, and a change to that logic can make it
+         * wrong. Same role as `GarminSyncManager.LOGIC_VERSION`.
+         */
+        private const val HISTORY_LOGIC_VERSION = 1
 
         /** Backstop only - roughly 15 years. */
         private const val MAX_HISTORY_DAYS = 15 * 365

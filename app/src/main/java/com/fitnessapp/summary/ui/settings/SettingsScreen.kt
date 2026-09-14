@@ -235,6 +235,9 @@ private fun HealthConnectSection(app: FitnessSummaryApp) {
 private fun SyncSection(app: FitnessSummaryApp) {
     val syncState by app.healthSync.state.collectAsState()
     val palette = metricPalette()
+    // Forgetting the depth changes nothing the sync state can report, so the frontier line
+    // below would keep showing the date that was just erased until the next run.
+    var forgetKey by remember { mutableIntStateOf(0) }
 
     InfoCard(title = "Синхронизация") {
         val lastSync = app.healthSync.lastSyncMillis
@@ -249,8 +252,11 @@ private fun SyncSection(app: FitnessSummaryApp) {
 
         when (val state = syncState) {
             is HealthSyncManager.State.Running -> {
+                // The window counter alone reads as the same thirty days on every window of
+                // the history walk - which is precisely what the walk used to be. When the
+                // run knows where it is in the whole walk, that is what gets said.
                 Text(
-                    text = "Читаю день ${state.done + 1} из ${state.total}...",
+                    text = state.note.ifEmpty { "Читаю день ${state.done + 1} из ${state.total}..." },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp)
@@ -286,6 +292,23 @@ private fun SyncSection(app: FitnessSummaryApp) {
             HealthSyncManager.State.Idle -> Unit
         }
 
+        // Recomputed whenever the sync state changes, so the depth reached updates as soon
+        // as a run ends. This is the answer to "did pressing it again do anything" - and
+        // while the walk restarted from today every time, the honest answer was no.
+        val frontier = remember(syncState, forgetKey) { app.healthSync.historyProgress() }
+        frontier.oldestCovered?.let { oldest ->
+            Text(
+                text = if (frontier.complete) {
+                    "История пройдена до конца: глубже $oldest Health Connect ничего не отдаёт."
+                } else {
+                    "История прочитана до $oldest — следующее нажатие «Вся история» продолжит отсюда, а не с сегодняшнего дня."
+                },
+                style = MaterialTheme.typography.labelMedium,
+                color = palette.distance,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+
         val running = syncState is HealthSyncManager.State.Running
 
         // Three labels no longer fit one line on a phone, and a plain Row pushes the last
@@ -319,8 +342,9 @@ private fun SyncSection(app: FitnessSummaryApp) {
             text = "«Обновить» перечитывает последние ${HealthSyncManager.DEFAULT_RECENT_DAYS} дней — " +
                 "часы нередко досылают вчерашние данные позже. «Загрузить историю» берёт " +
                 "${HealthSyncManager.DEFAULT_BACKFILL_DAYS} дней назад, «Вся история» идёт " +
-                "назад окнами по месяцу, пока данные не кончатся — это долго и делается " +
-                "один раз.\n\n" +
+                "назад окнами по месяцу, пока данные не кончатся — это долго, но пройденная " +
+                "глубина запоминается: прерванная загрузка продолжается с того же места, " +
+                "можно просто нажать ещё раз.\n\n" +
                 "День, о котором Garmin не знает ничего, читается без фильтра по источнику — " +
                 "шаги и пульс с телефона за годы до часов это единственная запись того " +
                 "времени, какая вообще есть. Откуда они, написано на карточке дня. Там, где " +
@@ -330,6 +354,21 @@ private fun SyncSection(app: FitnessSummaryApp) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 8.dp)
         )
+
+        // The escape hatch for a frontier that is now wrong: a newly installed Google Fit,
+        // or history the provider only started handing out later. Without it "глубже ничего
+        // нет" would be a verdict nobody could ever ask the app to re-check.
+        if (frontier.oldestCovered != null) {
+            TextButton(
+                onClick = {
+                    app.healthSync.forgetHistoryDepth()
+                    forgetKey++
+                },
+                enabled = !running
+            ) {
+                Text("Забыть глубину и пройти историю заново")
+            }
+        }
     }
 }
 
