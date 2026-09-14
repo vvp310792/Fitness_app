@@ -97,6 +97,25 @@ class SummaryRepository(
         dao.upsert(summary)
     }
 
+    /**
+     * Removes the days that only ever held Health Connect's derived total-calories figure
+     * and deletes them from Firestore too. Returns how many went.
+     *
+     * Both halves are required and in this order. Local-only deletion is undone by the very
+     * next snapshot, because the documents are still in the cloud and the listener puts them
+     * straight back - the rows would reappear and look like the fix had failed.
+     */
+    suspend fun purgeFabricatedDays(): Int {
+        val ids = dao.fabricatedDayIds()
+        if (ids.isEmpty()) return 0
+        val removed = dao.deleteFabricatedDays()
+        val uid = currentUid()
+        if (uid != null && syncManager != null) {
+            syncManager.deleteDailySummaries(uid, ids)
+        }
+        return removed
+    }
+
     companion object {
 
         /**

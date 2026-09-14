@@ -193,6 +193,31 @@ private fun HealthConnectSection(app: FitnessSummaryApp) {
                     )
                 }
 
+                // These two are named individually because their absence is invisible in
+                // the data: without «прошлые данные» Health Connect silently answers with
+                // the last 30 days no matter what range is asked for, and without «в фоне»
+                // every read throws the moment the app leaves the screen. Both used to be
+                // missing here AND from the request, and together they are why years of
+                // "history" turned out to be one derived number.
+                val historyGranted = app.healthConnect.historyPermission in granted
+                val backgroundGranted = app.healthConnect.backgroundPermission in granted
+                if (!historyGranted || !backgroundGranted) {
+                    Text(
+                        text = buildString {
+                            if (!historyGranted) {
+                                append("Нет доступа к прошлым данным — Health Connect отдаёт только последние 30 дней, ")
+                                append("молча, каким бы диапазон ни был. ")
+                            }
+                            if (!backgroundGranted) {
+                                append("Нет чтения в фоне — долгая загрузка истории оборвётся, как только вы уйдёте с экрана.")
+                            }
+                        }.trim(),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = palette.calories,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                }
+
                 if (granted.size < total) {
                     Button(
                         onClick = { permissionLauncher.launch(app.healthConnect.permissions) },

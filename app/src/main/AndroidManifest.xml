@@ -36,6 +36,13 @@
       what time range we ask for - which would quietly cap the app's history.
     -->
     <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_HISTORY" />
+    <!--
+        Without this every aggregate throws as soon as the app leaves the screen, and the
+        long history walk turns those failures into "no data". Declared AND requested -
+        see HealthConnectManager.permissions; a permission in only one of the two places
+        is never granted and never reported.
+    -->
+    <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
 
     <!--
       Required so the app can see (and deep-link into) the Health Connect app on

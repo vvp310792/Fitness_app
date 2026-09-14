@@ -64,9 +64,24 @@ data class DailySummary(
 
     val updatedAtMillis: Long = System.currentTimeMillis()
 ) {
-    /** True when Health Connect had nothing at all for this date - see [SummaryRepository.upsertDay]. */
+    /**
+     * True when nothing here was actually measured - see [SummaryRepository.upsertDay].
+     *
+     * **[totalCaloriesKcal] alone does not count as data.** Health Connect derives total
+     * calories from the user's own profile (weight, height, age) for *every* date it is
+     * asked about, forever, whether or not anything was ever recorded that day. On this
+     * account that produced 1564 kcal and nothing else for 3029 consecutive days, and the
+     * old rule read it as a real day: the history walk therefore never ran out of data,
+     * went back to 2014 and wrote 4345 rows that contain one constant. 38 days held a real
+     * measurement.
+     *
+     * A day whose only content is that figure is indistinguishable from a day the provider
+     * never recorded, so it is treated as the latter. The cost is a day where a tracker
+     * genuinely reported nothing but total calories - which is not a day worth keeping
+     * either, because nothing on any screen can be built from it.
+     */
     val isEmpty: Boolean
-        get() = steps == 0L && activeCaloriesKcal == 0 && totalCaloriesKcal == 0 &&
+        get() = steps == 0L && activeCaloriesKcal == 0 &&
             distanceMeters == 0 && restingHeartRate == 0 && avgHeartRate == 0 &&
             sleepTotalMinutes == 0 && workoutCount == 0
 

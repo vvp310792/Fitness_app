@@ -99,7 +99,7 @@ class GarminSyncManager(
     }
 
     /** How deep "Вся история" has already walked, for the Я tab. Null before it has ever run. */
-    fun historyProgress(): GarminHistoryStore.Frontier = historyStore.read(LOGIC_VERSION)
+    fun historyProgress(): GarminHistoryStore.Frontier = historyStore.read(HISTORY_LOGIC_VERSION)
 
     suspend fun syncRange(from: LocalDate, to: LocalDate): State {
         AppLog.i("GarminSyncManager", "Синк Garmin $from..$to начат")
@@ -154,7 +154,7 @@ class GarminSyncManager(
      */
     suspend fun syncAllHistory(): State {
         val today = LocalDate.now()
-        val saved = historyStore.read(LOGIC_VERSION)
+        val saved = historyStore.read(HISTORY_LOGIC_VERSION)
         val resumeFrom = saved.oldestCovered
 
         val run = RunState()
@@ -209,7 +209,7 @@ class GarminSyncManager(
                 oldestCoveredEpochDay = chunkStart.toEpochDay(),
                 emptyChunks = emptyChunks,
                 complete = emptyChunks >= EMPTY_CHUNKS_TO_STOP,
-                logicVersion = LOGIC_VERSION
+                logicVersion = HISTORY_LOGIC_VERSION
             )
         }
 
@@ -233,7 +233,7 @@ class GarminSyncManager(
         // The note is built from what was actually recorded, not from the loop variable:
         // on an abort the current window was never claimed, and saying otherwise is exactly
         // the optimistic bookkeeping that made the old walk look finished when it wasn't.
-        val frontier = historyStore.read(LOGIC_VERSION)
+        val frontier = historyStore.read(HISTORY_LOGIC_VERSION)
         val oldest = frontier.oldestCovered
         val note = when {
             oldest == null -> "Ни одного окна не пройдено целиком — попробуйте ещё раз."
@@ -472,6 +472,11 @@ class GarminSyncManager(
         // whole window when the call actually answered. A failure leaves no mark, so the
         // next pass over this window asks again - the same rule the day sections follow,
         // and the thing whose absence hid the missing workouts.
+        // Days that only a range-shaped section knows about still make the window
+        // non-empty. They did not, and that is the second half of why the walk stopped a
+        // year early: a stretch where the watch logged rides but recorded no daily wellness
+        // counted as silence. The number is only ever tested against zero ("was this window
+        // empty"), so adding to it cannot mis-state anything that is read as a count.
         if (!run.networkLost && !weightSettled) {
             val daysWithWeight = mutableSetOf<Long>()
             run.take(run.weight) { apiClient.bodyComposition(from, to) }?.let { rows ->
@@ -485,6 +490,7 @@ class GarminSyncManager(
                 }
             }
             markWindow(from, to, GarminSyncMark.SECTION_WEIGHT, daysWithWeight, run.weight, refreshFromEpochDay)
+            daysWithData += daysWithWeight.size
         } else if (weightSettled) {
             run.weight.skipped += windowDays
         }
@@ -492,6 +498,7 @@ class GarminSyncManager(
         if (!run.networkLost && !activitiesSettled) {
             val daysWithActivity = syncActivities(from, to, run)
             markWindow(from, to, GarminSyncMark.SECTION_ACTIVITIES, daysWithActivity, run.activities, refreshFromEpochDay)
+            daysWithData += daysWithActivity.size
         }
 
         return daysWithData
@@ -671,7 +678,7 @@ class GarminSyncManager(
                 dateEpochDay = epochDay,
                 section = section,
                 hasData = stored,
-                logicVersion = LOGIC_VERSION
+                logicVersion = HISTORY_LOGIC_VERSION
             )
         }
 
@@ -698,11 +705,24 @@ class GarminSyncManager(
         private const val HISTORY_CHUNK_DAYS = 30
 
         /**
-         * Consecutive empty windows that mean "Garmin's history ends here". Three months of
-         * complete silence is far longer than any plausible gap between wearing the watch,
-         * and short enough that the walk doesn't spend hundreds of requests proving it.
+         * Consecutive empty windows that mean "Garmin's history ends here".
+         *
+         * Was three. Three months turned out to be *not* longer than a plausible gap: this
+         * account has 106 silent days (2022-12-30 … 2023-04-14) with a year of activities
+         * behind them, and the walk stopped at the near edge of that gap and called itself
+         * finished. Half a year of complete silence is a different claim, and still cheap
+         * to prove - the windows behind an already-walked frontier cost no requests.
          */
-        private const val EMPTY_CHUNKS_TO_STOP = 3
+        private const val EMPTY_CHUNKS_TO_STOP = 6
+
+        /**
+         * Version of the *history walk's* conclusions, separate from [LOGIC_VERSION] on
+         * purpose. Both invalidate stale reasoning, but at very different prices: bumping
+         * [LOGIC_VERSION] throws away every per-day mark and re-asks Garmin about 1350 days,
+         * while this one only forgets "we reached the end here" - after which the walk
+         * re-runs over settled days for free and carries on into the part it never saw.
+         */
+        private const val HISTORY_LOGIC_VERSION = 2
 
         /**
          * Hard stop for the history walk - only reached by an account whose data never goes

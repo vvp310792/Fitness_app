@@ -24,8 +24,19 @@ import java.time.ZoneId
 /** One day's worth of everything we pull out of Health Connect in a single pass. */
 data class DayReadResult(
     val summary: DailySummary,
-    val workouts: List<Workout>
-)
+    val workouts: List<Workout>,
+    /**
+     * How many sections threw instead of answering. **A day with failures is not a day
+     * with no data**, and the difference is the whole point: every read here is wrapped
+     * so one denied permission cannot blank the rest of the day, which also means a
+     * failure and an honest empty day look identical downstream. They did, and it cost
+     * the history walk its frontier - 180 days of `SecurityException` were counted as
+     * "Health Connect has nothing older" and the walk marked itself finished.
+     */
+    val failedSections: Int = 0
+) {
+    val readFailed: Boolean get() = failedSections > 0
+}
 
 /**
  * Turns Health Connect records into the app's own [DailySummary] / [Workout] rows.
@@ -98,10 +109,11 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
         val dayStart = date.atStartOfDay(zone).toInstant()
         val dayEnd = date.plusDays(1).atStartOfDay(zone).toInstant()
 
-        val movement = readMovement(client, dayStart, dayEnd, origins)
-        val heart = readHeart(client, dayStart, dayEnd, origins)
-        val sleep = readSleepEndingOn(client, date, origins)
-        val workouts = readWorkouts(client, date, dayStart, dayEnd, origins)
+        val fails = ReadFailures()
+        val movement = readMovement(client, dayStart, dayEnd, origins, fails)
+        val heart = readHeart(client, dayStart, dayEnd, origins, fails)
+        val sleep = readSleepEndingOn(client, date, origins, fails)
+        val workouts = readWorkouts(client, date, dayStart, dayEnd, origins, fails)
 
         // Which apps actually produced this day. Only recorded when the read was NOT
         // scoped to Garmin: on a scoped read the answer is Garmin by construction, and
@@ -144,7 +156,7 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
                 "пульс_покоя=${heart.resting > 0} сон=${sleep.totalMinutes > 0} " +
                 "тренировок=${workouts.size}"
         )
-        return DayReadResult(summary, workouts)
+        return DayReadResult(summary, workouts, fails.count)
     }
 
     // ---- movement -----------------------------------------------------------
@@ -162,8 +174,9 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
         client: HealthConnectClient,
         start: Instant,
         end: Instant,
-        origins: Set<DataOrigin>
-    ): Movement = runCatchingRead("шаги/дистанция/калории") {
+        origins: Set<DataOrigin>,
+        fails: ReadFailures
+    ): Movement = runCatchingRead("шаги/дистанция/калории", fails) {
         val result = client.aggregate(
             AggregateRequest(
                 metrics = setOf(
@@ -201,11 +214,12 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
         client: HealthConnectClient,
         start: Instant,
         end: Instant,
-        origins: Set<DataOrigin>
+        origins: Set<DataOrigin>,
+        fails: ReadFailures
     ): Heart {
         val range = TimeRangeFilter.between(start, end)
 
-        val beats = runCatchingRead("пульс (avg/min/max)") {
+        val beats = runCatchingRead("пульс (avg/min/max)", fails) {
             val result = client.aggregate(
                 AggregateRequest(
                     metrics = setOf(HeartRateRecord.BPM_AVG, HeartRateRecord.BPM_MIN, HeartRateRecord.BPM_MAX),
@@ -223,7 +237,7 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
 
         // Resting HR is its own record type, aggregated separately: Garmin writes one
         // value per day, and averaging it in with continuous HR would destroy it.
-        val resting = runCatchingRead("пульс покоя") {
+        val resting = runCatchingRead("пульс покоя", fails) {
             val result = client.aggregate(
                 AggregateRequest(
                     metrics = setOf(RestingHeartRateRecord.BPM_AVG),
@@ -268,9 +282,10 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
     private suspend fun readSleepEndingOn(
         client: HealthConnectClient,
         date: LocalDate,
-        origins: Set<DataOrigin>
+        origins: Set<DataOrigin>,
+        fails: ReadFailures
     ): Sleep =
-        runCatchingRead("сон за $date") {
+        runCatchingRead("сон за $date", fails) {
             val windowStart = date.minusDays(1).atStartOfDay(zone).toInstant()
             val windowEnd = date.plusDays(1).atStartOfDay(zone).toInstant()
 
@@ -331,8 +346,9 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
         date: LocalDate,
         dayStart: Instant,
         dayEnd: Instant,
-        origins: Set<DataOrigin>
-    ): List<Workout> = runCatchingRead("тренировки за $date") {
+        origins: Set<DataOrigin>,
+        fails: ReadFailures
+    ): List<Workout> = runCatchingRead("тренировки за $date", fails) {
         val sessions = client.readRecords(
             ReadRecordsRequest(
                 recordType = ExerciseSessionRecord::class,
@@ -348,7 +364,7 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
             // record streams that happen to overlap it, so each session needs its own
             // aggregate over its own time span. One extra call per workout, and there
             // are only ever a handful of workouts in a day.
-            val metrics = runCatchingRead("метрики тренировки ${session.metadata.id}") {
+            val metrics = runCatchingRead("метрики тренировки ${session.metadata.id}", fails) {
                 client.aggregate(
                     AggregateRequest(
                         metrics = setOf(
@@ -394,9 +410,20 @@ class HealthConnectReader(private val manager: HealthConnectManager) {
      * specific record type not permitted, a provider error - shows up in the log the
      * user can share instead of just quietly becoming a 0 on screen.
      */
-    private inline fun <T> runCatchingRead(section: String, block: () -> T): T? = try {
+    /** Counts sections that threw during one day's read - see [DayReadResult.failedSections]. */
+    private class ReadFailures {
+        var count: Int = 0
+            private set
+
+        fun record() {
+            count++
+        }
+    }
+
+    private inline fun <T> runCatchingRead(section: String, fails: ReadFailures, block: () -> T): T? = try {
         block()
     } catch (e: Exception) {
+        fails.record()
         AppLog.w("HealthConnectReader", "Не удалось прочитать: $section", e)
         null
     }

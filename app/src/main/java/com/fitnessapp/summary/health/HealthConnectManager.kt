@@ -108,11 +108,37 @@ class HealthConnectManager(private val context: Context) {
     val weightPermission: String = HealthPermission.getReadPermission(WeightRecord::class)
 
     /**
+     * Anything older than 30 days. Declared in the manifest since the beginning and, until
+     * now, **never asked for** - which is the same silent nothing as the reverse mistake
+     * already recorded in CLAUDE.md: the permission sheet never mentioned it,
+     * [grantedPermissions] never looked at it, and the "не выданы разрешения" warning could
+     * not name it. Health Connect simply capped every read at 30 days without a word, so
+     * years of "history" came back as the derived-calories constant and nothing else.
+     */
+    val historyPermission: String = HealthPermission.PERMISSION_READ_HEALTH_DATA_HISTORY
+
+    /**
+     * Reading while the app is not on screen. The long history walk keeps running after the
+     * user switches away - and without this every aggregate then throws
+     * `must be in foreground to call aggregate method`, which the per-section catch turns
+     * into an empty day. That is how 180 failed days were once recorded as "Health Connect
+     * has nothing older".
+     */
+    val backgroundPermission: String = HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
+
+    /**
      * Every permission the app asks for. Must stay in sync with the
      * `android.permission.health.*` entries in AndroidManifest.xml - a permission
      * requested here but not declared there is simply never granted, with no error.
      */
-    val permissions: Set<String> = activityPermissions + scalePermissions
+    val permissions: Set<String> =
+        activityPermissions + scalePermissions + historyPermission + backgroundPermission
+
+    /** Whether Health Connect will look further back than 30 days for us. */
+    suspend fun canReadHistory(): Boolean = historyPermission in grantedPermissions()
+
+    /** Whether a sync may keep reading after the user leaves the app. */
+    suspend fun canReadInBackground(): Boolean = backgroundPermission in grantedPermissions()
 
     /** Which of [permissions] the user has actually granted. Empty when unavailable. */
     suspend fun grantedPermissions(): Set<String> {

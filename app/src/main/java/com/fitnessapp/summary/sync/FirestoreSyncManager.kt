@@ -10,6 +10,9 @@ import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -36,6 +39,19 @@ class FirestoreSyncManager(private val database: AppDatabase) {
     private var workoutsListener: ListenerRegistration? = null
     private val scope = CoroutineScope(Dispatchers.IO)
 
+    private val _summariesMerged = MutableStateFlow(false)
+
+    /**
+     * True once the first batch of cloud days has been merged into Room for this sign-in.
+     *
+     * Exists for one caller: the purge of measurement-less days must not run before it. A
+     * day this phone holds as blank may exist as a real day on another device, and deleting
+     * the cloud document from under it would destroy the only copy. After the first merge
+     * the local row is already the better of the two, so the purge can only ever match rows
+     * that are blank everywhere.
+     */
+    val summariesMerged: StateFlow<Boolean> = _summariesMerged.asStateFlow()
+
     private fun summariesRef(uid: String) =
         db.collection("users").document(uid).collection("dailySummaries")
 
@@ -45,6 +61,7 @@ class FirestoreSyncManager(private val database: AppDatabase) {
     /** Attaches realtime listeners for [uid]'s data. Call on sign-in. Safe to call again. */
     fun start(uid: String) {
         stop()
+        _summariesMerged.value = false
         AppLog.i("FirestoreSyncManager", "Слушатели Firestore подключены")
         summariesListener = summariesRef(uid).addSnapshotListener { snapshot, error ->
             // error was previously discarded here - a permission-denied rules failure
@@ -57,7 +74,10 @@ class FirestoreSyncManager(private val database: AppDatabase) {
                 return@addSnapshotListener
             }
             val changes = snapshot?.documentChanges ?: return@addSnapshotListener
-            scope.launch { mergeSummaryChanges(changes) }
+            scope.launch {
+                mergeSummaryChanges(changes)
+                _summariesMerged.value = true
+            }
         }
         workoutsListener = workoutsRef(uid).addSnapshotListener { snapshot, error ->
             if (error != null) {
@@ -97,6 +117,14 @@ class FirestoreSyncManager(private val database: AppDatabase) {
             "sleepAwakeMinutes" to summary.sleepAwakeMinutes,
             "workoutCount" to summary.workoutCount,
             "workoutMinutes" to summary.workoutMinutes,
+            // Whose numbers these are, when they did not come from Garmin. Missing from
+            // this map until now, and the omission was not cosmetic: the document came
+            // back without the field, `upsert` REPLACEd the local row with an empty one,
+            // and the "не от Garmin" caption was erased on every round trip - the one
+            // signal that would have shown that years of "history" were Health Connect's
+            // own derived figure. Same shape as the REPLACE that used to reset
+            // `garminUploadedAtMillis`.
+            "sourceApps" to summary.sourceApps,
             "updatedAtMillis" to summary.updatedAtMillis
         )
         summariesRef(uid).document(summary.dateEpochDay.toString())
@@ -110,6 +138,27 @@ class FirestoreSyncManager(private val database: AppDatabase) {
             .addOnFailureListener { e ->
                 AppLog.e("FirestoreSyncManager", "Не удалось отправить сводку за ${summary.dateEpochDay}", e)
             }
+    }
+
+    /**
+     * Removes days from the cloud, in batches - the hard cap is 500 writes per batch and
+     * this is called with thousands of ids.
+     */
+    fun deleteDailySummaries(uid: String, dateEpochDays: List<Long>) {
+        if (dateEpochDays.isEmpty()) return
+        for (chunk in dateEpochDays.chunked(FIRESTORE_BATCH_LIMIT)) {
+            val batch = db.batch()
+            for (day in chunk) {
+                batch.delete(summariesRef(uid).document(day.toString()))
+            }
+            batch.commit()
+                .addOnSuccessListener {
+                    AppLog.i("FirestoreSyncManager", "Удалено пустых дней из облака: ${chunk.size}")
+                }
+                .addOnFailureListener { e ->
+                    AppLog.e("FirestoreSyncManager", "Не удалось удалить пустые дни из облака", e)
+                }
+        }
     }
 
     fun pushWorkout(uid: String, workout: Workout) {
@@ -139,7 +188,11 @@ class FirestoreSyncManager(private val database: AppDatabase) {
 
     /** One-shot upload of everything held locally. Used right after a first sign-in. */
     suspend fun pushAll(uid: String) {
-        database.dailySummaryDao().getAllOnce().forEach { pushDailySummary(uid, it) }
+        // filterNot: a day with no measurement has nothing to sync, and uploading one
+        // would hand every other device a row this build has just learned to delete.
+        database.dailySummaryDao().getAllOnce()
+            .filterNot { it.isEmpty }
+            .forEach { pushDailySummary(uid, it) }
         database.workoutDao().getAllOnce().forEach { pushWorkout(uid, it) }
     }
 
@@ -170,8 +223,14 @@ class FirestoreSyncManager(private val database: AppDatabase) {
                 sleepAwakeMinutes = doc.getLong("sleepAwakeMinutes")?.toInt() ?: 0,
                 workoutCount = doc.getLong("workoutCount")?.toInt() ?: 0,
                 workoutMinutes = doc.getLong("workoutMinutes")?.toInt() ?: 0,
+                sourceApps = doc.getString("sourceApps").orEmpty(),
                 updatedAtMillis = doc.getLong("updatedAtMillis") ?: 0L
             )
+
+            // A day with nothing but derived calories is not data - see DailySummary.isEmpty.
+            // Documents like these are still in the cloud from the builds that wrote them,
+            // and without this guard every snapshot would put all 4345 of them back.
+            if (incoming.isEmpty) continue
 
             // Last-write-wins on updatedAtMillis. Both sides derive from the same
             // upstream Health Connect data, so there's nothing to merge field by
@@ -220,5 +279,10 @@ class FirestoreSyncManager(private val database: AppDatabase) {
     private fun sanitizeDocId(raw: String): String {
         val cleaned = raw.replace('/', '_')
         return if (cleaned.isBlank() || cleaned == "." || cleaned == "..") "id_${raw.hashCode()}" else cleaned
+    }
+
+    private companion object {
+        /** Firestore's own hard cap on writes in one batch. */
+        const val FIRESTORE_BATCH_LIMIT = 500
     }
 }

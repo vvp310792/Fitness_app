@@ -38,7 +38,16 @@ class HealthSyncManager(
          *   never advanced looked from the outside.
          */
         data class Running(val done: Int, val total: Int, val note: String = "") : State()
-        data class Success(val daysWritten: Int, val atMillis: Long) : State()
+        /**
+         * @param daysUnreadable days whose sections threw instead of answering. Separate
+         *   from [daysWritten] because "nothing there" and "could not look" must never
+         *   collapse into one number - see [syncAllHistory].
+         */
+        data class Success(
+            val daysWritten: Int,
+            val atMillis: Long,
+            val daysUnreadable: Int = 0
+        ) : State()
         data class Failed(val reason: String) : State()
     }
 
@@ -120,6 +129,7 @@ class HealthSyncManager(
         var emptyChunks = saved.emptyChunks
         var totalWritten = 0
         var daysWalked = 0
+        var unreadable = false
         // One day older than the oldest window already finished.
         var windowEnd = resumeFrom?.minusDays(1) ?: today
         val alreadyCovered = (today.toEpochDay() - windowEnd.toEpochDay()).toInt().coerceAtLeast(0)
@@ -147,6 +157,21 @@ class HealthSyncManager(
                 is State.Failed -> return result
                 is State.Success -> {
                     totalWritten += result.daysWritten
+                    // A window we could not READ says nothing about whether data exists in
+                    // it, so the walk stops here and records nothing: not the frontier, not
+                    // the empty-window count, not "finished". This is the exact hole that
+                    // ended the previous walk - Health Connect refuses to aggregate from the
+                    // background, 180 days threw SecurityException, every one of them looked
+                    // like an empty day, and the walk stamped itself complete at 2024-08-26.
+                    if (result.daysUnreadable > 0) {
+                        AppLog.w(
+                            "HealthSyncManager",
+                            "Окно $windowStart..$windowEnd не прочиталось (${result.daysUnreadable} дн.) - " +
+                                "останавливаюсь, не делая выводов о глубине истории"
+                        )
+                        unreadable = true
+                        break
+                    }
                     if (result.daysWritten > 0) emptyChunks = 0 else emptyChunks++
                 }
                 else -> Unit
@@ -166,7 +191,7 @@ class HealthSyncManager(
         // frontier. Cheap by comparison (two weeks), and without it pressing «Вся история»
         // on an already-deep frontier would skip precisely the days the watch is still
         // revising.
-        if (resumeFrom != null) {
+        if (resumeFrom != null && !unreadable) {
             when (val recent = syncRange(today.minusDays((DEFAULT_RECENT_DAYS - 1).toLong()), today)) {
                 is State.Failed -> return recent
                 is State.Success -> totalWritten += recent.daysWritten
@@ -182,9 +207,16 @@ class HealthSyncManager(
             "HealthSyncManager",
             "Вся история Health Connect: записано дней=$totalWritten, " +
                 "пройдено до ${frontier.oldestCovered ?: "нет отметки"}, " +
-                "пустых окон подряд=${frontier.emptyChunks}, до конца=${frontier.complete}"
+                "пустых окон подряд=${frontier.emptyChunks}, до конца=${frontier.complete}" +
+                if (unreadable) " (прервано: Health Connect не дал прочитать)" else ""
         )
         lastSyncMillis = System.currentTimeMillis()
+        if (unreadable) {
+            return State.Failed(
+                "Health Connect отказал в чтении — скорее всего приложение ушло в фон " +
+                    "или не выдан доступ к прошлым данным. Загружено дней: $totalWritten."
+            ).also { _state.value = it }
+        }
         return State.Success(totalWritten, lastSyncMillis).also { _state.value = it }
     }
 
@@ -224,6 +256,7 @@ class HealthSyncManager(
         var written = 0
         var emptyDays = 0
         var otherSourceDays = 0
+        var unreadableDays = 0
 
         return try {
             var date = from
@@ -253,6 +286,10 @@ class HealthSyncManager(
                     fromGarmin
                 }
 
+                // A day that threw is not a day that was empty. Counted apart so the
+                // history walk can refuse to draw any conclusion from it.
+                if (result == null || result.readFailed) unreadableDays++
+
                 if (result != null && !result.isBlank()) {
                     summaryRepository.upsertDay(result.summary)
                     // Only touches the workouts table on a day we know we read
@@ -272,9 +309,9 @@ class HealthSyncManager(
             AppLog.i(
                 "HealthSyncManager",
                 "Синк завершён: записано дней=$written, пустых=$emptyDays, " +
-                    "не от Garmin=$otherSourceDays, всего=$totalDays"
+                    "не прочиталось=$unreadableDays, не от Garmin=$otherSourceDays, всего=$totalDays"
             )
-            State.Success(written, lastSyncMillis).also { _state.value = it }
+            State.Success(written, lastSyncMillis, unreadableDays).also { _state.value = it }
         } catch (e: Exception) {
             AppLog.e("HealthSyncManager", "Синк $from..$to упал", e)
             State.Failed(e.message ?: "Не удалось прочитать данные").also { _state.value = it }
@@ -312,7 +349,7 @@ class HealthSyncManager(
          * is a conclusion of the walk's own logic, and a change to that logic can make it
          * wrong. Same role as `GarminSyncManager.LOGIC_VERSION`.
          */
-        private const val HISTORY_LOGIC_VERSION = 1
+        private const val HISTORY_LOGIC_VERSION = 2
 
         /** Backstop only - roughly 15 years. */
         private const val MAX_HISTORY_DAYS = 15 * 365

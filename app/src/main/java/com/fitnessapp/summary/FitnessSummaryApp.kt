@@ -26,7 +26,9 @@ import com.fitnessapp.summary.sync.FirebaseSetup
 import com.fitnessapp.summary.sync.FirestoreSyncManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The app's whole object graph, wired by hand.
@@ -151,6 +153,42 @@ class FitnessSummaryApp : Application() {
                     syncManager.start(user.uid)
                     if (!didInitialPush) {
                         didInitialPush = true
+                        // Drops the days that hold no measurement at all - Health Connect's
+                        // derived total-calories figure and nothing else. Three things about
+                        // the placement, each of which would lose data if changed:
+                        //
+                        // - BEFORE the upload, never after: pushAll would otherwise send the
+                        //   very rows about to be deleted straight back to the cloud;
+                        // - AFTER the cloud's first snapshot has merged: a day blank on this
+                        //   phone may be a real day on another, and deleting its document
+                        //   before that copy arrives would destroy the only one there is.
+                        //   Once merged, the local row is already the better of the two, so
+                        //   what still matches is blank everywhere;
+                        // - on every sign-in rather than once behind a flag: it is a scan
+                        //   that finds nothing the moment the rows are gone, and leaving it
+                        //   unconditional means a second device still on the old build
+                        //   cannot quietly refill the cloud.
+                        //
+                        // The wait times out rather than blocking: if the snapshot never
+                        // comes (offline, rules failure) the purge is skipped this run.
+                        val merged = withTimeoutOrNull(PURGE_WAIT_MILLIS) {
+                            syncManager.summariesMerged.first { it }
+                        }
+                        val purged = if (merged == null) {
+                            AppLog.i(
+                                "FitnessSummaryApp",
+                                "Облако не ответило за ${PURGE_WAIT_MILLIS / 1000} с - чистку пустых дней пропускаю"
+                            )
+                            0
+                        } else {
+                            summaryRepository.purgeFabricatedDays()
+                        }
+                        if (purged > 0) {
+                            AppLog.i(
+                                "FitnessSummaryApp",
+                                "Удалено дней без единого измерения (только производные калории): $purged"
+                            )
+                        }
                         // Uploads whatever was synced locally before this sign-in.
                         // Idempotent - every document id is a natural key.
                         syncManager.pushAll(user.uid)
@@ -162,5 +200,10 @@ class FitnessSummaryApp : Application() {
                 }
             }
         }
+    }
+
+    private companion object {
+        /** How long the purge waits for the cloud's first snapshot before giving up on it. */
+        const val PURGE_WAIT_MILLIS = 30_000L
     }
 }
