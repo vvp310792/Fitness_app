@@ -62,6 +62,7 @@ import com.fitnessapp.summary.update.ApkInstaller
 import com.fitnessapp.summary.update.UpdateCheckResult
 import com.fitnessapp.summary.update.UpdateChecker
 import com.fitnessapp.summary.util.formatDays
+import com.fitnessapp.summary.util.formatDecimal
 import com.fitnessapp.summary.util.garminSportName
 import com.fitnessapp.summary.util.formatTime
 import kotlinx.coroutines.Dispatchers
@@ -1125,12 +1126,15 @@ private fun StrengthSection(app: FitnessSummaryApp) {
 
     InfoCard(title = "Силовые тренировки") {
         Text(
-            text = "Журнал тренировок из вашего зального приложения — текстовая выгрузка. " +
+            text = "Журнал из вашего зального приложения. Подойдёт и бэкап базы (.db, его " +
+                "зальное приложение само кладёт в Google Drive после каждой тренировки), и " +
+                "старая текстовая выгрузка — формат определяется по самому файлу. " +
                 "По базовым упражнениям (приседания, становая, жим лёжа, армейский жим, тяга в " +
                 "наклоне, подтягивания, отжимания на брусьях) на вкладке «Тренды» считаются " +
                 "1ПМ и рабочий вес. " +
-                "Повторный импорт свежей выгрузки не задваивает: подход опознаётся по тренировке, " +
-                "упражнению и номеру.",
+                "Повторный импорт не задваивает: подход опознаётся по тренировке, упражнению и " +
+                "номеру, а бэкап вдобавок перезаписывает свой период целиком, поэтому правки в " +
+                "зальном приложении доезжают сюда.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1147,14 +1151,49 @@ private fun StrengthSection(app: FitnessSummaryApp) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 6.dp)
             )
-            is StrengthImportManager.State.Success -> Text(
-                text = "Прочитано тренировок ${state.sessions}, подходов ${state.sets}" +
-                    (if (state.skippedLines > 0) ", пропущено строк ${state.skippedLines}" else "") +
-                    " (${formatTime(state.atMillis)}).\n${state.liftSummary}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = palette.distance,
-                modifier = Modifier.padding(top = 6.dp)
-            )
+            is StrengthImportManager.State.Success -> Column(modifier = Modifier.padding(top = 6.dp)) {
+                val source = if (state.fromBackup) "Из бэкапа базы" else "Из текстовой выгрузки"
+                val range = if (state.firstEpochDay > 0) {
+                    val from = java.time.LocalDate.ofEpochDay(state.firstEpochDay)
+                    val to = java.time.LocalDate.ofEpochDay(state.lastEpochDay)
+                    ", период ${formatDayMonth(from)} ${from.year} — ${formatDayMonth(to)} ${to.year}"
+                } else {
+                    ""
+                }
+                Text(
+                    text = "$source: тренировок ${state.sessions}, подходов ${state.sets}" +
+                        (if (state.skippedLines > 0) ", пропущено строк ${state.skippedLines}" else "") +
+                        "$range (${formatTime(state.atMillis)}).\n${state.liftSummary}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = palette.distance
+                )
+                // Named, not swallowed. The sets are in the totals either way; what is missing
+                // is only the name, and saying so is the difference between "this exercise was
+                // not recorded" and "this app cannot name what was recorded".
+                if (state.unidentified.isNotEmpty()) {
+                    Text(
+                        text = "Упражнений без названия: ${state.unidentified.size}. Их подходы " +
+                            "загружены и посчитаны, но названия в бэкапе нет — зальное приложение " +
+                            "хранит их у себя, а не в файле. В базовые упражнения они не попадут, " +
+                            "пока не получат имя.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    state.unidentified.forEach { unknown ->
+                        val from = java.time.LocalDate.ofEpochDay(unknown.firstEpochDay)
+                        val to = java.time.LocalDate.ofEpochDay(unknown.lastEpochDay)
+                        Text(
+                            text = "• №${unknown.exerciseId}: подходов ${unknown.sets} " +
+                                "в ${unknown.sessions} тренировках, ${from.year}—${to.year}, " +
+                                "макс ${formatDecimal(unknown.maxWeightKg)} кг",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                }
+            }
             is StrengthImportManager.State.Failed -> Text(
                 text = state.reason,
                 style = MaterialTheme.typography.bodyMedium,

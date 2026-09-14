@@ -93,6 +93,16 @@ interface StrengthSetDao {
     @Query("SELECT MAX(dateEpochDay) FROM strength_sets")
     suspend fun lastDay(): Long?
 
+    /**
+     * Clears a closed day range so a database backup can *replace* the period it covers
+     * instead of merely adding to it - the only way a set deleted or corrected in the gym
+     * app can stop existing here too. Callers must run this inside a transaction with the
+     * insert, and only for a range a file actually parsed: see
+     * `StrengthImportManager.importFrom`.
+     */
+    @Query("DELETE FROM strength_sets WHERE dateEpochDay BETWEEN :fromEpochDay AND :toEpochDay")
+    suspend fun deleteRange(fromEpochDay: Long, toEpochDay: Long)
+
     @Query("DELETE FROM strength_sets")
     suspend fun deleteAll()
 }

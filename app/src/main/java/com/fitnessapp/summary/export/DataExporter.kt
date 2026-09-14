@@ -378,7 +378,10 @@ object DataExporter {
         })
 
         root.put("strength", JSONObject().apply {
-            put("source", "журнал тренировок (импорт из файла)")
+            // An exercise named "Упражнение #<id>" is a stock exercise the backup format does
+            // not name and this app could not identify - not a parse failure, and visible here
+            // on purpose so the export says which sets are affected.
+            put("source", "журнал тренировок (импорт бэкапа базы или текстовой выгрузки)")
             put("sets", JSONArray().also { array ->
                 for (set in database.strengthSetDao().getAllOnce()) {
                     array.put(JSONObject().apply {
