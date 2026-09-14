@@ -50,7 +50,7 @@ object DataExporter {
 
         val root = JSONObject().apply {
             put("app", "fitness-summary")
-            put("schemaVersion", 5)
+            put("schemaVersion", 6)
             put("exportedAt", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
             put("sources", JSONArray(listOf("Health Connect", "Garmin Connect (unofficial)", "Zepp Life (unofficial, optional)", "журнал силовых тренировок (импорт)")))
             put("dayCount", days.size)
@@ -77,6 +77,11 @@ object DataExporter {
                         put("sleepAwakeMinutes", day.sleepAwakeMinutes)
                         put("workoutCount", day.workoutCount)
                         put("workoutMinutes", day.workoutMinutes)
+                        // Empty on every ordinary day: the row came from Garmin's own
+                        // Health Connect records. Filled only where Garmin had nothing and
+                        // the reader fell back to every source - which is what makes
+                        // pre-watch years legible instead of a mystery gap.
+                        put("sourceApps", day.sourceApps)
                     }
                 )
             }

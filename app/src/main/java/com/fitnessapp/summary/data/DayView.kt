@@ -43,6 +43,12 @@ object DayView {
         )
 
         val withMovement = base.copy(
+            // The provenance label describes the Health Connect row, and survives only
+            // while Health Connect is the day's ONLY source. The moment Garmin supplies
+            // anything, most of the numbers on screen are Garmin's, and a line reading
+            // "источник: Google Fit" under them would be a true fact about the wrong
+            // thing - see DailySummary.sourceApps.
+            sourceApps = if (g != null || s != null) "" else base.sourceApps,
             steps = g?.totalSteps.orFirst(base.steps),
             activeCaloriesKcal = g?.activeKilocalories.orFirst(base.activeCaloriesKcal),
             totalCaloriesKcal = g?.totalKilocalories.orFirst(base.totalCaloriesKcal),

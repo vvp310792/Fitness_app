@@ -49,6 +49,19 @@ data class DailySummary(
     val workoutCount: Int = 0,
     val workoutMinutes: Int = 0,
 
+    /**
+     * Which apps wrote this day into Health Connect, comma-separated package names -
+     * and empty whenever the day came from Garmin's own records, which is the normal
+     * case and needs no label.
+     *
+     * It is only filled for a day Garmin knows nothing about, where the reader falls
+     * back to an unscoped read (see `HealthConnectReader.readDay` and
+     * `HealthSyncManager.syncRange`). That day's steps may have come off the phone's
+     * pedometer rather than a watch, and the difference is worth a line on screen
+     * rather than a number that silently means something else.
+     */
+    val sourceApps: String = "",
+
     val updatedAtMillis: Long = System.currentTimeMillis()
 ) {
     /** True when Health Connect had nothing at all for this date - see [SummaryRepository.upsertDay]. */

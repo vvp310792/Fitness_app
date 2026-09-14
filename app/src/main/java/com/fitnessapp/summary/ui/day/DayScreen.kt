@@ -49,6 +49,7 @@ import com.fitnessapp.summary.ui.components.matchGarminActivity
 import com.fitnessapp.summary.ui.components.unmatchedGarminActivities
 import com.fitnessapp.summary.ui.theme.MetricPalette
 import com.fitnessapp.summary.ui.theme.metricPalette
+import com.fitnessapp.summary.util.HealthSourceLabels
 import com.fitnessapp.summary.util.acwrStatusLabel
 import com.fitnessapp.summary.util.bodyBatteryLabel
 import com.fitnessapp.summary.util.declineWorkouts
@@ -293,6 +294,19 @@ private fun DayMetrics(day: DailySummary, extra: GarminDailyExtra?, palette: Met
                     resting > 0 -> "уд/мин"
                     else -> null
                 }
+            )
+        }
+
+        // Only ever set for a day Garmin knows nothing about, where the reader fell back
+        // to every source in Health Connect (see DailySummary.sourceApps). Saying so is
+        // the difference between a watch's step count and a phone's - same number on the
+        // tile, different thing, and before 2021 the phone's is all there is.
+        if (day.sourceApps.isNotEmpty()) {
+            Text(
+                text = "Данные за этот день не от Garmin: ${HealthSourceLabels.labels(day.sourceApps)}. " +
+                    "Шаги с телефона обычно расходятся с часами.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }

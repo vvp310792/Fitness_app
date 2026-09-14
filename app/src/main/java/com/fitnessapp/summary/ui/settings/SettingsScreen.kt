@@ -300,11 +300,24 @@ private fun SyncSection(app: FitnessSummaryApp) {
             ) {
                 Text("Загрузить историю")
             }
+            Button(
+                onClick = { app.launchPersistent { app.healthSync.syncAllHistory() } },
+                enabled = syncState !is HealthSyncManager.State.Running,
+                modifier = Modifier.padding(top = 8.dp)
+            ) {
+                Text("Вся история Health Connect")
+            }
         }
         Text(
             text = "«Обновить» перечитывает последние ${HealthSyncManager.DEFAULT_RECENT_DAYS} дней — " +
                 "часы нередко досылают вчерашние данные позже. «Загрузить историю» берёт " +
-                "${HealthSyncManager.DEFAULT_BACKFILL_DAYS} дней назад.",
+                "${HealthSyncManager.DEFAULT_BACKFILL_DAYS} дней назад, «Вся история» идёт " +
+                "назад, пока данные не кончатся.\n\n" +
+                "День, о котором Garmin не знает ничего, читается без фильтра по источнику — " +
+                "шаги и пульс с телефона за годы до часов это единственная запись того " +
+                "времени, какая вообще есть. Откуда они, написано на карточке дня. Там, где " +
+                "Garmin день знает, посторонние источники по-прежнему не читаются: иначе " +
+                "шаги телефона легли бы поверх часовых.",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 8.dp)
