@@ -6,6 +6,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -227,6 +229,8 @@ private fun HealthConnectSection(app: FitnessSummaryApp) {
     }
 }
 
+// FlowRow is still marked experimental in Compose Foundation, same as on «Тренды».
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SyncSection(app: FitnessSummaryApp) {
     val syncState by app.healthSync.state.collectAsState()
@@ -284,9 +288,13 @@ private fun SyncSection(app: FitnessSummaryApp) {
 
         val running = syncState is HealthSyncManager.State.Running
 
-        Row(
+        // Three labels no longer fit one line on a phone, and a plain Row pushes the last
+        // one off the right edge instead of wrapping - it simply stops being reachable.
+        // Same fix as the period chips on «Тренды».
+        FlowRow(
             modifier = Modifier.padding(top = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Button(
                 onClick = { app.launchPersistent { app.healthSync.syncRecent() } },
@@ -300,19 +308,19 @@ private fun SyncSection(app: FitnessSummaryApp) {
             ) {
                 Text("Загрузить историю")
             }
-            Button(
+            OutlinedButton(
                 onClick = { app.launchPersistent { app.healthSync.syncAllHistory() } },
-                enabled = syncState !is HealthSyncManager.State.Running,
-                modifier = Modifier.padding(top = 8.dp)
+                enabled = !running
             ) {
-                Text("Вся история Health Connect")
+                Text("Вся история")
             }
         }
         Text(
             text = "«Обновить» перечитывает последние ${HealthSyncManager.DEFAULT_RECENT_DAYS} дней — " +
                 "часы нередко досылают вчерашние данные позже. «Загрузить историю» берёт " +
                 "${HealthSyncManager.DEFAULT_BACKFILL_DAYS} дней назад, «Вся история» идёт " +
-                "назад, пока данные не кончатся.\n\n" +
+                "назад окнами по месяцу, пока данные не кончатся — это долго и делается " +
+                "один раз.\n\n" +
                 "День, о котором Garmin не знает ничего, читается без фильтра по источнику — " +
                 "шаги и пульс с телефона за годы до часов это единственная запись того " +
                 "времени, какая вообще есть. Откуда они, написано на карточке дня. Там, где " +
@@ -598,6 +606,8 @@ private fun GarminSection(app: FitnessSummaryApp) {
  * Health Connect permission, a Firestore write rejected by the rules), and this is
  * where those now actually get recorded. "Поделиться логами" hands over the whole file.
  */
+// FlowRow is still marked experimental in Compose Foundation, same as on «Тренды».
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun LogsSection() {
     val context = LocalContext.current
@@ -626,9 +636,13 @@ private fun LogsSection() {
             }
         }
 
-        Row(
+        // «Поделиться логами» alone eats half the width, so all three do not fit one
+        // line on a phone - and a plain Row pushes the last one past the right edge
+        // instead of wrapping, exactly as the sync buttons above did.
+        FlowRow(
             modifier = Modifier.padding(top = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             OutlinedButton(onClick = { refreshKey++ }) {
                 Text("Обновить")
@@ -896,6 +910,8 @@ private fun AboutSection() {
  * apparent threshold work. Which is exactly why it is shown as a suggestion with a button,
  * never written in on the user's behalf.
  */
+// FlowRow is still marked experimental in Compose Foundation, same as on «Тренды».
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun HeartRateZoneSection(app: FitnessSummaryApp) {
     val today = remember { java.time.LocalDate.now() }
@@ -1042,7 +1058,14 @@ private fun HeartRateZoneSection(app: FitnessSummaryApp) {
             )
         }
 
-        Row(modifier = Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // «Вернуться к зонам Garmin» next to «Сохранить» does not fit one phone line, and
+        // that is the button this whole section exists to keep reachable - a plain Row
+        // would push it off the right edge in exactly the state where it matters.
+        FlowRow(
+            modifier = Modifier.padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             Button(
                 onClick = {
                     val value = input.toIntOrNull()
