@@ -13,6 +13,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZonedDateTime
 
 /**
  * The second part of the Takeout download: Google's own daily table and the sleep sessions.
@@ -325,5 +326,71 @@ class FitPart2Test {
         assertTrue(!FitDay(dateEpochDay = 1, steps = 10).isEmpty)
         assertTrue(!FitDay(dateEpochDay = 1, restingHeartRate = 57).isEmpty)
         assertTrue(!FitDay(dateEpochDay = 1, sleepTotalMinutes = 430).isEmpty)
+    }
+
+    // ---- what the second real import exposed ---------------------------------------------------
+
+    /**
+     * `calories.bmr` is a RATE - kcal per day, republished when the profile is re-evaluated -
+     * not energy over the point's interval. Summing it gave 17 967 and 21 044 kcal of "basal
+     * burn" on the real archive (743 points over 384 days), and nobody burns twenty thousand
+     * calories lying still. The day's rate is its latest value.
+     */
+    @Test
+    fun `basal calories are a rate, so the day's points are not added up`() {
+        val acc = FitTakeoutParser.Accumulator(zone)
+        val morning = ZonedDateTime.of(LocalDate.parse("2019-05-02"), java.time.LocalTime.of(8, 0), zone)
+            .toInstant().toEpochMilli() * 1_000_000L
+        val evening = ZonedDateTime.of(LocalDate.parse("2019-05-02"), java.time.LocalTime.of(20, 0), zone)
+            .toInstant().toEpochMilli() * 1_000_000L
+        val line = { v: String, n: Long ->
+            """{"fitValue":[{"value":{$v}}],"originDataSourceId":"raw:x","endTimeNanos":$n,""" +
+                """"dataTypeName":"t","startTimeNanos":$n,"modifiedTimeMillis":1,"rawTimestampNanos":0}"""
+        }
+        // The points are not in file order, so "latest" has to compare timestamps.
+        acc.feedLine(FitTakeoutParser.Stream.CALORIES_BMR, line("\"fpVal\":1820.4", evening))
+        acc.feedLine(FitTakeoutParser.Stream.CALORIES_BMR, line("\"fpVal\":1799.1", morning))
+        acc.feedLine(FitTakeoutParser.Stream.CALORIES, line("\"fpVal\":2600", morning))
+        // Calories alone are not a day, so the fixture carries a measurement too.
+        acc.feedLine(FitTakeoutParser.Stream.STEPS_ESTIMATED, line("\"intVal\":9000", morning))
+        val day = acc.build(0L).single()
+        assertEquals(1820, day.caloriesBmrKcal)
+        assertEquals(2600 - 1820, day.activeCaloriesKcal)
+    }
+
+    @Test
+    fun `an impossible basal figure is not stored`() {
+        val acc = FitTakeoutParser.Accumulator(zone)
+        val at = ZonedDateTime.of(LocalDate.parse("2019-05-02"), java.time.LocalTime.of(8, 0), zone)
+            .toInstant().toEpochMilli() * 1_000_000L
+        val point = { v: String ->
+            """{"fitValue":[{"value":{$v}}],"originDataSourceId":"raw:x","endTimeNanos":$at,""" +
+                """"dataTypeName":"t","startTimeNanos":$at,"modifiedTimeMillis":1,"rawTimestampNanos":0}"""
+        }
+        acc.feedLine(FitTakeoutParser.Stream.CALORIES_BMR, point("\"fpVal\":21044.0"))
+        acc.feedLine(FitTakeoutParser.Stream.CALORIES, point("\"fpVal\":2600"))
+        acc.feedLine(FitTakeoutParser.Stream.STEPS_ESTIMATED, point("\"intVal\":9000"))
+        val day = acc.build(0L).single()
+        assertEquals(0, day.caloriesBmrKcal)
+        // ...and therefore no active figure either, rather than a made-up one.
+        assertEquals(0, day.activeCaloriesKcal)
+    }
+
+    /**
+     * The session files were guarded by [FitSleepSessionParser.MIN_NIGHT_MINUTES] from the
+     * start and the `sleep.segment` stream was not, so the real import produced five "nights"
+     * under an hour - the shortest 13 minutes - in the same column as real ones.
+     */
+    @Test
+    fun `a stub of sleep from the stream is held to the same threshold as a session`() {
+        val acc = FitTakeoutParser.Accumulator(zone)
+        val from = ZonedDateTime.of(LocalDate.parse("2019-05-02"), java.time.LocalTime.of(3, 0), zone)
+            .toInstant().toEpochMilli() * 1_000_000L
+        val to = ZonedDateTime.of(LocalDate.parse("2019-05-02"), java.time.LocalTime.of(3, 13), zone)
+            .toInstant().toEpochMilli() * 1_000_000L
+        val line = """{"fitValue":[{"value":{"intVal":4}}],"originDataSourceId":"raw:x","endTimeNanos":$to,""" +
+            """"dataTypeName":"com.google.sleep.segment","startTimeNanos":$from,"modifiedTimeMillis":1,"rawTimestampNanos":0}"""
+        acc.feedLine(FitTakeoutParser.Stream.SLEEP, line)
+        assertTrue(acc.build(0L).isEmpty())
     }
 }

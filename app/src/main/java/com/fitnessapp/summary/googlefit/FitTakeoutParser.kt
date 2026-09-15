@@ -91,6 +91,10 @@ object FitTakeoutParser {
     private const val PLAUSIBLE_WEIGHT_MIN_G = 30_000
     private const val PLAUSIBLE_WEIGHT_MAX_G = 300_000
 
+    /** A day's basal burn in kcal. Outside this the stream is not saying what it looks like. */
+    private const val PLAUSIBLE_BMR_MIN = 700
+    private const val PLAUSIBLE_BMR_MAX = 4_000
+
     /**
      * Earliest day worth keeping. The Strava export carried rows stamped 1970 and 2010, and
      * one `.tcx` in this very archive is named `2007-01-09` - junk timestamps are normal in
@@ -323,7 +327,8 @@ object FitTakeoutParser {
             var steps = 0.0
             var stepsMerged = 0.0
             var calories = 0.0
-            var caloriesBmr = 0.0
+            var caloriesBmr = 0
+            var caloriesBmrAtMillis = 0L
             var distance = 0.0
             var hrSum = 0.0
             var hrCount = 0
@@ -387,7 +392,22 @@ object FitTakeoutParser {
                 }
                 Stream.STEPS_MERGED -> bucket(day).stepsMerged += point.value
                 Stream.CALORIES -> bucket(day).calories += point.value
-                Stream.CALORIES_BMR -> bucket(day).caloriesBmr += point.value
+                Stream.CALORIES_BMR -> {
+                    // `calories.bmr` is a RATE - kcal per DAY - republished whenever the
+                    // profile is re-evaluated, not energy spent over the point's interval.
+                    // Summing it produced 17 967 and 21 044 kcal of "basal burn" on this
+                    // account's real archive, which is what gave the semantics away: 743
+                    // points over 384 days, and no one burns twenty thousand calories lying
+                    // still. The latest value of the day is the day's rate.
+                    val kcal = point.value.roundToInt()
+                    if (kcal in PLAUSIBLE_BMR_MIN..PLAUSIBLE_BMR_MAX) {
+                        val b = bucket(day)
+                        if (point.startMillis >= b.caloriesBmrAtMillis) {
+                            b.caloriesBmr = kcal
+                            b.caloriesBmrAtMillis = point.startMillis
+                        }
+                    }
+                }
                 Stream.DISTANCE -> bucket(day).distance += point.value
                 Stream.HEART_RATE -> {
                     val bpm = point.value.roundToInt()
@@ -455,10 +475,25 @@ object FitTakeoutParser {
             return date.toEpochDay()
         }
 
+        /**
+         * Segments shorter than a night are not a night, on this path too.
+         *
+         * [FitSleepSessionParser.MIN_NIGHT_MINUTES] guarded the session files from the start,
+         * and the stream path did not - so the real import produced five "nights" under an
+         * hour, the shortest of them **13 minutes**, sitting in the same column as genuine
+         * ones. One threshold, both paths, or the column means two different things.
+         */
+        private fun Bucket.asNight(): Bucket = apply {
+            if (sleepTotal < FitSleepSessionParser.MIN_NIGHT_MINUTES) {
+                sleepTotal = 0L; sleepDeep = 0L; sleepLight = 0L; sleepRem = 0L; sleepAwake = 0L
+            }
+        }
+
         /** Rows for storage, all-zero days dropped. */
         fun build(nowMillis: Long): List<FitDay> = buckets.entries
             .sortedBy { it.key }
-            .map { (day, b) ->
+            .map { (day, raw) ->
+                val b = raw.asNight()
                 FitDay(
                     dateEpochDay = day,
                     // `estimated_steps` is what Google Fit shows; `merge_step_deltas` is the
@@ -466,7 +501,7 @@ object FitTakeoutParser {
                     // is used, and never both - that would count every step twice.
                     steps = (if (sawEstimatedSteps) b.steps else b.stepsMerged).roundToInt().toLong(),
                     caloriesKcal = b.calories.roundToInt(),
-                    caloriesBmrKcal = b.caloriesBmr.roundToInt(),
+                    caloriesBmrKcal = b.caloriesBmr,
                     distanceMeters = b.distance.roundToInt(),
                     avgHeartRate = if (b.hrCount > 0) (b.hrSum / b.hrCount).roundToInt() else 0,
                     minHeartRate = b.hrMin,
