@@ -1,6 +1,7 @@
 package com.fitnessapp.summary.analytics
 
 import com.fitnessapp.summary.data.DailySummary
+import com.fitnessapp.summary.data.FitDay
 import com.fitnessapp.summary.data.GarminActivity
 import com.fitnessapp.summary.data.GarminBodyComposition
 import com.fitnessapp.summary.data.GarminDailyExtra
@@ -493,6 +494,43 @@ object LifestyleAnalytics {
      * analysis). Mixing the two makes a rising "resting heart rate" trend out of nothing
      * but a change in wearing habits.
      */
+    /**
+     * Google Fit days, shaped like Health Connect days and placed BENEATH them.
+     *
+     * Every series here is built by filling a `byDay` map from the weakest source first and
+     * letting the stronger ones overwrite, so putting the imported days in front of the real
+     * Health Connect list is the whole mechanism: a day the watch or the phone actually
+     * covered keeps its own numbers, and an imported day only ever shows up where nothing
+     * else has anything. Same precedence as [com.fitnessapp.summary.data.DayView], expressed
+     * in the idiom this file already uses.
+     *
+     * Active calories are deliberately left at zero: Google Fit publishes one expenditure
+     * figure, and splitting it would invent the split. The dashed "active" line simply has no
+     * points over those years, which is the truth about them.
+     */
+    fun withFitFallback(healthDays: List<DailySummary>, fit: List<FitDay>): List<DailySummary> {
+        if (fit.isEmpty()) return healthDays
+        val imported = fit.filterNot { it.isEmpty }.map { day ->
+            DailySummary(
+                dateEpochDay = day.dateEpochDay,
+                steps = day.steps,
+                totalCaloriesKcal = day.caloriesKcal,
+                distanceMeters = day.distanceMeters,
+                avgHeartRate = day.avgHeartRate,
+                minHeartRate = day.minHeartRate,
+                maxHeartRate = day.maxHeartRate,
+                restingHeartRate = day.restingHeartRate,
+                sleepTotalMinutes = day.sleepTotalMinutes,
+                sleepDeepMinutes = day.sleepDeepMinutes,
+                sleepLightMinutes = day.sleepLightMinutes,
+                sleepRemMinutes = day.sleepRemMinutes,
+                sleepAwakeMinutes = day.sleepAwakeMinutes,
+                sourceApps = com.fitnessapp.summary.data.DayView.GOOGLE_FIT_PACKAGE
+            )
+        }
+        return imported + healthDays
+    }
+
     fun nightDays(sleeps: List<GarminSleep>, healthDays: List<DailySummary>): Set<Long> =
         sleeps.filter { it.sleepSeconds > 0 }.map { it.dateEpochDay }.toSet() +
             healthDays.filter { it.sleepTotalMinutes > 0 }.map { it.dateEpochDay }.toSet()
@@ -565,7 +603,11 @@ object LifestyleAnalytics {
     fun vo2MaxTrend(list: List<GarminTraining>) = list.filter { it.vo2Max > 0f }.map { TrendPoint(it.dateEpochDay, it.vo2Max) }
     fun acuteLoadTrend(list: List<GarminTraining>) = list.filter { it.dailyTrainingLoadAcute > 0 }.map { TrendPoint(it.dateEpochDay, it.dailyTrainingLoadAcute.toFloat()) }
     fun chronicLoadTrend(list: List<GarminTraining>) = list.filter { it.dailyTrainingLoadChronic > 0 }.map { TrendPoint(it.dateEpochDay, it.dailyTrainingLoadChronic.toFloat()) }
-    fun weightTrend(garmin: List<GarminBodyComposition>, scale: List<ScaleMeasurement> = emptyList()) = mergedWeightByDay(garmin, scale)
+    fun weightTrend(
+        garmin: List<GarminBodyComposition>,
+        scale: List<ScaleMeasurement> = emptyList(),
+        fit: List<FitDay> = emptyList()
+    ) = mergedWeightByDay(garmin, scale, fit)
 
     /**
      * One weight per day from both sources. The scale's own reading wins over Garmin's
@@ -573,8 +615,15 @@ object LifestyleAnalytics {
      * echo - and the latest weigh-in of a day wins within the scale (lists arrive
      * ascending, so a later entry simply overwrites).
      */
-    fun mergedWeightByDay(garmin: List<GarminBodyComposition>, scale: List<ScaleMeasurement>): List<TrendPoint> {
+    fun mergedWeightByDay(
+        garmin: List<GarminBodyComposition>,
+        scale: List<ScaleMeasurement>,
+        fit: List<FitDay> = emptyList()
+    ): List<TrendPoint> {
         val byDay = mutableMapOf<Long, Float>()
+        // Imported first, so anything actually weighed on this phone overwrites it: the
+        // Takeout copy is the oldest and weakest record of the same fact.
+        fit.filter { it.weightGrams > 0 }.forEach { byDay[it.dateEpochDay] = it.weightKg }
         garmin.filter { it.weightGrams > 0 }.forEach { byDay[it.dateEpochDay] = it.weightKg }
         scale.filter { it.weightGrams > 0 }.forEach { byDay[it.dateEpochDay] = it.weightKg }
         return byDay.entries.sortedBy { it.key }.map { TrendPoint(it.key, it.value) }

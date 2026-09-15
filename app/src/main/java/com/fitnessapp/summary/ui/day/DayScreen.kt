@@ -106,11 +106,13 @@ fun DayScreen(app: FitnessSummaryApp) {
     val bodyComp by remember(selectedDate) { app.database.garminBodyCompositionDao().observeLatestUpTo(epochDay) }.collectAsState(initial = null)
     val garminActivities by remember(selectedDate) { app.database.garminActivityDao().observeForDay(epochDay) }.collectAsState(initial = emptyList())
     val scaleToday by remember(selectedDate) { app.database.scaleMeasurementDao().observeLatestForDay(epochDay) }.collectAsState(initial = null)
+    val fitDay by remember(selectedDate) { app.database.fitDayDao().observeDay(epochDay) }.collectAsState(initial = null)
 
     val palette = metricPalette()
 
-    // The day as shown: Garmin first, Health Connect filling the gaps - see [DayView].
-    val displayDay = DayView.merge(summary, garmin, garminSleep)
+    // The day as shown: Garmin first, Health Connect filling its gaps, the Google Fit
+    // import filling what is still missing - see [DayView].
+    val displayDay = DayView.merge(summary, garmin, garminSleep, fitDay)
     val extra = garmin?.takeUnless { it.isEmpty }
     val sleep = garminSleep?.takeUnless { it.isEmpty }
 

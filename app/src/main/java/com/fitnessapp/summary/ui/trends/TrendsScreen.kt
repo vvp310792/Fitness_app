@@ -122,6 +122,13 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     val strengthSets by remember(windowDays) { app.database.strengthSetDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val workouts by remember(windowDays) { app.workoutRepository.observeRange(from, today) }.collectAsState(initial = emptyList())
     val stravaActivities by remember(windowDays) { app.database.stravaActivityDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
+    val fitDays by remember(windowDays) { app.database.fitDayDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
+
+    // Google Fit sits beneath Health Connect, which sits beneath Garmin - see
+    // LifestyleAnalytics.withFitFallback. Only the charts get it: the insight rules are
+    // about metrics only the watch produces, and a phone pedometer from 2016 has no
+    // business inside a verdict about recovery.
+    val daysWithFit = remember(healthDays, fitDays) { LifestyleAnalytics.withFitFallback(healthDays, fitDays) }
 
     // Weekly kilometres per sport, from both sources with the duplicates dropped. Computed
     // once for all three sports: the de-duplication has to see every session, not one
@@ -276,10 +283,10 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         // mostly a change in wearing habits. Solid line: nights the watch measured. Dashed:
         // the rest - same metric, same unit, same colour, so it stays inside the one-series
         // rule while making the artefact visible instead of hiding it.
-        val nights = LifestyleAnalytics.nightDays(sleeps, healthDays)
-        val rhrNights = LifestyleAnalytics.restingHeartRateTrend(summaries, healthDays, nights)
-        val rhrNoNight = LifestyleAnalytics.restingHeartRateNoNightTrend(summaries, healthDays, nights)
-        val rhrGap = LifestyleAnalytics.restingHeartRateNightGap(summaries, healthDays, nights)
+        val nights = LifestyleAnalytics.nightDays(sleeps, daysWithFit)
+        val rhrNights = LifestyleAnalytics.restingHeartRateTrend(summaries, daysWithFit, nights)
+        val rhrNoNight = LifestyleAnalytics.restingHeartRateNoNightTrend(summaries, daysWithFit, nights)
+        val rhrGap = LifestyleAnalytics.restingHeartRateNightGap(summaries, daysWithFit, nights)
         if (rhrNights.isNotEmpty() || rhrNoNight.isNotEmpty()) {
             // No night at all in this window: draw what there is rather than an empty chart
             // that reads as a broken screen, and say plainly that none of it is verified.
@@ -307,13 +314,13 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         }
         trendCard("Стресс, средний за день", LifestyleAnalytics.stressTrend(summaries), fromEpoch, toEpoch, palette.stress, smoothWindow, floorAtZero = true, goal = 50f, footnote = "Пунктир: 50 — граница зоны низкого стресса по Garmin") { it.toInt().toString() }
         trendCard("Body Battery при пробуждении", LifestyleAnalytics.bodyBatteryWakeTrend(summaries), fromEpoch, toEpoch, palette.bodyBattery, smoothWindow, floorAtZero = true, goal = 50f) { it.toInt().toString() }
-        trendCard("Шаги", LifestyleAnalytics.stepsTrend(summaries, healthDays), fromEpoch, toEpoch, palette.steps, smoothWindow, floorAtZero = true, goal = 10000f) { formatCount(it.toLong()) }
+        trendCard("Шаги", LifestyleAnalytics.stepsTrend(summaries, daysWithFit), fromEpoch, toEpoch, palette.steps, smoothWindow, floorAtZero = true, goal = 10000f) { formatCount(it.toLong()) }
 
         // Total and active on one chart: same unit, same metric seen two ways, and the
         // gap between the lines is the resting burn. Solid is the total because that is
         // what "калории за день" means; dashed is the part training moved.
-        val totalCalories = LifestyleAnalytics.caloriesTrend(summaries, healthDays, active = false)
-        val activeCalories = LifestyleAnalytics.caloriesTrend(summaries, healthDays, active = true)
+        val totalCalories = LifestyleAnalytics.caloriesTrend(summaries, daysWithFit, active = false)
+        val activeCalories = LifestyleAnalytics.caloriesTrend(summaries, daysWithFit, active = true)
         if (totalCalories.isNotEmpty() || activeCalories.isNotEmpty()) {
             trendCard(
                 "Калории за день",
@@ -341,7 +348,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
             ) { it.toInt().toString() }
         }
 
-        val weightPoints = LifestyleAnalytics.weightTrend(weights, scaleWeights)
+        val weightPoints = LifestyleAnalytics.weightTrend(weights, scaleWeights, fitDays)
         if (weightPoints.isNotEmpty()) trendCard("Вес, кг", weightPoints, fromEpoch, toEpoch, palette.weight, smoothWindow) { formatDecimal(it) }
 
         intensitySection(intensity, suggestedHrMax, intensitySessions.size, palette)

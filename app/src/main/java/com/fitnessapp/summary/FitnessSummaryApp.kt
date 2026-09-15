@@ -17,6 +17,7 @@ import com.fitnessapp.summary.scale.ZeppApiClient
 import com.fitnessapp.summary.scale.ZeppAuthClient
 import com.fitnessapp.summary.scale.ZeppTokenStore
 import com.fitnessapp.summary.health.HealthConnectManager
+import com.fitnessapp.summary.googlefit.FitImportManager
 import com.fitnessapp.summary.strava.StravaImportManager
 import com.fitnessapp.summary.strength.StrengthImportManager
 import com.fitnessapp.summary.health.HealthConnectScaleReader
@@ -123,6 +124,9 @@ class FitnessSummaryApp : Application() {
 
     /** Strava bulk export - the only source reaching back before the watch. See strava/. */
     val stravaImport: StravaImportManager by lazy { StravaImportManager(this, database) }
+
+    /** Google Takeout archive - the days around the Strava sessions, for the years before the watch. */
+    val fitImport: FitImportManager by lazy { FitImportManager(this, database) }
 
     private val appScope = CoroutineScope(Dispatchers.IO)
 

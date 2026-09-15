@@ -53,7 +53,7 @@ object DataExporter {
 
         val root = JSONObject().apply {
             put("app", "fitness-summary")
-            put("schemaVersion", 7)
+            put("schemaVersion", 8)
             put("exportedAt", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
             put("sources", JSONArray(listOf("Health Connect", "Garmin Connect (unofficial)", "Zepp Life (unofficial, optional)", "журнал силовых тренировок (импорт)")))
             put("dayCount", days.size)
@@ -425,6 +425,7 @@ object DataExporter {
                 put("strengthSets", database.strengthSetDao().getAllOnce().size)
                 put("heartRateZoneProfiles", database.garminHeartRateZoneDao().getAllOnce().size)
                 put("stravaActivities", database.stravaActivityDao().getAllOnce().size)
+                put("fitDays", database.fitDayDao().getAllOnce().size)
             })
             put("garminSyncCoverage", JSONArray().also { array ->
                 for (row in database.garminSyncMarkDao().sectionCoverage()) {
@@ -456,6 +457,31 @@ object DataExporter {
                     put("avgHeartRate", row.avgHeartRate)
                     put("maxHeartRate", row.maxHeartRate)
                     put("elevationGainMeters", row.elevationGainMeters)
+                })
+            }
+        })
+
+        // The Google Takeout import - one row per day for the years before the watch.
+        // Its own section rather than rows inside `days`: `days` is the Health Connect table,
+        // and a reader must be able to tell a day the phone recorded in 2016 from a day
+        // Health Connect handed over.
+        root.put("fit", JSONArray().also { array ->
+            for (row in database.fitDayDao().getAllOnce()) {
+                array.put(JSONObject().apply {
+                    putDate(row.dateEpochDay)
+                    put("steps", row.steps)
+                    put("caloriesKcal", row.caloriesKcal)
+                    put("distanceMeters", row.distanceMeters)
+                    put("avgHeartRate", row.avgHeartRate)
+                    put("minHeartRate", row.minHeartRate)
+                    put("maxHeartRate", row.maxHeartRate)
+                    put("restingHeartRate", row.restingHeartRate)
+                    put("weightKg", row.weightKg)
+                    put("sleepTotalMinutes", row.sleepTotalMinutes)
+                    put("sleepDeepMinutes", row.sleepDeepMinutes)
+                    put("sleepLightMinutes", row.sleepLightMinutes)
+                    put("sleepRemMinutes", row.sleepRemMinutes)
+                    put("sleepAwakeMinutes", row.sleepAwakeMinutes)
                 })
             }
         })

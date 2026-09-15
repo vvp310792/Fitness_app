@@ -52,6 +52,7 @@ import com.fitnessapp.summary.garmin.GarminLoginResult
 import com.fitnessapp.summary.garmin.GarminSyncManager
 import com.fitnessapp.summary.scale.ScaleSyncManager
 import com.fitnessapp.summary.analytics.DistanceSport
+import com.fitnessapp.summary.googlefit.FitImportManager
 import com.fitnessapp.summary.strava.StravaImportManager
 import com.fitnessapp.summary.strength.StrengthImportManager
 import com.fitnessapp.summary.util.formatDayMonth
@@ -95,6 +96,7 @@ fun SettingsScreen(app: FitnessSummaryApp) {
         item { HeartRateZoneSection(app) }
         item { StrengthSection(app) }
         item { StravaSection(app) }
+        item { GoogleFitSection(app) }
         item { LogsSection() }
         item { AccountSection(app) }
         item { ExportSection(app) }
@@ -1373,6 +1375,162 @@ private fun StravaSection(app: FitnessSummaryApp) {
         if (count > 0) {
             TextButton(onClick = { app.launchPersistent { app.stravaImport.forget() } }) {
                 Text("Удалить импорт Strava")
+            }
+        }
+    }
+}
+
+/**
+ * Google Takeout - the days before the watch, for everything that is not a workout.
+ *
+ * Strava's export brought the sessions back to 2015; this brings what happened between them:
+ * steps, calories, heart rate, resting heart rate and weight from the phone and the Mi Band.
+ * Health Connect cannot answer for those years - walking its whole history on this account
+ * found 38 days with a real measurement, not 4000 - and Garmin has no day before December 2021.
+ *
+ * The archive is read straight out of the `.zip`, streamed: 68 MB on disk holds 1264 MB of
+ * JSON, and only Google's own cross-device merged streams are parsed. Summing the per-device
+ * files instead would count the same steps once per phone that recorded them.
+ */
+@Composable
+private fun GoogleFitSection(app: FitnessSummaryApp) {
+    val importState by app.fitImport.state.collectAsState()
+    val count by remember { app.database.fitDayDao().observeCount() }.collectAsState(initial = 0)
+    var period by remember { mutableStateOf<String?>(null) }
+    var showHelp by remember { mutableStateOf(false) }
+    val palette = metricPalette()
+
+    LaunchedEffect(count) {
+        val dao = app.database.fitDayDao()
+        val first = dao.firstDay()
+        val last = dao.lastDay()
+        period = if (first != null && last != null) {
+            "${formatDayMonth(java.time.LocalDate.ofEpochDay(first))} ${java.time.LocalDate.ofEpochDay(first).year} — " +
+                "${formatDayMonth(java.time.LocalDate.ofEpochDay(last))} ${java.time.LocalDate.ofEpochDay(last).year}"
+        } else {
+            null
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) app.launchPersistent { app.fitImport.importFrom(uri) }
+    }
+
+    InfoCard(title = "История из Google Fit") {
+        Text(
+            text = "Архив Google Takeout — шаги, калории, пульс, пульс покоя и вес за годы, " +
+                "когда часов ещё не было: их писал телефон и браслет. Health Connect эти годы " +
+                "не хранит, у Garmin их нет вовсе.\n\n" +
+                "Читается только то, что Google уже сам объединил по устройствам, — иначе одни " +
+                "и те же шаги посчитались бы столько раз, сколько телефонов их видело. Дни, " +
+                "которые уже знают Garmin или Health Connect, загружаются тоже, но на экранах " +
+                "показываются числа первоисточника: Google Fit подставляется только там, где " +
+                "у остальных пусто.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        if (count > 0) {
+            StatRow("Дней загружено", count.toString())
+            period?.let { StatRow("Период", it) }
+        }
+
+        when (val state = importState) {
+            is FitImportManager.State.Running -> Text(
+                text = state.note,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+
+            is FitImportManager.State.Success -> {
+                val result = state.result
+                val from = java.time.LocalDate.ofEpochDay(result.firstEpochDay)
+                val to = java.time.LocalDate.ofEpochDay(result.lastEpochDay)
+                Column(modifier = Modifier.padding(top = 6.dp)) {
+                    Text(
+                        text = "Загружено ${result.days} дней, " +
+                            "${formatDayMonth(from)} ${from.year} — ${formatDayMonth(to)} ${to.year} " +
+                            "(${formatTime(state.atMillis)}).",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = palette.steps
+                    )
+                    Text(
+                        text = FitImportManager.freshLine(result) + " — они не перекроют числа Garmin.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                    val what = FitImportManager.summary(result)
+                    if (what.isNotEmpty()) {
+                        Text(
+                            text = "Дней с данными: $what.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                    // Named rather than swallowed - the same rule as unidentified gym
+                    // exercises and unmatched Strava sports. A merged stream this parser
+                    // does not know looks exactly like a metric the archive never had.
+                    if (result.unknownStreams.isNotEmpty()) {
+                        Text(
+                            text = "Неузнанные объединённые потоки: " +
+                                result.unknownStreams.joinToString(", ") { it.substringAfterLast(':') } +
+                                ". Они не прочитаны — пришлите лог, если чего-то не хватает.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                    Text(
+                        text = "Потоков прочитано: ${result.filesRead}, файлов пропущено: ${result.filesSkipped}.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
+
+            is FitImportManager.State.Failed -> Text(
+                text = state.reason,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+
+            FitImportManager.State.Idle -> Unit
+        }
+
+        Button(
+            onClick = { importLauncher.launch(arrayOf("*/*")) },
+            enabled = importState !is FitImportManager.State.Running,
+            modifier = Modifier.padding(top = 8.dp)
+        ) {
+            Text(if (count > 0) "Обновить из архива" else "Выбрать архив Takeout (.zip)")
+        }
+
+        TextButton(onClick = { showHelp = !showHelp }) {
+            Text(if (showHelp) "Скрыть подробности" else "Где взять архив")
+        }
+        if (showHelp) {
+            Text(
+                text = "takeout.google.com → снять все галочки → отметить Fit → «Следующий шаг» → " +
+                    "«Создать экспорт». На почту придёт ссылка; архив может приехать несколькими " +
+                    "частями — нужна та, внутри которой папка Fit (у остальных внутри только " +
+                    "оглавление).\n\n" +
+                    "Файл большой, разбор занимает минуту-другую: внутри 68 МБ лежит больше " +
+                    "гигабайта JSON. Тренировки из архива (.tcx) намеренно не читаются — это те " +
+                    "же сессии, что уже пришли из Strava и Garmin.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+
+        if (count > 0) {
+            TextButton(onClick = { app.launchPersistent { app.fitImport.forget() } }) {
+                Text("Удалить импорт Google Fit")
             }
         }
     }

@@ -31,15 +31,17 @@ object DayView {
     fun merge(
         health: DailySummary?,
         garmin: GarminDailyExtra?,
-        sleep: GarminSleep?
+        sleep: GarminSleep?,
+        fit: FitDay? = null
     ): DailySummary? {
         val hc = health?.takeUnless { it.isEmpty }
         val g = garmin?.takeUnless { it.isEmpty }
         val s = sleep?.takeUnless { it.isEmpty }
-        if (hc == null && g == null && s == null) return null
+        val f = fit?.takeUnless { it.isEmpty }
+        if (hc == null && g == null && s == null && f == null) return null
 
         val base = hc ?: DailySummary(
-            dateEpochDay = g?.dateEpochDay ?: s?.dateEpochDay ?: return null
+            dateEpochDay = g?.dateEpochDay ?: s?.dateEpochDay ?: f?.dateEpochDay ?: return null
         )
 
         val withMovement = base.copy(
@@ -48,7 +50,15 @@ object DayView {
             // anything, most of the numbers on screen are Garmin's, and a line reading
             // "источник: Google Fit" under them would be a true fact about the wrong
             // thing - see DailySummary.sourceApps.
-            sourceApps = if (g != null || s != null) "" else base.sourceApps,
+            sourceApps = when {
+                g != null || s != null -> ""
+                hc != null -> base.sourceApps
+                // Nothing but the Takeout archive knows about this day, and saying so is the
+                // whole point of the label: these are years when the source was a phone or a
+                // Mi Band, not a watch.
+                f != null -> GOOGLE_FIT_PACKAGE
+                else -> base.sourceApps
+            },
             steps = g?.totalSteps.orFirst(base.steps),
             activeCaloriesKcal = g?.activeKilocalories.orFirst(base.activeCaloriesKcal),
             totalCaloriesKcal = g?.totalKilocalories.orFirst(base.totalCaloriesKcal),
@@ -61,17 +71,42 @@ object DayView {
             // rather than a first-hand one.
         )
 
+        // Google Fit fills only what is still missing. It is the weakest source here by
+        // construction: a Takeout archive is frozen at the moment it was cut, and its numbers
+        // come from a phone pedometer or a Mi Band. On any day the watch covered it must
+        // contribute nothing - which "0 means no data" already guarantees, field by field.
+        val withFit = if (f == null) withMovement else withMovement.copy(
+            steps = withMovement.steps.orKeep(f.steps),
+            totalCaloriesKcal = withMovement.totalCaloriesKcal.orKeep(f.caloriesKcal),
+            distanceMeters = withMovement.distanceMeters.orKeep(f.distanceMeters),
+            restingHeartRate = withMovement.restingHeartRate.orKeep(f.restingHeartRate),
+            avgHeartRate = withMovement.avgHeartRate.orKeep(f.avgHeartRate),
+            minHeartRate = withMovement.minHeartRate.orKeep(f.minHeartRate),
+            maxHeartRate = withMovement.maxHeartRate.orKeep(f.maxHeartRate)
+            // activeCaloriesKcal is deliberately not filled: Google Fit publishes one
+            // expenditure figure, and splitting it into active and resting here would be
+            // a number this app invented rather than one anybody measured.
+        )
+
         // Whole-night swap, stages included - see the class comment.
-        return if (s != null && s.sleepMinutes > 0) {
-            withMovement.copy(
+        return when {
+            s != null && s.sleepMinutes > 0 -> withFit.copy(
                 sleepTotalMinutes = s.sleepMinutes,
                 sleepDeepMinutes = s.deepMinutes,
                 sleepLightMinutes = s.lightMinutes,
                 sleepRemMinutes = s.remMinutes,
                 sleepAwakeMinutes = s.awakeMinutes
             )
-        } else {
-            withMovement
+            // Same all-or-nothing rule one source down: a Google Fit night replaces the whole
+            // night or none of it, never just the total.
+            withFit.sleepTotalMinutes == 0 && f != null && f.sleepTotalMinutes > 0 -> withFit.copy(
+                sleepTotalMinutes = f.sleepTotalMinutes,
+                sleepDeepMinutes = f.sleepDeepMinutes,
+                sleepLightMinutes = f.sleepLightMinutes,
+                sleepRemMinutes = f.sleepRemMinutes,
+                sleepAwakeMinutes = f.sleepAwakeMinutes
+            )
+            else -> withFit
         }
     }
 
@@ -79,21 +114,31 @@ object DayView {
     fun mergeRange(
         health: List<DailySummary>,
         garmin: List<GarminDailyExtra>,
-        sleep: List<GarminSleep>
+        sleep: List<GarminSleep>,
+        fit: List<FitDay> = emptyList()
     ): List<DailySummary> {
         val hcByDay = health.associateBy { it.dateEpochDay }
         val gByDay = garmin.associateBy { it.dateEpochDay }
         val sByDay = sleep.associateBy { it.dateEpochDay }
-        // Union of the three, not just the Health Connect days: a day that only Garmin
+        val fByDay = fit.associateBy { it.dateEpochDay }
+        // Union of all of them, not just the Health Connect days: a day that only Garmin
         // knows about must still appear in the week, or the week's averages are computed
         // over a set of days chosen by the weaker source.
-        return (hcByDay.keys + gByDay.keys + sByDay.keys)
+        return (hcByDay.keys + gByDay.keys + sByDay.keys + fByDay.keys)
             .sorted()
-            .mapNotNull { merge(hcByDay[it], gByDay[it], sByDay[it]) }
+            .mapNotNull { merge(hcByDay[it], gByDay[it], sByDay[it], fByDay[it]) }
     }
+
+    /** What `sourceApps` says on a day the Takeout archive is the only source for. */
+    const val GOOGLE_FIT_PACKAGE = "com.google.android.apps.fitness"
 }
 
 /** 0 means "no data" everywhere in this app, so a zero from Garmin defers to Health Connect. */
 private fun Long?.orFirst(fallback: Long): Long = if (this != null && this > 0L) this else fallback
 
 private fun Int?.orFirst(fallback: Int): Int = if (this != null && this > 0) this else fallback
+
+/** Keeps what the stronger sources produced; a zero there means they had nothing to say. */
+private fun Long.orKeep(weaker: Long): Long = if (this > 0L) this else weaker
+
+private fun Int.orKeep(weaker: Int): Int = if (this > 0) this else weaker

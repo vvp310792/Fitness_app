@@ -102,13 +102,14 @@ fun WeekScreen(app: FitnessSummaryApp) {
     val garminSleepsRange by remember(selectedWeekStart) { app.database.garminSleepDao().observeRange(weekFromEpoch - 7, weekToEpoch) }.collectAsState(initial = emptyList())
     val garminDays = remember(garminDaysRange, weekFromEpoch) { garminDaysRange.filter { it.dateEpochDay >= weekFromEpoch } }
     val garminSleeps = remember(garminSleepsRange, weekFromEpoch) { garminSleepsRange.filter { it.dateEpochDay >= weekFromEpoch } }
+    val fitDaysRange by remember(selectedWeekStart) { app.database.fitDayDao().observeRange(weekFromEpoch - 7, weekToEpoch) }.collectAsState(initial = emptyList())
 
     // Every number below is computed from the MERGED day, not the Health Connect row:
     // Garmin is the first source, Health Connect fills its gaps (see [DayView]). Before
     // this, steps and calories came from a Health Connect copy that other apps also write
     // into, and sleep came from a copy Garmin fills only sporadically.
-    val mergedDays = remember(days, garminDaysRange, garminSleepsRange) {
-        DayView.mergeRange(days, garminDaysRange, garminSleepsRange)
+    val mergedDays = remember(days, garminDaysRange, garminSleepsRange, fitDaysRange) {
+        DayView.mergeRange(days, garminDaysRange, garminSleepsRange, fitDaysRange)
     }
 
     val week = remember(mergedDays, workouts, selectedWeekStart) {
