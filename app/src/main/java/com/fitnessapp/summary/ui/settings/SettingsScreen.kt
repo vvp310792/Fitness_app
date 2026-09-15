@@ -901,29 +901,55 @@ private fun UpdateSection() {
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.padding(top = 6.dp)
                 )
-                Button(
-                    onClick = {
-                        if (!ApkInstaller.canRequestInstalls(context)) {
-                            ApkInstaller.requestInstallPermission(context)
-                            return@Button
-                        }
-                        downloading = true
-                        scope.launch {
-                            val file = withContext(Dispatchers.IO) {
-                                ApkInstaller.download(context, current.release.downloadUrl)
+                if (current.release.canInstallDirectly) {
+                    Button(
+                        onClick = {
+                            if (!ApkInstaller.canRequestInstalls(context)) {
+                                ApkInstaller.requestInstallPermission(context)
+                                return@Button
                             }
-                            downloading = false
-                            if (file != null) {
-                                ApkInstaller.install(context, file)
-                            } else {
-                                Toast.makeText(context, "Не удалось скачать APK", Toast.LENGTH_LONG).show()
+                            downloading = true
+                            scope.launch {
+                                val file = withContext(Dispatchers.IO) {
+                                    ApkInstaller.download(context, current.release.downloadUrl)
+                                }
+                                downloading = false
+                                if (file != null) {
+                                    ApkInstaller.install(context, file)
+                                } else {
+                                    Toast.makeText(context, "Не удалось скачать APK", Toast.LENGTH_LONG).show()
+                                }
                             }
-                        }
-                    },
-                    enabled = !downloading,
-                    modifier = Modifier.padding(top = 8.dp)
-                ) {
-                    Text(if (downloading) "Скачиваю..." else "Скачать и установить")
+                        },
+                        enabled = !downloading,
+                        modifier = Modifier.padding(top = 8.dp)
+                    ) {
+                        Text(if (downloading) "Скачиваю..." else "Скачать и установить")
+                    }
+                } else {
+                    // The release was found through the feed, which does not list its files.
+                    // Opening the page is one extra tap and always lands on the right APK;
+                    // a download URL guessed from a naming convention would not.
+                    Text(
+                        text = "Ссылку на APK сейчас не получить — GitHub ограничил запросы. " +
+                            "Страница релиза открывается всегда, файл там один.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                    Button(
+                        onClick = {
+                            context.startActivity(
+                                android.content.Intent(
+                                    android.content.Intent.ACTION_VIEW,
+                                    android.net.Uri.parse(current.release.pageUrl)
+                                )
+                            )
+                        },
+                        modifier = Modifier.padding(top = 8.dp)
+                    ) {
+                        Text("Открыть страницу релиза")
+                    }
                 }
             }
 
