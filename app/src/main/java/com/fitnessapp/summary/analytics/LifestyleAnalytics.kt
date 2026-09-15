@@ -504,9 +504,9 @@ object LifestyleAnalytics {
      * else has anything. Same precedence as [com.fitnessapp.summary.data.DayView], expressed
      * in the idiom this file already uses.
      *
-     * Active calories are deliberately left at zero: Google Fit publishes one expenditure
-     * figure, and splitting it would invent the split. The dashed "active" line simply has no
-     * points over those years, which is the truth about them.
+     * The active figure is a subtraction of two measured numbers - Google's total minus its own
+     * `calories.bmr` - and is 0 on days the archive carries no basal figure. It is never a
+     * split this app invents.
      */
     fun withFitFallback(healthDays: List<DailySummary>, fit: List<FitDay>): List<DailySummary> {
         if (fit.isEmpty()) return healthDays
@@ -515,6 +515,7 @@ object LifestyleAnalytics {
                 dateEpochDay = day.dateEpochDay,
                 steps = day.steps,
                 totalCaloriesKcal = day.caloriesKcal,
+                activeCaloriesKcal = day.activeCaloriesKcal,
                 distanceMeters = day.distanceMeters,
                 avgHeartRate = day.avgHeartRate,
                 minHeartRate = day.minHeartRate,
@@ -530,6 +531,43 @@ object LifestyleAnalytics {
         }
         return imported + healthDays
     }
+
+    /**
+     * How far a phone's step count sits below the watch's, measured on this person's own days.
+     *
+     * The imported years were counted by a phone in a pocket and the recent ones by a watch on
+     * a wrist, and the two do not agree: on the 567 days of this account where both exist, the
+     * phone reads a median **8 % lower**. A twelve-year step chart therefore has a step in it
+     * at the moment the watch arrives, and that step is a change of instrument, not of
+     * behaviour. Saying so requires a number, and the number has to come from the data - the
+     * same rule as [restingHeartRateNightGap], which measures the no-night correction rather
+     * than assuming one.
+     *
+     * Null when fewer than [MIN_DAYS_FOR_SOURCE_GAP] days carry both, because a handful of
+     * overlapping days says nothing about a systematic difference.
+     */
+    data class SourceGap(val days: Int, val percentLower: Int)
+
+    fun phoneStepGap(fit: List<FitDay>, garmin: List<GarminDailyExtra>): SourceGap? {
+        val garminByDay = garmin.filter { it.totalSteps > 0 }.associate { it.dateEpochDay to it.totalSteps }
+        val ratios = fit
+            .filter { it.steps > 0 }
+            .mapNotNull { day -> garminByDay[day.dateEpochDay]?.let { day.steps.toDouble() / it } }
+            .sorted()
+        if (ratios.size < MIN_DAYS_FOR_SOURCE_GAP) return null
+        val median = if (ratios.size % 2 == 1) {
+            ratios[ratios.size / 2]
+        } else {
+            (ratios[ratios.size / 2 - 1] + ratios[ratios.size / 2]) / 2
+        }
+        return SourceGap(ratios.size, ((1 - median) * 100).roundToInt())
+    }
+
+    /** The first day the watch itself counted - everything before it came from a phone. */
+    fun firstWatchDay(garmin: List<GarminDailyExtra>): Long? =
+        garmin.filter { it.totalSteps > 0 }.minOfOrNull { it.dateEpochDay }
+
+    private const val MIN_DAYS_FOR_SOURCE_GAP = 30
 
     fun nightDays(sleeps: List<GarminSleep>, healthDays: List<DailySummary>): Set<Long> =
         sleeps.filter { it.sleepSeconds > 0 }.map { it.dateEpochDay }.toSet() +

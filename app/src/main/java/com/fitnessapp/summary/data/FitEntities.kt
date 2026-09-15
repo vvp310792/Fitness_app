@@ -36,6 +36,14 @@ data class FitDay(
     val steps: Long = 0,
     /** Total expenditure, the way Google Fit counts it: BMR included. */
     val caloriesKcal: Int = 0,
+    /**
+     * Google Fit's own basal figure, from its `calories.bmr` stream.
+     *
+     * Stored rather than subtracted at import: the active part is [activeCaloriesKcal], a
+     * rule over these two numbers, and rules get revised. It also answers a question the
+     * total alone cannot - whether a day's calories are anything but arithmetic.
+     */
+    val caloriesBmrKcal: Int = 0,
     val distanceMeters: Int = 0,
     val avgHeartRate: Int = 0,
     val minHeartRate: Int = 0,
@@ -53,12 +61,36 @@ data class FitDay(
     val weightKg: Float get() = weightGrams / 1000f
 
     /**
-     * Nothing measured. Unlike Health Connect, Google Fit does not invent a calorie figure
-     * for days it knows nothing about - but the rule that a derived number is not proof a
-     * day existed was learned the hard way here, so an all-zero row is still dropped.
+     * What was burned beyond lying still, or 0 when that cannot be said.
+     *
+     * Computed on read, never stored: the same rule as `strength_sets.lift`. Guarded against
+     * a negative, which would mean the two streams disagree rather than that the day was
+     * restful.
+     */
+    val activeCaloriesKcal: Int
+        get() = if (caloriesKcal > 0 && caloriesBmrKcal in 1 until caloriesKcal) {
+            caloriesKcal - caloriesBmrKcal
+        } else {
+            0
+        }
+
+    /**
+     * Nothing measured. **Calories do not count**, and that is the whole point of this rule.
+     *
+     * Google Fit publishes an expenditure figure for days nobody recorded anything on - it
+     * derives one from the profile, and the archive even carries the basal stream it uses
+     * (`calories.bmr`). The first version of this import counted calories as data and stored
+     * **469 such days out of 2744** on this account, including a fake "history starts in
+     * 2008": ten days of 2008, one of 2009, one of 2012, and 144 days of 2026 whose only
+     * content was arithmetic.
+     *
+     * This is the identical trap to Health Connect's 1564 kcal, which once put 4345 invented
+     * days into the database and into the cloud (see `DailySummary.isEmpty`). The rule had
+     * already been written there and was not carried over here - so it is stated twice now,
+     * and the SQL copy in [FitDayDao] is pinned to this property by a test.
      */
     val isEmpty: Boolean
-        get() = steps == 0L && caloriesKcal == 0 && distanceMeters == 0 &&
+        get() = steps == 0L && distanceMeters == 0 &&
             avgHeartRate == 0 && restingHeartRate == 0 && weightGrams == 0 &&
             sleepTotalMinutes == 0
 }
@@ -68,6 +100,19 @@ interface FitDayDao {
 
     @Upsert
     suspend fun upsertAll(rows: List<FitDay>)
+
+    @Query("SELECT * FROM fit_daily WHERE dateEpochDay IN (:days)")
+    suspend fun byDays(days: List<Long>): List<FitDay>
+
+    /**
+     * Drops rows whose only content is a derived calorie figure.
+     *
+     * The same condition as [FitDay.isEmpty], written again because Room cannot call a Kotlin
+     * property - and pinned to it by `FitFabricatedDayTest`, because two copies of a rule that
+     * DELETES rows drift apart at the first edit. `caloriesKcal` must not appear here at all.
+     */
+    @Query(FitDayDao.FABRICATED_WHERE_DELETE)
+    suspend fun deleteWithoutMeasurements(): Int
 
     @Query("SELECT * FROM fit_daily WHERE dateEpochDay BETWEEN :fromEpochDay AND :toEpochDay ORDER BY dateEpochDay")
     fun observeRange(fromEpochDay: Long, toEpochDay: Long): Flow<List<FitDay>>
@@ -90,4 +135,11 @@ interface FitDayDao {
     /** For "forget this import" - the archive is the only source, so it is fully reversible. */
     @Query("DELETE FROM fit_daily")
     suspend fun deleteAll(): Int
+
+    companion object {
+        const val FABRICATED_WHERE_DELETE =
+            "DELETE FROM fit_daily WHERE steps = 0 AND distanceMeters = 0 AND " +
+                "avgHeartRate = 0 AND restingHeartRate = 0 AND weightGrams = 0 AND " +
+                "sleepTotalMinutes = 0"
+    }
 }

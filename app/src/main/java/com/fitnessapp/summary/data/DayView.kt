@@ -82,10 +82,11 @@ object DayView {
             restingHeartRate = withMovement.restingHeartRate.orKeep(f.restingHeartRate),
             avgHeartRate = withMovement.avgHeartRate.orKeep(f.avgHeartRate),
             minHeartRate = withMovement.minHeartRate.orKeep(f.minHeartRate),
-            maxHeartRate = withMovement.maxHeartRate.orKeep(f.maxHeartRate)
-            // activeCaloriesKcal is deliberately not filled: Google Fit publishes one
-            // expenditure figure, and splitting it into active and resting here would be
-            // a number this app invented rather than one anybody measured.
+            maxHeartRate = withMovement.maxHeartRate.orKeep(f.maxHeartRate),
+            // The active half comes from Google's own basal stream, not from a split this
+            // app invents: total minus `calories.bmr`. It stays 0 on days the archive has
+            // no basal figure for, and 0 still means "no data".
+            activeCaloriesKcal = withMovement.activeCaloriesKcal.orKeep(f.activeCaloriesKcal)
         )
 
         // Whole-night swap, stages included - see the class comment.

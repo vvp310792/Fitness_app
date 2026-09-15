@@ -66,27 +66,63 @@ object FitTakeoutReader {
     ): Result {
         val accumulator = FitTakeoutParser.Accumulator(zone)
         val unknown = LinkedHashSet<String>()
+        val nights = ArrayList<FitSleepSessionParser.Night>()
+        var csvDays: List<com.fitnessapp.summary.data.FitDay> = emptyList()
+        var csvSkippedRows = 0
+        var csvMissingColumns: List<String> = emptyList()
         var filesRead = 0
         var filesSkipped = 0
         var points = 0
-        var jsonSeen = 0
+        var usefulSeen = 0
+        var sleepFilesSeen = 0
 
         try {
             ZipInputStream(input.buffered(64 * 1024)).use { zip ->
                 while (true) {
                     val entry = zip.nextEntry ?: break
                     if (entry.isDirectory) { zip.closeEntry(); continue }
-                    val name = entry.name
+                    val name = entry.name.substringAfterLast('/').substringAfterLast('\\')
+
+                    // A reader per entry is safe: ZipInputStream reports end-of-stream at the
+                    // entry boundary, so it can never buffer bytes belonging to the next file.
+                    val reader = BufferedReader(InputStreamReader(NonClosing(zip), Charsets.UTF_8), 64 * 1024)
+
+                    // --- the daily summary: one row per day, and the best source for most of
+                    // what this import stores. It lives only in the SECOND part of the download.
+                    if (name.endsWith(".csv", ignoreCase = true)) {
+                        if (isDailySummaryCsv(name)) {
+                            usefulSeen++
+                            filesRead++
+                            val parsed = FitDailyCsvParser.parse(reader.readText(), System.currentTimeMillis())
+                            csvDays = parsed.days
+                            csvSkippedRows = parsed.skippedRows
+                            csvMissingColumns = parsed.missingColumns
+                            onProgress(filesRead, points)
+                        } else {
+                            // The per-day CSVs are 15-minute series - 2920 of them, and nothing
+                            // on any screen is drawn from inside a day.
+                            filesSkipped++
+                        }
+                        zip.closeEntry()
+                        continue
+                    }
+
                     if (!name.endsWith(".json", ignoreCase = true)) {
                         filesSkipped++
                         zip.closeEntry()
                         continue
                     }
-                    jsonSeen++
 
-                    // A reader per entry is safe: ZipInputStream reports end-of-stream at the
-                    // entry boundary, so it can never buffer bytes belonging to the next file.
-                    val reader = BufferedReader(InputStreamReader(NonClosing(zip), Charsets.UTF_8), 64 * 1024)
+                    // --- a sleep session: the only real source of nights here. 269 of them on
+                    // this archive against 91 points in the `sleep.segment` stream.
+                    if (isSleepSession(name)) {
+                        sleepFilesSeen++
+                        usefulSeen++
+                        FitSleepSessionParser.parse(reader.readText(), zone)?.let { nights += it }
+                        zip.closeEntry()
+                        continue
+                    }
+
                     val sourceId = readDataSource(reader)
                     if (sourceId == null) {
                         filesSkipped++
@@ -97,6 +133,15 @@ object FitTakeoutReader {
                     val stream = FitTakeoutParser.classify(sourceId)
                     if (stream == null) {
                         if (FitTakeoutParser.looksMerged(sourceId)) unknown += sourceId
+                        filesSkipped++
+                        zip.closeEntry()
+                        continue
+                    }
+                    usefulSeen++
+
+                    // Both step streams describe the same walk and only one of them is used.
+                    // Parsing the loser costs 316 494 lines out of 100 MB of JSON here.
+                    if (stream == FitTakeoutParser.Stream.STEPS_MERGED && accumulator.sawEstimatedSteps) {
                         filesSkipped++
                         zip.closeEntry()
                         continue
@@ -117,29 +162,60 @@ object FitTakeoutReader {
             return Result.Failed(e.message ?: "Не удалось прочитать архив")
         }
 
-        if (jsonSeen == 0) {
+        // "Nothing useful in here" is the only honest failure. The download is split in two,
+        // and the parts hold different things: the first has the streams, the second the daily
+        // CSV and the sleep sessions - and it has NO merged stream at all beyond speed. The
+        // first version of this reader demanded a stream and therefore rejected the half of
+        // the archive that carries the best data in it.
+        if (usefulSeen == 0) {
             return Result.Failed(
                 "В архиве нет данных Google Fit. Выгрузка Takeout приходит несколькими частями — " +
                     "возьмите ту, внутри которой папка Fit."
             )
         }
-        if (filesRead == 0) {
-            return Result.Failed(
-                "В архиве есть JSON, но ни одного объединённого потока Google Fit. " +
-                    "Проверьте, что выбрана часть с папкой Fit."
-            )
-        }
+
+        val nowMillis = System.currentTimeMillis()
+        val days = FitTakeoutParser.combine(
+            streamDays = accumulator.build(nowMillis),
+            csvDays = csvDays,
+            nights = nights,
+            nowMillis = nowMillis
+        )
 
         return Result.Ok(
             FitTakeoutParser.Outcome(
-                days = accumulator.build(System.currentTimeMillis()),
+                days = days,
                 pointsByStream = accumulator.pointsByStream.toMap(),
                 unknownStreams = unknown.toList(),
                 filesRead = filesRead,
-                filesSkipped = filesSkipped
+                filesSkipped = filesSkipped,
+                csvDays = csvDays.size,
+                csvSkippedRows = csvSkippedRows,
+                csvMissingColumns = csvMissingColumns,
+                sleepFilesSeen = sleepFilesSeen,
+                nights = nights.size
             )
         )
     }
+
+
+    /**
+     * The one daily-summary CSV among 2921 of them.
+     *
+     * Told apart by shape, not by its Russian name: `Показатели ежедневной активности.csv`
+     * would have to be matched through whatever encoding the zip used for entry names, while
+     * "the CSV whose name is not a date" needs no encoding at all. Every other CSV in that
+     * folder is called `2019-05-02.csv` and holds a 15-minute series.
+     */
+    internal fun isDailySummaryCsv(name: String): Boolean =
+        name.endsWith(".csv", ignoreCase = true) && !name.matches(DATED_FILE)
+
+    /** `2026-09-09T20_06_00+03_00_SLEEP.json`, and the `_SLEEP(1).json` duplicates too. */
+    internal fun isSleepSession(name: String): Boolean =
+        name.matches(SLEEP_SESSION)
+
+    private val DATED_FILE = Regex("^\\d{4}-\\d{2}-\\d{2}.*")
+    private val SLEEP_SESSION = Regex("^\\d{4}-\\d{2}-\\d{2}T.*_SLEEP(\\(\\d+\\))?\\.json$", RegexOption.IGNORE_CASE)
 
     /** `"Data Source": "derived:com.google.step_count.delta:com.google.android.gms:estimated_steps"` */
     private fun readDataSource(reader: BufferedReader): String? {

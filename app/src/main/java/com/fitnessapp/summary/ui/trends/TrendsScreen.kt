@@ -130,6 +130,17 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     // business inside a verdict about recovery.
     val daysWithFit = remember(healthDays, fitDays) { LifestyleAnalytics.withFitFallback(healthDays, fitDays) }
 
+    // Two facts about the ACCOUNT, not about the chosen period: when the watch started
+    // counting, and how far the phone's count sits below it. Computed over everything and
+    // deliberately not keyed to the chips - an estimate that moves when the axis moves is not
+    // an estimate, which is the same reason HRmax is sampled over a fixed year.
+    val allGarminDays by remember { app.database.garminDailyExtraDao().observeRange(0, toEpoch) }.collectAsState(initial = emptyList())
+    val allFitDays by remember { app.database.fitDayDao().observeRange(0, toEpoch) }.collectAsState(initial = emptyList())
+    val stepGap = remember(allFitDays, allGarminDays) {
+        LifestyleAnalytics.phoneStepGap(allFitDays, allGarminDays)
+    }
+    val watchFrom = remember(allGarminDays) { LifestyleAnalytics.firstWatchDay(allGarminDays) }
+
     // Weekly kilometres per sport, from both sources with the duplicates dropped. Computed
     // once for all three sports: the de-duplication has to see every session, not one
     // sport's worth, or a ride would be matched against a run.
@@ -314,7 +325,18 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         }
         trendCard("Стресс, средний за день", LifestyleAnalytics.stressTrend(summaries), fromEpoch, toEpoch, palette.stress, smoothWindow, floorAtZero = true, goal = 50f, footnote = "Пунктир: 50 — граница зоны низкого стресса по Garmin") { it.toInt().toString() }
         trendCard("Body Battery при пробуждении", LifestyleAnalytics.bodyBatteryWakeTrend(summaries), fromEpoch, toEpoch, palette.bodyBattery, smoothWindow, floorAtZero = true, goal = 50f) { it.toInt().toString() }
-        trendCard("Шаги", LifestyleAnalytics.stepsTrend(summaries, daysWithFit), fromEpoch, toEpoch, palette.steps, smoothWindow, floorAtZero = true, goal = 10000f) { formatCount(it.toLong()) }
+        // The step chart is the one place where the imported years and the watch years sit on
+        // the same axis, and the instrument changed between them. The size of that change is
+        // measured on this person's own overlapping days, never assumed.
+        val stepsNote = if (stepGap != null && watchFrom != null && fromEpoch < watchFrom) {
+            "До ${formatDayMonth(java.time.LocalDate.ofEpochDay(watchFrom))} " +
+                "${java.time.LocalDate.ofEpochDay(watchFrom).year} шаги считал телефон из Google Fit — " +
+                "он занижает на ${stepGap.percentLower}% (измерено по ${stepGap.days} дням, где есть оба источника). " +
+                "Ступенька на графике в этом месте — смена прибора, а не привычек."
+        } else {
+            null
+        }
+        trendCard("Шаги", LifestyleAnalytics.stepsTrend(summaries, daysWithFit), fromEpoch, toEpoch, palette.steps, smoothWindow, floorAtZero = true, goal = 10000f, footnote = stepsNote) { formatCount(it.toLong()) }
 
         // Total and active on one chart: same unit, same metric seen two ways, and the
         // gap between the lines is the resting burn. Solid is the total because that is

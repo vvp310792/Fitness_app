@@ -58,7 +58,14 @@ class FitImportManager(
         val pointsByStream: Map<FitTakeoutParser.Stream, Int>,
         val unknownStreams: List<String>,
         val filesRead: Int,
-        val filesSkipped: Int
+        val filesSkipped: Int,
+        val csvDays: Int,
+        val csvSkippedRows: Int,
+        val csvMissingColumns: List<String>,
+        val sleepFilesSeen: Int,
+        val nights: Int,
+        /** Rows removed because their only content was a derived calorie figure. */
+        val fabricatedRemoved: Int
     ) {
         val fresh: Int get() = days - overlapping
     }
@@ -87,7 +94,27 @@ class FitImportManager(
                         return@withContext fail("В архиве не нашлось ни одного дня с измерениями")
                     }
                     _state.value = State.Running("Сохраняю ${days.size} дней…")
-                    database.fitDayDao().upsertAll(days)
+
+                    // Merged onto what is already stored, never written over it. The download
+                    // comes in two parts that carry different things - the streams in one, the
+                    // daily CSV and the nights in the other - so a plain upsert of the second
+                    // part would blank the resting heart rate the first one brought. The same
+                    // shape of bug as an `activitylist` row erasing a Garmin Training Effect.
+                    val dao = database.fitDayDao()
+                    val stored = dao.byDays(days.map { it.dateEpochDay }).associateBy { it.dateEpochDay }
+                    dao.upsertAll(days.map { FitTakeoutParser.mergeOnto(stored[it.dateEpochDay], it) })
+
+                    // Rows an earlier build stored on the strength of a calorie figure alone.
+                    // Upsert cannot remove them - nothing in this import ever visits those days
+                    // again - so they are deleted outright, the same way the Health Connect
+                    // purge had to work.
+                    val fabricatedRemoved = dao.deleteWithoutMeasurements()
+                    if (fabricatedRemoved > 0) {
+                        AppLog.i(
+                            "FitImportManager",
+                            "Удалено дней без единого измерения (только производные калории): $fabricatedRemoved"
+                        )
+                    }
 
                     val first = days.minOf { it.dateEpochDay }
                     val last = days.maxOf { it.dateEpochDay }
@@ -107,13 +134,22 @@ class FitImportManager(
                         pointsByStream = read.outcome.pointsByStream,
                         unknownStreams = read.outcome.unknownStreams,
                         filesRead = read.outcome.filesRead,
-                        filesSkipped = read.outcome.filesSkipped
+                        filesSkipped = read.outcome.filesSkipped,
+                        csvDays = read.outcome.csvDays,
+                        csvSkippedRows = read.outcome.csvSkippedRows,
+                        csvMissingColumns = read.outcome.csvMissingColumns,
+                        sleepFilesSeen = read.outcome.sleepFilesSeen,
+                        nights = read.outcome.nights,
+                        fabricatedRemoved = fabricatedRemoved
                     )
                     AppLog.i(
                         "FitImportManager",
                         "Импорт Google Fit: дней=${result.days}, из них уже известны=${result.overlapping}, " +
                             "${LocalDate.ofEpochDay(first)}..${LocalDate.ofEpochDay(last)}, " +
                             "потоков прочитано=${result.filesRead}, пропущено файлов=${result.filesSkipped}, " +
+                            "из CSV=${result.csvDays} (пропущено строк=${result.csvSkippedRows}), " +
+                            "ночей=${result.nights} из ${result.sleepFilesSeen} файлов сна, " +
+                            "убрано выдуманных=${result.fabricatedRemoved}, " +
                             "точек=" + result.pointsByStream.entries.joinToString(" ") { "${it.key}=${it.value}" }
                     )
                     if (result.unknownStreams.isNotEmpty()) {
@@ -140,6 +176,7 @@ class FitImportManager(
     }
 
     /** Days over the range that Garmin or Health Connect already has a measurement for. */
+    /** Days the import is the only source for, reported rather than promised. */
     private suspend fun knownDays(fromEpochDay: Long, toEpochDay: Long): Set<Long> {
         val garmin = database.garminDailyExtraDao().getAllOnce()
             .filter { it.dateEpochDay in fromEpochDay..toEpochDay && !it.isEmpty }

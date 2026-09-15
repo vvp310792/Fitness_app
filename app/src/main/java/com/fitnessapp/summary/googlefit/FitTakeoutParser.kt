@@ -50,6 +50,8 @@ object FitTakeoutParser {
         /** `merge_step_deltas` - the merge one step earlier in the chain; a fallback. */
         STEPS_MERGED,
         CALORIES,
+        /** `calories.bmr` - what Google says the body burns lying still. */
+        CALORIES_BMR,
         DISTANCE,
         HEART_RATE,
         RESTING_HEART_RATE,
@@ -65,7 +67,15 @@ object FitTakeoutParser {
         val unknownStreams: List<String>,
         /** Files opened and files skipped without reading, for the log. */
         val filesRead: Int,
-        val filesSkipped: Int
+        val filesSkipped: Int,
+        /** Rows taken from Google's own daily summary - 0 when only the first part was given. */
+        val csvDays: Int = 0,
+        val csvSkippedRows: Int = 0,
+        /** Columns the daily CSV was expected to have and did not - named, never swallowed. */
+        val csvMissingColumns: List<String> = emptyList(),
+        /** Sleep session files seen, and how many of them were long enough to be a night. */
+        val sleepFilesSeen: Int = 0,
+        val nights: Int = 0
     )
 
     // Google's sleep segment codes. 1 awake, 3 out-of-bed, the rest are sleep.
@@ -110,6 +120,11 @@ object FitTakeoutParser {
             // key does not fail loudly - it silently reads nothing. An unrecognised merged
             // stream is reported instead.
             "com.google.calories.expended" -> if (stream.startsWith("merge")) Stream.CALORIES else null
+            // Its stream is called `merged`, not `merge_*`. Reading it is what lets the active
+            // half of the day's calories be a subtraction of two measured numbers instead of
+            // a figure this app invents - and it is also the proof that a calories-only day is
+            // arithmetic rather than a day (see FitDay.isEmpty).
+            "com.google.calories.bmr" -> if (stream.startsWith("merge")) Stream.CALORIES_BMR else null
             "com.google.distance.delta" -> if (stream.startsWith("merge")) Stream.DISTANCE else null
             "com.google.heart_rate.bpm" -> when {
                 stream.startsWith("resting_heart_rate") -> Stream.RESTING_HEART_RATE
@@ -145,6 +160,105 @@ object FitTakeoutParser {
         .replace("\\u003c", "<")
         .replace("\\u003C", "<")
         .substringBefore("<-")
+
+
+    /**
+     * Puts the three readings of the archive together into one row per day.
+     *
+     * Precedence inside a single import, strongest first:
+     *
+     * 1. **the daily CSV** - Google's own per-day summary, for everything it carries;
+     * 2. **the streams** - for what the CSV does not have (resting heart rate, basal calories)
+     *    and for the case where only the first part of the download was handed over;
+     * 3. **the sleep sessions** - the only real source of nights; they replace whatever the
+     *    `sleep.segment` stream produced for that day rather than adding to it.
+     *
+     * Zero still means "no data", so a field the stronger source is silent about is filled
+     * from the weaker one rather than blanked.
+     */
+    fun combine(
+        streamDays: List<FitDay>,
+        csvDays: List<FitDay>,
+        nights: List<FitSleepSessionParser.Night>,
+        nowMillis: Long
+    ): List<FitDay> {
+        val byDay = LinkedHashMap<Long, FitDay>()
+        streamDays.forEach { byDay[it.dateEpochDay] = it }
+        csvDays.forEach { csv ->
+            val stream = byDay[csv.dateEpochDay]
+            byDay[csv.dateEpochDay] = if (stream == null) csv else csv.copy(
+                // Kept from the streams: the CSV has no column for either.
+                restingHeartRate = stream.restingHeartRate,
+                caloriesBmrKcal = stream.caloriesBmrKcal,
+                // Filled from the streams only where the CSV said nothing.
+                steps = if (csv.steps > 0) csv.steps else stream.steps,
+                caloriesKcal = if (csv.caloriesKcal > 0) csv.caloriesKcal else stream.caloriesKcal,
+                distanceMeters = if (csv.distanceMeters > 0) csv.distanceMeters else stream.distanceMeters,
+                avgHeartRate = if (csv.avgHeartRate > 0) csv.avgHeartRate else stream.avgHeartRate,
+                minHeartRate = if (csv.minHeartRate > 0) csv.minHeartRate else stream.minHeartRate,
+                maxHeartRate = if (csv.maxHeartRate > 0) csv.maxHeartRate else stream.maxHeartRate,
+                weightGrams = if (csv.weightGrams > 0) csv.weightGrams else stream.weightGrams,
+                // Nights never came from the CSV; whatever the stream had stays until a real
+                // session replaces the whole night below.
+                sleepTotalMinutes = stream.sleepTotalMinutes,
+                sleepDeepMinutes = stream.sleepDeepMinutes,
+                sleepLightMinutes = stream.sleepLightMinutes,
+                sleepRemMinutes = stream.sleepRemMinutes,
+                sleepAwakeMinutes = stream.sleepAwakeMinutes
+            )
+        }
+
+        // One night per day: the archive exports a duplicate of the same session under a
+        // "(1)" suffix (eight of them here), and two copies of one night would double it.
+        nights.groupBy { it.dateEpochDay }
+            .forEach { (day, sameDay) ->
+                val best = sameDay.maxBy { it.sleepMinutes }
+                val base = byDay[day] ?: FitDay(dateEpochDay = day, updatedAtMillis = nowMillis)
+                byDay[day] = base.copy(
+                    // Whole night or none of it - stages included, even though Fit has none.
+                    sleepTotalMinutes = best.sleepMinutes,
+                    sleepAwakeMinutes = best.awakeMinutes,
+                    sleepDeepMinutes = 0,
+                    sleepLightMinutes = 0,
+                    sleepRemMinutes = 0
+                )
+            }
+
+        return byDay.values
+            .filterNot { it.isEmpty }
+            .sortedBy { it.dateEpochDay }
+            .map { it.copy(updatedAtMillis = nowMillis) }
+    }
+
+    /**
+     * Merges a freshly read day onto the row already in the database.
+     *
+     * The download arrives in **two parts**, and they hold different things: the streams live
+     * in the first, the daily CSV and the sleep sessions in the second. A plain upsert of part
+     * two would blank the resting heart rate that part one brought, and the other way round -
+     * the same way an `activitylist` row once erased a Garmin activity's Training Effect.
+     */
+    fun mergeOnto(stored: FitDay?, fresh: FitDay): FitDay {
+        if (stored == null) return fresh
+        return fresh.copy(
+            steps = if (fresh.steps > 0) fresh.steps else stored.steps,
+            caloriesKcal = if (fresh.caloriesKcal > 0) fresh.caloriesKcal else stored.caloriesKcal,
+            caloriesBmrKcal = if (fresh.caloriesBmrKcal > 0) fresh.caloriesBmrKcal else stored.caloriesBmrKcal,
+            distanceMeters = if (fresh.distanceMeters > 0) fresh.distanceMeters else stored.distanceMeters,
+            avgHeartRate = if (fresh.avgHeartRate > 0) fresh.avgHeartRate else stored.avgHeartRate,
+            minHeartRate = if (fresh.minHeartRate > 0) fresh.minHeartRate else stored.minHeartRate,
+            maxHeartRate = if (fresh.maxHeartRate > 0) fresh.maxHeartRate else stored.maxHeartRate,
+            restingHeartRate = if (fresh.restingHeartRate > 0) fresh.restingHeartRate else stored.restingHeartRate,
+            weightGrams = if (fresh.weightGrams > 0) fresh.weightGrams else stored.weightGrams,
+            // Sleep stays whole: either this import brought a night for the day or the stored
+            // one keeps its own. Parts of two nights added together are not a night.
+            sleepTotalMinutes = if (fresh.sleepTotalMinutes > 0) fresh.sleepTotalMinutes else stored.sleepTotalMinutes,
+            sleepDeepMinutes = if (fresh.sleepTotalMinutes > 0) fresh.sleepDeepMinutes else stored.sleepDeepMinutes,
+            sleepLightMinutes = if (fresh.sleepTotalMinutes > 0) fresh.sleepLightMinutes else stored.sleepLightMinutes,
+            sleepRemMinutes = if (fresh.sleepTotalMinutes > 0) fresh.sleepRemMinutes else stored.sleepRemMinutes,
+            sleepAwakeMinutes = if (fresh.sleepTotalMinutes > 0) fresh.sleepAwakeMinutes else stored.sleepAwakeMinutes
+        )
+    }
 
     /** One data point, as far as this app cares. */
     data class Point(val startMillis: Long, val endMillis: Long, val value: Double)
@@ -209,6 +323,7 @@ object FitTakeoutParser {
             var steps = 0.0
             var stepsMerged = 0.0
             var calories = 0.0
+            var caloriesBmr = 0.0
             var distance = 0.0
             var hrSum = 0.0
             var hrCount = 0
@@ -226,7 +341,14 @@ object FitTakeoutParser {
 
         private val buckets = HashMap<Long, Bucket>()
         private val counts = HashMap<Stream, Int>()
-        private var sawEstimatedSteps = false
+
+        /**
+         * Public so the reader can stop parsing the second step stream once this one has been
+         * seen. Both describe the same walk; on the real archive the fallback costs 316 494
+         * lines out of 100 MB of JSON, parsed and then thrown away.
+         */
+        var sawEstimatedSteps = false
+            private set
 
         val pointsByStream: Map<Stream, Int> get() = counts
 
@@ -265,6 +387,7 @@ object FitTakeoutParser {
                 }
                 Stream.STEPS_MERGED -> bucket(day).stepsMerged += point.value
                 Stream.CALORIES -> bucket(day).calories += point.value
+                Stream.CALORIES_BMR -> bucket(day).caloriesBmr += point.value
                 Stream.DISTANCE -> bucket(day).distance += point.value
                 Stream.HEART_RATE -> {
                     val bpm = point.value.roundToInt()
@@ -343,6 +466,7 @@ object FitTakeoutParser {
                     // is used, and never both - that would count every step twice.
                     steps = (if (sawEstimatedSteps) b.steps else b.stepsMerged).roundToInt().toLong(),
                     caloriesKcal = b.calories.roundToInt(),
+                    caloriesBmrKcal = b.caloriesBmr.roundToInt(),
                     distanceMeters = b.distance.roundToInt(),
                     avgHeartRate = if (b.hrCount > 0) (b.hrSum / b.hrCount).roundToInt() else 0,
                     minHeartRate = b.hrMin,

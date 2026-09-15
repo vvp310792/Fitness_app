@@ -99,17 +99,26 @@ class FitDayViewTest {
     }
 
     /**
-     * Google Fit publishes one expenditure figure. Splitting it into active and resting here
-     * would be a number this app invented, so the dashed "active" line simply has no points
-     * over those years.
+     * The active half is a subtraction of two measured numbers - Google's total minus its own
+     * `calories.bmr` - never a split this app invents. Without the basal figure the dashed
+     * "active" line simply has no point that day, which is the truth about it.
+     *
+     * Both fixtures carry steps on purpose: a row whose only content is a calorie figure is no
+     * longer a day at all, and would never reach a chart to begin with.
      */
     @Test
-    fun `the import never produces an active-calorie figure`() {
-        val list = LifestyleAnalytics.withFitFallback(
+    fun `active calories appear only where the basal stream did`() {
+        val withoutBmr = LifestyleAnalytics.withFitFallback(
             healthDays = emptyList(),
-            fit = listOf(FitDay(dateEpochDay = day, caloriesKcal = 2400))
+            fit = listOf(FitDay(dateEpochDay = day, steps = 9000, caloriesKcal = 2400))
         )
-        assertEquals(1, LifestyleAnalytics.caloriesTrend(emptyList(), list, active = false).size)
-        assertTrue(LifestyleAnalytics.caloriesTrend(emptyList(), list, active = true).isEmpty())
+        assertEquals(1, LifestyleAnalytics.caloriesTrend(emptyList(), withoutBmr, active = false).size)
+        assertTrue(LifestyleAnalytics.caloriesTrend(emptyList(), withoutBmr, active = true).isEmpty())
+
+        val withBmr = LifestyleAnalytics.withFitFallback(
+            healthDays = emptyList(),
+            fit = listOf(FitDay(dateEpochDay = day, steps = 9000, caloriesKcal = 2400, caloriesBmrKcal = 1700))
+        )
+        assertEquals(700f, LifestyleAnalytics.caloriesTrend(emptyList(), withBmr, active = true).single().value, 0.1f)
     }
 }

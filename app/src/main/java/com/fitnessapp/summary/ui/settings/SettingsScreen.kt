@@ -1483,8 +1483,44 @@ private fun GoogleFitSection(app: FitnessSummaryApp) {
                             modifier = Modifier.padding(top = 2.dp)
                         )
                     }
+                    if (result.csvDays > 0) {
+                        Text(
+                            text = "Из сводной таблицы Google: ${result.csvDays} дней" +
+                                if (result.csvSkippedRows > 0) ", пропущено строк ${result.csvSkippedRows} (без измерений)." else ".",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                    if (result.csvMissingColumns.isNotEmpty()) {
+                        Text(
+                            text = "В таблице не нашлись колонки: ${result.csvMissingColumns.joinToString(", ")}. " +
+                                "Возможно, у выгрузки другой язык — пришлите лог.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                    if (result.sleepFilesSeen > 0) {
+                        Text(
+                            text = "Ночей: ${result.nights} из ${result.sleepFilesSeen} файлов сна — " +
+                                "короче часа не считается ночью.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                    if (result.fabricatedRemoved > 0) {
+                        Text(
+                            text = "Убрано дней без единого измерения: ${result.fabricatedRemoved} — " +
+                                "в них были только калории, посчитанные Google из профиля.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
                     Text(
-                        text = "Потоков прочитано: ${result.filesRead}, файлов пропущено: ${result.filesSkipped}.",
+                        text = "Потоков и таблиц прочитано: ${result.filesRead}, файлов пропущено: ${result.filesSkipped}.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 2.dp)
@@ -1507,7 +1543,7 @@ private fun GoogleFitSection(app: FitnessSummaryApp) {
             enabled = importState !is FitImportManager.State.Running,
             modifier = Modifier.padding(top = 8.dp)
         ) {
-            Text(if (count > 0) "Обновить из архива" else "Выбрать архив Takeout (.zip)")
+            Text(if (count > 0) "Добавить ещё часть архива" else "Выбрать архив Takeout (.zip)")
         }
 
         TextButton(onClick = { showHelp = !showHelp }) {
@@ -1516,9 +1552,10 @@ private fun GoogleFitSection(app: FitnessSummaryApp) {
         if (showHelp) {
             Text(
                 text = "takeout.google.com → снять все галочки → отметить Fit → «Следующий шаг» → " +
-                    "«Создать экспорт». На почту придёт ссылка; архив может приехать несколькими " +
-                    "частями — нужна та, внутри которой папка Fit (у остальных внутри только " +
-                    "оглавление).\n\n" +
+                    "«Создать экспорт». На почту придёт ссылка; архив приезжает **несколькими " +
+                    "частями, и нужны все** — они несут разное: в одной лежат объединённые потоки " +
+                    "(из них пульс покоя), в другой — сводная таблица по дням и сеансы сна. " +
+                    "Выбирайте их по очереди, импорт складывает части и ничего не затирает.\n\n" +
                     "Файл большой, разбор занимает минуту-другую: внутри 68 МБ лежит больше " +
                     "гигабайта JSON. Тренировки из архива (.tcx) намеренно не читаются — это те " +
                     "же сессии, что уже пришли из Strava и Garmin.",

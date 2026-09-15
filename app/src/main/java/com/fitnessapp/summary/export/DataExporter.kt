@@ -53,7 +53,7 @@ object DataExporter {
 
         val root = JSONObject().apply {
             put("app", "fitness-summary")
-            put("schemaVersion", 8)
+            put("schemaVersion", 9)
             put("exportedAt", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
             put("sources", JSONArray(listOf("Health Connect", "Garmin Connect (unofficial)", "Zepp Life (unofficial, optional)", "журнал силовых тренировок (импорт)")))
             put("dayCount", days.size)
@@ -471,6 +471,8 @@ object DataExporter {
                     putDate(row.dateEpochDay)
                     put("steps", row.steps)
                     put("caloriesKcal", row.caloriesKcal)
+                    put("caloriesBmrKcal", row.caloriesBmrKcal)
+                    put("activeCaloriesKcal", row.activeCaloriesKcal)
                     put("distanceMeters", row.distanceMeters)
                     put("avgHeartRate", row.avgHeartRate)
                     put("minHeartRate", row.minHeartRate)

@@ -147,6 +147,18 @@ class FitnessSummaryApp : Application() {
         super.onCreate()
         AppLog.init(this)
 
+        // The same rule as the Health Connect purge below, for the Google Fit import: a day
+        // whose only content is a calorie figure derived from the profile is not a day. An
+        // earlier build stored 469 of them out of 2744, including a fake "history starts in
+        // 2008". Unconditional and independent of the cloud - `fit_daily` never leaves this
+        // phone, and an update must clear them without waiting for a re-import.
+        appScope.launch {
+            val removed = database.fitDayDao().deleteWithoutMeasurements()
+            if (removed > 0) {
+                AppLog.i("FitnessSummaryApp", "Google Fit: убрано дней без измерений (только калории): $removed")
+            }
+        }
+
         // Without a real Firebase project there's no cloud to listen to - skip the
         // auth wiring entirely rather than letting it fail repeatedly in the background.
         if (!FirebaseSetup.isConfigured) {
