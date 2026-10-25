@@ -24,6 +24,7 @@ import com.fitnessapp.summary.health.HealthConnectScaleReader
 import com.fitnessapp.summary.health.HealthConnectReader
 import com.fitnessapp.summary.health.HealthSyncManager
 import com.fitnessapp.summary.sync.AuthManager
+import com.fitnessapp.summary.sync.CloudLog
 import com.fitnessapp.summary.sync.CloudMirror
 import com.fitnessapp.summary.sync.FirebaseSetup
 import com.fitnessapp.summary.sync.FirestoreSyncManager
@@ -58,6 +59,9 @@ class FitnessSummaryApp : Application() {
 
     /** The only way those scripts can change a row: a queue the phone reviews and applies. */
     val inboxApplier: InboxApplier by lazy { InboxApplier(database, cloudMirror) }
+
+    /** Warnings and errors, straight to the cloud for the same scripts - see sync/CloudLog.kt. */
+    val cloudLog: CloudLog by lazy { CloudLog(this) }
 
     val healthConnect: HealthConnectManager by lazy { HealthConnectManager(this) }
 
@@ -180,6 +184,7 @@ class FitnessSummaryApp : Application() {
                     AppLog.i("FitnessSummaryApp", "Вход выполнен (uid=${user.uid.take(6)}...), запускаю Firestore-синк")
                     syncManager.start(user.uid)
                     inboxApplier.start(user.uid)
+                    cloudLog.start(user.uid)
                     if (!didInitialPush) {
                         didInitialPush = true
                         // Drops the days that hold no measurement at all - Health Connect's
@@ -228,6 +233,7 @@ class FitnessSummaryApp : Application() {
                     AppLog.i("FitnessSummaryApp", "Вышли из аккаунта, останавливаю Firestore-синк")
                     syncManager.stop()
                     inboxApplier.stop()
+                    cloudLog.stop()
                     cloudMirror.stop()
                     didInitialPush = false
                 }

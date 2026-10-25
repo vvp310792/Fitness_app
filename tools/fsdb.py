@@ -8,6 +8,7 @@ FITNESS_FIREBASE_JSON, файлом на диске не лежит):
     ... fsdb.py send upsert|patch|delete|mirror ТАБЛИЦА [--row JSON] [--key JSON]
     ... fsdb.py results [--wait СЕКУНД]
     ... fsdb.py clean
+    ... fsdb.py logs [--hours 24] [--errors] [-v] [--prune-days N]
 
 Устройство зеркала и входящих — CLAUDE.md, раздел «Зеркало базы и входящие для Claude».
 """
@@ -189,6 +190,40 @@ def cmd_results(db, uid, args):
         print(d.id, x.get("op"), x.get("table"), "→", state)
 
 
+def cmd_logs(db, uid, args):
+    since_ms = int((time.time() - args.hours * 3600) * 1000)
+    col = user(db, uid).collection("logs")
+    # id начинается с UTC-времени первой записи пачки — фильтр по id не требует индекса.
+    start = dt.datetime.fromtimestamp(since_ms / 1000 - 86400, dt.timezone.utc).strftime("%Y%m%dT")
+    docs = list(col.where(filter=firestore.FieldFilter("__name__", ">=", col.document(start))).stream())
+    rows, seen = [], set()
+    for d in docs:
+        x = d.to_dict()
+        for e in json.loads(x.get("entriesJson") or "[]"):
+            # Пачку, отправленную повторно после обрыва, телефон может собрать иначе — убираем дубли.
+            k = (x.get("installId"), e.get("t"), e.get("tag"), e.get("msg"))
+            if e.get("t", 0) < since_ms or k in seen or (args.errors and e.get("level") != "ERROR"):
+                continue
+            seen.add(k)
+            rows.append((e, x))
+    rows.sort(key=lambda r: r[0].get("t", 0))
+    for e, x in rows:
+        t = dt.datetime.fromtimestamp(e["t"] / 1000).strftime("%d.%m %H:%M:%S")
+        line = f'{t} {e["level"][0]} [{e["tag"]}] {e["msg"]}'
+        if e.get("detail"):
+            line += " — " + e["detail"]
+        print(line, f'({x.get("appVersion")}, {x.get("installId")})' if args.verbose else "")
+        if args.verbose and e.get("stack"):
+            print("    " + e["stack"].replace("\n", "\n    "))
+    print(f"записей: {len(rows)} за {args.hours} ч, документов: {len(docs)}")
+    if args.prune_days:
+        cut = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=args.prune_days)).strftime("%Y%m%dT")
+        old = [d for d in col.list_documents() if d.id < cut]
+        for d in old:
+            d.delete()
+        print(f"удалено документов старше {args.prune_days} дн.: {len(old)}")
+
+
 def cmd_clean(db, uid, _):
     n = 0
     for d in user(db, uid).collection("inbox").stream():
@@ -214,12 +249,17 @@ def main():
     p = sub.add_parser("results")
     p.add_argument("--wait", type=int, default=0)
     sub.add_parser("clean")
+    p = sub.add_parser("logs", help="предупреждения и ошибки, которые телефон отправил в облако")
+    p.add_argument("--hours", type=float, default=24)
+    p.add_argument("--errors", action="store_true", help="только ERROR")
+    p.add_argument("-v", "--verbose", action="store_true", help="со стеком, версией и устройством")
+    p.add_argument("--prune-days", type=int, help="удалить документы старше N дней")
     args = ap.parse_args()
 
     db = connect()
     uid = pick_uid(db, args.uid)
     {"status": cmd_status, "pull": cmd_pull, "send": cmd_send,
-     "results": cmd_results, "clean": cmd_clean}[args.cmd](db, uid, args)
+     "results": cmd_results, "clean": cmd_clean, "logs": cmd_logs}[args.cmd](db, uid, args)
 
 
 if __name__ == "__main__":

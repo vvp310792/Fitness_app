@@ -1139,7 +1139,7 @@ UI, offline-first), Firebase Firestore (синхронизация поверх 
 data/          Entity + Dao + Repository + агрегация недели + DayView (слияние источников)
 health/        HealthConnectManager (доступ/разрешения), Reader (день), ScaleReader (вес), SyncManager (в Room)
 sync/          FirestoreSyncManager, AuthManager, FirebaseSetup, MirrorLayout, CloudMirror,
-               InboxApplier — зеркало базы и входящие для ПК, см. ниже
+               InboxApplier — зеркало базы и входящие для ПК, CloudLog — ошибки в облако, см. ниже
 debug/         AppLog — внутриприложенный лог, см. «Диагностика» ниже
 garmin/        Неофициальный клиент Garmin Connect (Auth, Api, Sync, WeightUploader) — см. выше
 strength/      Импорт журнала зала: бэкап базы GymUp (GymUpBackupParser/Reader/ExerciseCatalog)
@@ -1476,7 +1476,7 @@ Garmin `totalKilocalories`), а активные и расход в покое (
 Secrets Manager переменной `FITNESS_FIREBASE_JSON`, на диске не лежит): `status`, `pull`
 (зеркало → локальная SQLite вне Syncthing, по умолчанию `~/fitness_data/fitness_mirror.db`;
 каждый месяц сверяется с манифестом, недописанная копия не выгружается без `--force`),
-`send`, `results [--wait N]`, `clean`. Запуск — через `F:\Claude\tools\bws\bwsrun.py`.
+`send`, `results [--wait N]`, `clean`, `logs` (см. «Диагностика»). Запуск — через `F:\Claude\tools\bws\bwsrun.py`.
 
 ## Экспорт JSON — `export/DataExporter.kt`
 
@@ -1538,6 +1538,18 @@ Secrets Manager переменной `FITNESS_FIREBASE_JSON`, на диске н
 Я → Логи) и файл в `filesDir/logs/app.log` с обрезкой по размеру (файл нужен,
 потому что синк на старте приложения запускается ДО того, как пользователь
 откроет вкладку Я — без файла эти логи терялись бы).
+
+**Предупреждения и ошибки уходят в облако** — `sync/CloudLog.kt`, `users/{uid}/logs/{id}`,
+чтобы Claude читал их с ПК (`tools/fsdb.py logs [--hours N] [--errors] [-v]`), не дожидаясь
+выгрузки лога. WARN и ERROR (со стеком до 3000 знаков) сразу пишутся в очередь
+`filesDir/logs/cloud_outbox.jsonl` — файлом, потому что важнее всего записи, сделанные до
+входа, без сети и перед падением (необработанное исключение ловит обработчик в
+`AppLog.init` и отправляется при следующем запуске). Документ — пачка (`entriesJson`, до
+400 КБ) с `installId`, устройством и версией; не чаще раза в 30 с, чтобы цикл ошибок не
+съел квоту зеркала. Строки уходят из очереди только после подтверждения записи; id
+пачки зависит от содержимого, повторная отправка перезаписывает тот же документ. Свои
+сбои отправки `CloudLog` пишет уровнем INFO — WARN попал бы в ту же очередь и зациклился.
+Старые документы чистит ПК: `fsdb.py logs --prune-days N`.
 
 **Что логируется** (сознательно только метаданные, никогда сами значения —
 шаги/пульс/минуты сна в лог не попадают, только факт «есть/нет»):
