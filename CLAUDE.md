@@ -1472,6 +1472,12 @@ Garmin `totalKilocalories`), а активные и расход в покое (
 **Правка строк `garmin_*` через входящие живёт до следующего синка Garmin этого дня** — это
 правило «Garmin первоисточник», а не баг. Править имеет смысл импортированное и ручное.
 
+**Сторона ПК — `tools/fsdb.py`** (firebase-admin, ключ сервисного аккаунта из Bitwarden
+Secrets Manager переменной `FITNESS_FIREBASE_JSON`, на диске не лежит): `status`, `pull`
+(зеркало → локальная SQLite вне Syncthing, по умолчанию `~/fitness_data/fitness_mirror.db`;
+каждый месяц сверяется с манифестом, недописанная копия не выгружается без `--force`),
+`send`, `results [--wait N]`, `clean`. Запуск — через `F:\Claude\tools\bws\bwsrun.py`.
+
 ## Экспорт JSON — `export/DataExporter.kt`
 
 Файл собирается в кэше и **кладётся в папку «Загрузки»** — см. «Файлы уходят в Загрузки,
