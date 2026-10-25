@@ -79,8 +79,10 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
+// The UI is Russian-only, so the month name is pinned to ru: with the device locale an
+// English-language phone (and the CI emulator) showed "25 October" among Russian labels.
 private val LAST_SYNC_FORMAT: DateTimeFormatter =
-    DateTimeFormatter.ofPattern("d MMMM, HH:mm")
+    DateTimeFormatter.ofPattern("d MMMM, HH:mm", java.util.Locale("ru"))
 
 @Composable
 fun SettingsScreen(app: FitnessSummaryApp) {

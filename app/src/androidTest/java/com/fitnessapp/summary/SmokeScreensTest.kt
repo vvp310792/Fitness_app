@@ -4,9 +4,9 @@ import android.graphics.Bitmap
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
-import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeUp
@@ -82,9 +82,18 @@ class SmokeScreensTest {
         useUnmergedTree = false
     )
 
+    // A swipe on onRoot() starts at the very bottom edge, which is the NavigationBar: the
+    // gesture lands there and nothing scrolls (every "_N" shot came out byte-identical).
+    // So the swipe goes to the tallest scrollable node - the screen body, not a chip row -
+    // and stays inside it.
     private fun scrollShots(prefix: String) {
+        val scrollables = compose.onAllNodes(hasScrollAction()).fetchSemanticsNodes()
+        if (scrollables.isEmpty()) return
+        val body = scrollables.indices.maxBy { scrollables[it].size.height }
         repeat(4) { n ->
-            compose.onRoot().performTouchInput { swipeUp() }
+            compose.onAllNodes(hasScrollAction())[body].performTouchInput {
+                swipeUp(startY = height * 0.85f, endY = height * 0.15f, durationMillis = 400)
+            }
             compose.waitForIdle()
             Thread.sleep(500)
             shot("${prefix}_${n + 1}")

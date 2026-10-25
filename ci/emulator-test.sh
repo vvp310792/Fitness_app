@@ -23,6 +23,22 @@ adb shell am instrument -w -r \
   | tee "$OUT/instrument.txt"
 
 adb pull /sdcard/Android/data/com.fitnessapp.summary/files/shots "$OUT/" || true
+
+# Снимки прокрутки, побайтно равные базовому, значат «свайп ушёл мимо» (так было с жестом
+# по onRoot — он попадал в нижнюю навигацию). Прогон не валим: экраны всё равно отрисованы,
+# но предупреждение видно в журнале шага.
+for base in "$OUT"/shots/*.png; do
+  case "$base" in *_[0-9].png) continue ;; esac
+  stem="${base%.png}"
+  [ -e "${stem}_1.png" ] || continue
+  same=0
+  for s in "${stem}"_[0-9].png; do
+    if cmp -s "$base" "$s"; then same=$((same + 1)); fi
+  done
+  if [ "$same" -gt 0 ]; then
+    echo "ВНИМАНИЕ: $(basename "$stem") — $same снимков прокрутки совпадают с базовым, прокрутка не сработала" >&2
+  fi
+done
 adb logcat -d > "$OUT/logcat.txt" || true
 # Падения приложения — отдельным файлом, чтобы не искать их в многомегабайтном logcat.
 adb logcat -d -b crash > "$OUT/crash.txt" || true
