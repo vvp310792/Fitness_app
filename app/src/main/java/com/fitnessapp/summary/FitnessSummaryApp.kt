@@ -24,8 +24,10 @@ import com.fitnessapp.summary.health.HealthConnectScaleReader
 import com.fitnessapp.summary.health.HealthConnectReader
 import com.fitnessapp.summary.health.HealthSyncManager
 import com.fitnessapp.summary.sync.AuthManager
+import com.fitnessapp.summary.sync.CloudMirror
 import com.fitnessapp.summary.sync.FirebaseSetup
 import com.fitnessapp.summary.sync.FirestoreSyncManager
+import com.fitnessapp.summary.sync.InboxApplier
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -50,6 +52,12 @@ class FitnessSummaryApp : Application() {
     val authManager: AuthManager by lazy { AuthManager(BuildConfig.GOOGLE_WEB_CLIENT_ID) }
 
     val syncManager: FirestoreSyncManager by lazy { FirestoreSyncManager(database) }
+
+    /** Read-only copy of the whole database for the owner's PC scripts - see sync/CloudMirror.kt. */
+    val cloudMirror: CloudMirror by lazy { CloudMirror(this, database) }
+
+    /** The only way those scripts can change a row: a queue the phone reviews and applies. */
+    val inboxApplier: InboxApplier by lazy { InboxApplier(database, cloudMirror) }
 
     val healthConnect: HealthConnectManager by lazy { HealthConnectManager(this) }
 
@@ -171,6 +179,7 @@ class FitnessSummaryApp : Application() {
                 if (user != null) {
                     AppLog.i("FitnessSummaryApp", "Вход выполнен (uid=${user.uid.take(6)}...), запускаю Firestore-синк")
                     syncManager.start(user.uid)
+                    inboxApplier.start(user.uid)
                     if (!didInitialPush) {
                         didInitialPush = true
                         // Drops the days that hold no measurement at all - Health Connect's
@@ -212,10 +221,14 @@ class FitnessSummaryApp : Application() {
                         // Uploads whatever was synced locally before this sign-in.
                         // Idempotent - every document id is a natural key.
                         syncManager.pushAll(user.uid)
+                        // After the purge, so the mirror never carries the fabricated days.
+                        cloudMirror.start(user.uid)
                     }
                 } else {
                     AppLog.i("FitnessSummaryApp", "Вышли из аккаунта, останавливаю Firestore-синк")
                     syncManager.stop()
+                    inboxApplier.stop()
+                    cloudMirror.stop()
                     didInitialPush = false
                 }
             }
