@@ -18,3 +18,4 @@ local.properties
 /app/build
 /app/release
 keystore/release.keystore
+__pycache__/
