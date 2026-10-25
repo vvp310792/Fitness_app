@@ -63,7 +63,14 @@ def cmd_status(db, uid, _):
     manifest = u.collection("mirror_meta").document("manifest").get()
     print("uid:", uid[:6] + "…")
     if not schema.exists:
-        print("зеркала нет: телефон ещё не выгрузил базу (нужен build-47 и вход в аккаунт)")
+        # Схема пишется последней, после всех кусков: куски без неё — это прерванный проход
+        # (приложение ушло в фон), а не старая версия — так и надо подсказывать.
+        parts = sum(1 for _ in u.collection("mirror").list_documents())
+        if parts:
+            print(f"зеркало не дописано: {parts} кусков без схемы — проход прервался, "
+                  "открыть приложение на телефоне и не сворачивать до конца выгрузки")
+        else:
+            print("зеркала нет: телефон ещё не выгрузил базу (нужен build-47+ и вход в аккаунт)")
     else:
         s = schema.to_dict()
         print("схема: версия базы", s.get("dbVersion"), "таблиц", len(json.loads(s["schemaJson"])),

@@ -15,6 +15,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
+import com.google.android.gms.tasks.Task
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -141,7 +144,7 @@ class CloudMirror(context: Context, private val database: AppDatabase) {
         // would keep a deleted row forever.
         for (month in known - months.keys) {
             for (id in docsOf(table, month)) {
-                collection.document(id).delete().await()
+                collection.document(id).delete().confirmed()
                 deleted++
             }
             prefs.edit().remove(hashKey(table, month)).remove(docsKey(table, month)).apply()
@@ -165,12 +168,12 @@ class CloudMirror(context: Context, private val database: AppDatabase) {
                         "hash" to MirrorLayout.sha256(text),
                         "updatedAt" to FieldValue.serverTimestamp(),
                     )
-                ).await()
+                ).confirmed()
                 written++
             }
             // The part count changed: the old ids would otherwise sit next to the new ones.
             for (stale in docsOf(table, month) - ids.toSet()) {
-                collection.document(stale).delete().await()
+                collection.document(stale).delete().confirmed()
                 deleted++
             }
             prefs.edit()
@@ -205,7 +208,7 @@ class CloudMirror(context: Context, private val database: AppDatabase) {
                 "dbVersion" to database.openHelper.readableDatabase.version,
                 "updatedAt" to FieldValue.serverTimestamp(),
             )
-        ).await()
+        ).confirmed()
 
         val manifest = JSONObject()
         for (key in prefs.all.keys.filter { it.startsWith(DOCS_PREFIX) }) {
@@ -223,7 +226,7 @@ class CloudMirror(context: Context, private val database: AppDatabase) {
                 "manifestJson" to manifest.toString(),
                 "updatedAt" to FieldValue.serverTimestamp(),
             )
-        ).await()
+        ).confirmed()
     }
 
     /** Rows of [table] as JSON objects, grouped by [MirrorLayout.monthKey]. */
@@ -295,6 +298,25 @@ class CloudMirror(context: Context, private val database: AppDatabase) {
     private fun hashKey(table: String, month: String) = "$HASH_PREFIX${table}__$month"
     private fun docsKey(table: String, month: String) = "$DOCS_PREFIX${table}__$month"
 
+    /**
+     * A Firestore write's task completes only when the server acknowledges it, so with the
+     * network gone or the app frozen in the background the await never returns - the likely
+     * reason the first real pass (build-50) stopped after one document, logged nothing (INFO
+     * stays on the phone) and kept [pushLock] held, so every later pass queued behind it.
+     * A timeout turns that into an
+     * ERROR that reaches the cloud log and frees the lock; the write itself stays queued in
+     * Firestore's local cache, and since a month's hash is remembered only after success the
+     * next pass simply writes it again.
+     *
+     * Rethrown as IllegalStateException: a bare TimeoutCancellationException is a
+     * CancellationException and would read as "the caller was cancelled".
+     */
+    private suspend fun <T> Task<T>.confirmed(): T = try {
+        withTimeout(WRITE_TIMEOUT_MILLIS) { await() }
+    } catch (e: TimeoutCancellationException) {
+        throw IllegalStateException("Firestore не подтвердил запись за ${WRITE_TIMEOUT_MILLIS / 1000} с")
+    }
+
     private companion object {
         const val TAG = "CloudMirror"
         const val PREFS = "cloud_mirror"
@@ -304,5 +326,6 @@ class CloudMirror(context: Context, private val database: AppDatabase) {
 
         /** Quiet period before touched tables are re-uploaded. */
         const val DEBOUNCE_MILLIS = 60_000L
+        const val WRITE_TIMEOUT_MILLIS = 60_000L
     }
 }
