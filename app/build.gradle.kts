@@ -28,6 +28,11 @@ android {
         versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 1
         versionName = "1.0.${versionCode}"
 
+        // Only the emulator job in CI runs these (androidTest/SmokeScreensTest): the owner's
+        // PC has no JDK, so a screen-walk on a clean emulator is the one way to see every tab
+        // render before a build reaches the phone.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
         // Web client ID from Firebase Console -> Authentication -> Sign-in method
         // -> Google (after enabling that provider). Not a secret - it's a public
         // OAuth client identifier, safe to commit like google-services.json - so
@@ -214,4 +219,13 @@ dependencies {
     // payload in this project whose field names could NOT be verified against a reference
     // implementation, so its parser has to be pinned against real JSON.
     testImplementation("org.json:json:20231013")
+
+    // Screen-walk on the CI emulator - see androidTest/SmokeScreensTest.kt.
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:rules:1.6.1")
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    // Gives the compose test rule its idling/semantics hooks inside the app under test;
+    // debug-only, so the release APK doesn't carry the extra test activity.
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
