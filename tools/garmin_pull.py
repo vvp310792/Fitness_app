@@ -9,6 +9,7 @@
     python F:\\Claude\\tools\\bws\\bwsrun.py F:\\ml\\venv_garmin\\Scripts\\python.exe -X utf8 tools\\garmin_pull.py 35
 затем отправка (firebase-admin — в anaconda):
     ... bwsrun.py python -X utf8 tools\\fsdb.py upsert-file garmin_daily_extra C:\\Users\\Valerii\\fitness_data\\garmin_daily_extra.json
+    ... bwsrun.py python -X utf8 tools\\fsdb.py upsert-file garmin_sleep C:\\Users\\Valerii\\fitness_data\\garmin_sleep.json
 
 Токены входа — ~/.creds/garmin_tokens (чтобы не ловить код подтверждения каждый раз),
 сырые ответы и результат — ~/fitness_data (данные о здоровье: вне Syncthing и репозитория).
@@ -26,6 +27,7 @@ from garminconnect import Garmin
 TOKENS = pathlib.Path.home() / ".creds" / "garmin_tokens"
 DATA = pathlib.Path.home() / "fitness_data"
 OUT = DATA / "garmin_daily_extra.json"
+SLEEP_OUT = DATA / "garmin_sleep.json"
 
 
 def ask_mfa():
@@ -75,6 +77,78 @@ def as_str(j, key):
     return "" if v is None else str(v)
 
 
+def as_float(j, *keys):
+    for key in keys:
+        v = j.get(key)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                pass
+    return 0.0
+
+
+def qualifier(scores, component):
+    return as_str((scores or {}).get(component) or {}, "qualifierKey")
+
+
+def parse_sleep(day, root):
+    """GarminApiClient.parseSleep; None — ночь пустая (как GarminSleep.isEmpty)."""
+    dto = (root or {}).get("dailySleepDTO")
+    if not dto:
+        return None
+    scores = dto.get("sleepScores") or {}
+    need = dto.get("sleepNeed") or {}
+    has_skin = bool(root.get("skinTempDataExists")) and "avgSkinTempDeviationC" in root
+    row = {
+        "dateEpochDay": day.toordinal() - EPOCH,
+        "sleepSeconds": as_int(dto, "sleepTimeSeconds"),
+        "napSeconds": as_int(dto, "napTimeSeconds"),
+        "deepSeconds": as_int(dto, "deepSleepSeconds"),
+        "lightSeconds": as_int(dto, "lightSleepSeconds"),
+        "remSeconds": as_int(dto, "remSleepSeconds"),
+        "awakeSeconds": as_int(dto, "awakeSleepSeconds"),
+        "unmeasurableSeconds": as_int(dto, "unmeasurableSleepSeconds"),
+        "awakeCount": as_int(dto, "awakeCount"),
+        "sleepStartLocalMillis": int(dto.get("sleepStartTimestampLocal") or 0),
+        "sleepEndLocalMillis": int(dto.get("sleepEndTimestampLocal") or 0),
+        "score": as_int(scores.get("overall") or {}, "value"),
+        "scoreQualifier": qualifier(scores, "overall"),
+        "durationQualifier": qualifier(scores, "totalDuration"),
+        "stressQualifier": qualifier(scores, "stress"),
+        "awakeCountQualifier": qualifier(scores, "awakeCount"),
+        "remQualifier": qualifier(scores, "remPercentage"),
+        "restlessnessQualifier": qualifier(scores, "restlessness"),
+        "lightQualifier": qualifier(scores, "lightPercentage"),
+        "deepQualifier": qualifier(scores, "deepPercentage"),
+        "feedback": as_str(dto, "sleepScoreFeedback"),
+        "insight": as_str(dto, "sleepScoreInsight"),
+        "needBaselineMinutes": as_int(need, "baseline"),
+        "needActualMinutes": as_int(need, "actual"),
+        "needFeedback": as_str(need, "feedback"),
+        "avgSpo2": as_float(dto, "averageSpO2Value", "averageSpo2Value"),
+        "lowestSpo2": max(int(dto.get("lowestSpO2Value") or dto.get("lowestSpo2Value") or 0), 0),
+        "avgRespiration": as_float(dto, "averageRespirationValue"),
+        "avgSleepStress": as_float(dto, "avgSleepStress"),
+        "restingHeartRate": as_int(root, "restingHeartRate"),
+        "bodyBatteryChange": int(root.get("bodyBatteryChange") or 0),
+        "skinTempDeviationC": as_float(root, "avgSkinTempDeviationC") if has_skin else 0.0,
+        "hasSkinTemp": has_skin,
+        "updatedAtMillis": int(time.time() * 1000),
+    }
+    return None if row["sleepSeconds"] == 0 and row["score"] == 0 else row
+
+
+def fetch_sleep(api, day):
+    # Порядок эндпоинтов как в приложении: sleep-service, при пустом ответе — wellness-service.
+    root = api.connectapi("/sleep-service/sleep/dailySleepData", params={"date": day.isoformat()})
+    row = parse_sleep(day, root)
+    if row is None:
+        root = api.get_sleep_data(day.isoformat())
+        row = parse_sleep(day, root)
+    return root, row
+
+
 def ranged(api, path, start, end):
     """forEachStatsItem: страницы по 28 дней — больше Garmin не отдаёт (400)."""
     out = {}
@@ -102,10 +176,14 @@ def main():
     im = ranged(api, "/usersummary-service/stats/im/daily", start, today)
     hyd = ranged(api, "/usersummary-service/stats/hydration/daily", start, today)
 
-    rows, raw_dir = [], DATA / "garmin_raw"
+    rows, sleeps, raw_dir = [], [], DATA / "garmin_raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     d = start
     while d <= today:
+        sleep_raw, sleep_row = fetch_sleep(api, d)
+        (raw_dir / f"sleep_{d}.json").write_text(json.dumps(sleep_raw, ensure_ascii=False), "utf-8")
+        if sleep_row:
+            sleeps.append(sleep_row)
         j = api.get_user_summary(d.isoformat()) or {}
         (raw_dir / f"summary_{d}.json").write_text(json.dumps(j, ensure_ascii=False), "utf-8")
         z = stress.get(d.toordinal(), {})
@@ -159,7 +237,9 @@ def main():
         time.sleep(1)  # Garmin — чужой рабочий сервис: без залпов
 
     OUT.write_text(json.dumps(rows, ensure_ascii=False), "utf-8")
+    SLEEP_OUT.write_text(json.dumps(sleeps, ensure_ascii=False), "utf-8")
     print(f"строк {len(rows)} из {days} дней → {OUT}")
+    print(f"ночей {len(sleeps)} из {days} → {SLEEP_OUT}")
 
 
 if __name__ == "__main__":
