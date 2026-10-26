@@ -167,10 +167,16 @@ fun TrendChart(
         ) {
             val gutter = gutterPx.toFloat()
             val w = size.width
-            val plotWidth = (w - gutter).coerceAtLeast(1f)
             val h = size.height
+            // Inset by the "latest" marker's radius on the right, top and bottom: a value at
+            // the edge of the range (a stress series floored at zero has no bottom padding,
+            // and the latest day always sits on the right edge) would otherwise put half of
+            // that marker outside the canvas, where the card or the label row cuts it off.
+            val inset = 5.dp.toPx()
+            val plotWidth = (w - gutter - inset).coerceAtLeast(1f)
+            val plotHeight = (h - 2 * inset).coerceAtLeast(1f)
             fun x(day: Long) = gutter + (day - fromEpochDay) / span * plotWidth
-            fun y(v: Float) = h - (v - yMin) / (yMax - yMin) * h
+            fun y(v: Float) = inset + plotHeight - (v - yMin) / (yMax - yMin) * plotHeight
 
             // Axis first, so every series is drawn over it rather than under.
             ticks.forEach { value ->
@@ -219,7 +225,7 @@ fun TrendChart(
                     strokeWidth = 1.dp.toPx()
                 )
             }
-            drawLine(color = baseline, start = Offset(gutter, h), end = Offset(w, h), strokeWidth = 1.dp.toPx())
+            drawLine(color = baseline, start = Offset(gutter, y(yMin)), end = Offset(w, y(yMin)), strokeWidth = 1.dp.toPx())
 
             /** One series, drawn as one unbroken line - see the note on continuity above. */
             fun drawSeries(series: List<TrendPoint>, color: Color, widthDp: Float) {
