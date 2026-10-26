@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.database.sqlite.SQLiteDatabase
 import com.fitnessapp.summary.data.AppDatabase
 import com.fitnessapp.summary.debug.AppLog
+import com.fitnessapp.summary.strength.StrengthImportManager
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -15,6 +16,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
+import java.time.LocalDate
 
 /**
  * Applies row edits that the owner's PC scripts queue in `users/{uid}/inbox/{id}`.
@@ -34,7 +36,12 @@ import kotlinx.coroutines.tasks.await
  * Rows of `garmin_*` tables edited this way are overwritten by the next Garmin sync of that
  * day - that is the Garmin-first rule, not a bug, and the PC side is told so in CLAUDE.md.
  */
-class InboxApplier(private val database: AppDatabase, private val mirror: CloudMirror) {
+class InboxApplier(
+    private val database: AppDatabase,
+    private val mirror: CloudMirror,
+    /** strength/StrengthImportManager.importBackupBytes - a lambda so tests need no Context. */
+    private val gymBackupImporter: (suspend (ByteArray) -> StrengthImportManager.State)? = null,
+) {
 
     private val db = FirebaseFirestore.getInstance()
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -109,6 +116,7 @@ class InboxApplier(private val database: AppDatabase, private val mirror: CloudM
             mirror.pushChanged(uid, table?.takeIf { it.isNotBlank() }?.let { setOf(it) }, force = true)
             return Outcome(true, "ok: зеркало обновлено")
         }
+        if (op == OP_GYMUP_BACKUP) return applyGymBackup(doc)
         val parsed = MirrorLayout.parseOp(op, table, doc.getString("rowJson"), doc.getString("keyJson"))
             .getOrElse { return Outcome(false, "ошибка: ${it.message}") }
         MirrorLayout.validate(parsed, mirror.columns(parsed.table))
@@ -122,6 +130,40 @@ class InboxApplier(private val database: AppDatabase, private val mirror: CloudM
             }
         } catch (e: Exception) {
             AppLog.w(TAG, "Входящие: ${doc.id} (${parsed.table}) не применён", e)
+            Outcome(false, "ошибка: ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
+    /**
+     * A whole gym-app backup, not a row: the file is several hundred KB, and replaying it as
+     * thousands of single-row upserts would neither fit the free Firestore quota nor remove
+     * sets deleted in the gym app. The PC writes the file as base64 parts under
+     * `parts/{n}` BEFORE the inbox document itself, so the parts are there when we see it.
+     */
+    private suspend fun applyGymBackup(doc: DocumentSnapshot): Outcome {
+        val importer = gymBackupImporter ?: return Outcome(false, "ошибка: импорт бэкапа не подключён")
+        return try {
+            val expected = doc.getLong("parts")?.toInt()
+                ?: return Outcome(false, "ошибка: нет поля parts")
+            val parts = doc.reference.collection("parts").get().await().documents
+            val bytes = GymBackupParts.assemble(
+                parts.map { (it.id.toIntOrNull() ?: -1) to (it.getString("b64") ?: "") },
+                expected,
+                doc.getString("sha256"),
+            ).getOrElse { return Outcome(false, "ошибка: ${it.message}") }
+            when (val state = importer(bytes)) {
+                is StrengthImportManager.State.Success -> Outcome(
+                    true,
+                    "ok: тренировок ${state.sessions}, подходов ${state.sets}, " +
+                        "${LocalDate.ofEpochDay(state.firstEpochDay)}..${LocalDate.ofEpochDay(state.lastEpochDay)}, " +
+                        "неопознанных упражнений ${state.unidentified.size}",
+                    "strength_sets",
+                )
+                is StrengthImportManager.State.Failed -> Outcome(false, "ошибка: ${state.reason}")
+                else -> Outcome(false, "ошибка: импорт не завершился")
+            }
+        } catch (e: Exception) {
+            AppLog.w(TAG, "Входящие: бэкап ${doc.id} не применён", e)
             Outcome(false, "ошибка: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
@@ -164,5 +206,6 @@ class InboxApplier(private val database: AppDatabase, private val mirror: CloudM
 
     private companion object {
         const val TAG = "InboxApplier"
+        const val OP_GYMUP_BACKUP = "gymupBackup"
     }
 }

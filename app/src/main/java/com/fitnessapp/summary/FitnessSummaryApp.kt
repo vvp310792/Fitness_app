@@ -58,7 +58,9 @@ class FitnessSummaryApp : Application() {
     val cloudMirror: CloudMirror by lazy { CloudMirror(this, database) }
 
     /** The only way those scripts can change a row: a queue the phone reviews and applies. */
-    val inboxApplier: InboxApplier by lazy { InboxApplier(database, cloudMirror) }
+    val inboxApplier: InboxApplier by lazy {
+        InboxApplier(database, cloudMirror) { strengthImport.importBackupBytes(it) }
+    }
 
     /** Warnings and errors, straight to the cloud for the same scripts - see sync/CloudLog.kt. */
     val cloudLog: CloudLog by lazy { CloudLog(this) }

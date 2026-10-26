@@ -97,7 +97,25 @@ class StrengthImportManager(
         return if (isBackup) importBackup(uri) else importTextLog(uri)
     }
 
-    private suspend fun importBackup(uri: Uri): State {
+    private suspend fun importBackup(uri: Uri): State = importBackupVia { scratch ->
+        appContext.contentResolver.openInputStream(uri).use { stream ->
+            if (stream == null) return@importBackupVia false
+            scratch.outputStream().use { stream.copyTo(it) }
+        }
+        true
+    }
+
+    /**
+     * The same backup import for a file that arrived through the cloud inbox (the PC fetched
+     * it from Drive - see sync/InboxApplier.kt), so the phone never has to be handed the
+     * file by hand. Same replace-the-period rule as a picked file.
+     */
+    suspend fun importBackupBytes(bytes: ByteArray): State = importBackupVia { scratch ->
+        scratch.writeBytes(bytes)
+        true
+    }
+
+    private suspend fun importBackupVia(fill: (File) -> Boolean): State {
         _state.value = State.Running("Читаю бэкап дневника тренировок...")
 
         val parsed = withContext(Dispatchers.IO) {
@@ -106,10 +124,7 @@ class StrengthImportManager(
             // training history and has no reason to outlive the import.
             val scratch = File.createTempFile("gym-backup", ".db", appContext.cacheDir)
             try {
-                appContext.contentResolver.openInputStream(uri).use { stream ->
-                    if (stream == null) return@withContext GymUpBackupParser.Result.Failed("файл не открылся")
-                    scratch.outputStream().use { stream.copyTo(it) }
-                }
+                if (!fill(scratch)) return@withContext GymUpBackupParser.Result.Failed("файл не открылся")
                 GymUpBackupReader.read(scratch)
             } catch (e: Exception) {
                 AppLog.w("StrengthImportManager", "Импорт бэкапа не удался", e)

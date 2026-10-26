@@ -273,7 +273,7 @@ class GarminSyncManager(
         _state.value = State.Running(doneOffset, totalDays)
 
         val markDao = database.garminSyncMarkDao()
-        val marksHere = markDao.marksInRange(from.toEpochDay(), to.toEpochDay(), LOGIC_VERSION)
+        val marksHere = markDao.marksInRange(from.toEpochDay(), to.toEpochDay(), DAY_MARK_READ_VERSION)
         val settled = marksHere.map { it.dateEpochDay to it.section }.toSet()
         val daysKnownToHaveData = marksHere.filter { it.hasData }.map { it.dateEpochDay }.toSet()
         // Days Garmin may still revise are re-read no matter what the marks say.
@@ -307,14 +307,18 @@ class GarminSyncManager(
         var stressZones: Map<Long, StressZones> = emptyMap()
         var intensityGoals: Map<Long, Int> = emptyMap()
         var hydration: Map<Long, Pair<Int, Int>> = emptyMap()
+        var rangesFailed = false
 
         if (!daysSettled) {
             // Range-shaped endpoints first, one call per window instead of one per day.
             // Their results are folded into the per-day summary row below - so they are
             // only worth fetching when there is a day left to fold them into.
             stressZones = run.take(run.ranges) { apiClient.stressZones(from, to) } ?: emptyMap()
+            rangesFailed = run.ranges.lastCallFailed
             intensityGoals = run.take(run.ranges) { apiClient.intensityMinutesGoal(from, to) } ?: emptyMap()
+            rangesFailed = rangesFailed || run.ranges.lastCallFailed
             hydration = run.take(run.ranges) { apiClient.hydration(from, to) } ?: emptyMap()
+            rangesFailed = rangesFailed || run.ranges.lastCallFailed
 
             // The window calls above go through take() like everything else, so the
             // connection can already be gone before a single day is asked about. Checking
@@ -330,9 +334,12 @@ class GarminSyncManager(
             daysWithData = daysWithDataFromMarks
         }
 
-        var date = if (daysSettled) to.plusDays(1) else from
+        // Newest day first: the sync dies with the network (the app is frozen in the
+        // background) usually a few days in, and walking forward from `from` meant the
+        // last days - the ones the charts show - were the ones left missing.
+        var date = if (daysSettled) from.minusDays(1) else to
         var index = 0
-        while (!date.isAfter(to)) {
+        while (!date.isBefore(from)) {
             // A backfill that outlives the phone's connectivity used to grind through
             // hundreds of doomed requests - 64 identical DNS failures per endpoint in one
             // real log - and still report success. One day's worth of consecutive network
@@ -356,16 +363,21 @@ class GarminSyncManager(
                 askedSomething = true
                 var stored = false
                 run.take(run.summary) { apiClient.dailySummary(date) }?.let { summary ->
+                    // A failed range call is not "Garmin has no zones": writing its zeros
+                    // over a good row wiped the stress zones of whole windows. Keep what the
+                    // row already had; the missing mark below makes the next pass retry.
+                    val previous = if (rangesFailed) database.garminDailyExtraDao().getDayOnce(epochDay) else null
                     val zones = stressZones[epochDay]
                     val hydrationDay = hydration[epochDay]
                     val merged = summary.copy(
-                        restStressSeconds = zones?.restSeconds ?: 0,
-                        lowStressSeconds = zones?.lowSeconds ?: 0,
-                        mediumStressSeconds = zones?.mediumSeconds ?: 0,
-                        highStressSeconds = zones?.highSeconds ?: 0,
-                        intensityMinutesWeeklyGoal = intensityGoals[epochDay] ?: 0,
-                        hydrationMl = hydrationDay?.first ?: 0,
-                        hydrationGoalMl = hydrationDay?.second ?: 0
+                        restStressSeconds = zones?.restSeconds ?: previous?.restStressSeconds ?: 0,
+                        lowStressSeconds = zones?.lowSeconds ?: previous?.lowStressSeconds ?: 0,
+                        mediumStressSeconds = zones?.mediumSeconds ?: previous?.mediumStressSeconds ?: 0,
+                        highStressSeconds = zones?.highSeconds ?: previous?.highStressSeconds ?: 0,
+                        intensityMinutesWeeklyGoal = intensityGoals[epochDay]
+                            ?: previous?.intensityMinutesWeeklyGoal ?: 0,
+                        hydrationMl = hydrationDay?.first ?: previous?.hydrationMl ?: 0,
+                        hydrationGoalMl = hydrationDay?.second ?: previous?.hydrationGoalMl ?: 0
                     )
                     if (!merged.isEmpty) {
                         database.garminDailyExtraDao().upsert(merged)
@@ -381,7 +393,9 @@ class GarminSyncManager(
                         run.summary.noData++
                     }
                 }
-                run.markFor(epochDay, GarminSyncMark.SECTION_SUMMARY, stored, run.summary)?.let { marks += it }
+                if (!rangesFailed) {
+                    run.markFor(epochDay, GarminSyncMark.SECTION_SUMMARY, stored, run.summary)?.let { marks += it }
+                }
             }
 
             if (isSettled(GarminSyncMark.SECTION_SLEEP)) {
@@ -464,7 +478,7 @@ class GarminSyncManager(
             if (!askedSomething) run.daysSkipped++
             if (wroteSomething || epochDay in daysKnownToHaveData) daysWithData++
 
-            date = date.plusDays(1)
+            date = date.minusDays(1)
             index++
         }
 
@@ -539,7 +553,7 @@ class GarminSyncManager(
         if (counter.lastCallFailed) return
         val marks = (from.toEpochDay()..to.toEpochDay())
             .filter { it < refreshFromEpochDay }
-            .map { GarminSyncMark(it, section, it in daysWithData, LOGIC_VERSION) }
+            .map { dayMark(it, section, it in daysWithData) }
         if (marks.isNotEmpty()) database.garminSyncMarkDao().upsertAll(marks)
     }
 
@@ -674,12 +688,7 @@ class GarminSyncManager(
          */
         fun markFor(epochDay: Long, section: String, stored: Boolean, counter: Counter): GarminSyncMark? {
             if (counter.lastCallFailed) return null
-            return GarminSyncMark(
-                dateEpochDay = epochDay,
-                section = section,
-                hasData = stored,
-                logicVersion = HISTORY_LOGIC_VERSION
-            )
+            return dayMark(epochDay, section, stored)
         }
 
         fun sections(): List<SectionOutcome> =
@@ -750,5 +759,17 @@ class GarminSyncManager(
          * forever, and the fix would look like it did nothing.
          */
         private const val LOGIC_VERSION = 1
+
+        /** The version runWindow reads marks back with - see [dayMark]. */
+        internal const val DAY_MARK_READ_VERSION = LOGIC_VERSION
+
+        /**
+         * Every per-day mark is built here so it cannot drift from [DAY_MARK_READ_VERSION]
+         * again: it was stamped HISTORY_LOGIC_VERSION, no day mark was ever found on
+         * reading, and every open re-asked Garmin about all 14 recent days (~70 requests)
+         * until the network gave out before the newest ones.
+         */
+        internal fun dayMark(epochDay: Long, section: String, hasData: Boolean) =
+            GarminSyncMark(epochDay, section, hasData, LOGIC_VERSION)
     }
 }

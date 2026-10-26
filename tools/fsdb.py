@@ -6,6 +6,7 @@ FITNESS_FIREBASE_JSON, файлом на диске не лежит):
     python F:\\Claude\\tools\\bws\\bwsrun.py python -X utf8 tools\\fsdb.py status
     ... fsdb.py pull [--out C:\\Users\\Valerii\\fitness_data\\fitness_mirror.db]
     ... fsdb.py send upsert|patch|delete|mirror ТАБЛИЦА [--row JSON] [--key JSON]
+    ... fsdb.py gymup ФАЙЛ_workout.db
     ... fsdb.py results [--wait СЕКУНД]
     ... fsdb.py clean
     ... fsdb.py logs [--hours 24] [--errors] [-v] [--prune-days N]
@@ -183,6 +184,28 @@ def cmd_send(db, uid, args):
     print("отправлено:", doc_id)
 
 
+GYMUP_PART_BYTES = 512 * 1024
+
+
+def cmd_gymup(db, uid, args):
+    # Бэкап GymUp целиком, а не строками: тысячи upsert не влезли бы в квоту Firestore
+    # и не удалили бы подходы, удалённые в самом GymUp (телефон замещает период файла).
+    data = pathlib.Path(args.file).read_bytes()
+    if not data.startswith(b"SQLite format 3\0"):
+        sys.exit(f"{args.file}: не SQLite — это не бэкап GymUp")
+    # base64 512 КБ ≈ 700 КБ — с запасом под лимит документа Firestore в 1 МБ.
+    chunks = [data[i:i + GYMUP_PART_BYTES] for i in range(0, len(data), GYMUP_PART_BYTES)]
+    doc_id = new_inbox_id()
+    ref = user(db, uid).collection("inbox").document(doc_id)
+    # Части — до самого документа: телефон берёт файл, как только увидит документ.
+    for n, chunk in enumerate(chunks):
+        ref.collection("parts").document(str(n)).set({"b64": base64.b64encode(chunk).decode("ascii")})
+    ref.set({"op": "gymupBackup", "table": "strength_sets", "createdAt": firestore.SERVER_TIMESTAMP,
+             "name": pathlib.Path(args.file).name, "parts": len(chunks), "size": len(data),
+             "sha256": hashlib.sha256(data).hexdigest()})
+    print(f"отправлено: {doc_id} ({len(data)} байт, частей {len(chunks)})")
+
+
 def cmd_results(db, uid, args):
     deadline = time.time() + args.wait
     while True:
@@ -235,6 +258,9 @@ def cmd_clean(db, uid, _):
     n = 0
     for d in user(db, uid).collection("inbox").stream():
         if d.get("appliedAt") is not None:
+            # Подколлекция не удаляется вместе с документом — иначе части бэкапа остались бы сиротами.
+            for part in d.reference.collection("parts").list_documents():
+                part.delete()
             d.reference.delete()
             n += 1
     print("удалено применённых:", n)
@@ -253,6 +279,8 @@ def main():
     p.add_argument("table", nargs="?", default="")
     p.add_argument("--row")
     p.add_argument("--key")
+    p = sub.add_parser("gymup", help="бэкап GymUp (*_workout.db) — телефон замещает им период файла")
+    p.add_argument("file")
     p = sub.add_parser("results")
     p.add_argument("--wait", type=int, default=0)
     sub.add_parser("clean")
@@ -265,7 +293,7 @@ def main():
 
     db = connect()
     uid = pick_uid(db, args.uid)
-    {"status": cmd_status, "pull": cmd_pull, "send": cmd_send,
+    {"status": cmd_status, "pull": cmd_pull, "send": cmd_send, "gymup": cmd_gymup,
      "results": cmd_results, "clean": cmd_clean, "logs": cmd_logs}[args.cmd](db, uid, args)
 
 
