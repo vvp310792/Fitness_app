@@ -8,6 +8,8 @@ import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeUp
 import androidx.health.connect.client.records.ExerciseSessionRecord
@@ -16,6 +18,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.fitnessapp.summary.data.DailySummary
+import com.fitnessapp.summary.data.GarminDailyExtra
 import com.fitnessapp.summary.data.Workout
 import com.fitnessapp.summary.debug.AppLog
 import kotlinx.coroutines.runBlocking
@@ -69,6 +72,7 @@ class SmokeScreensTest {
                 compose.waitForIdle()
                 val name = "%02d_%s".format(i + 2, label)
                 shot(name)
+                if (label == "Тренды") cardShot("Стресс, средний за день", "${name}_stress")
                 if (label == "Тренды" || label == "Я") scrollShots(name)
             }
         }
@@ -97,6 +101,28 @@ class SmokeScreensTest {
             compose.waitForIdle()
             Thread.sleep(500)
             shot("${prefix}_${n + 1}")
+        }
+    }
+
+    // Fixed swipes drift as cards are added above; a chart under suspicion is reached by
+    // its title instead, then nudged up so the whole card, not just the header, is in frame.
+    // Scrolls the list back to the top afterwards so scrollShots still starts from the top.
+    private fun cardShot(title: String, name: String) {
+        val list = compose.onAllNodes(hasScrollAction())
+        val nodes = list.fetchSemanticsNodes()
+        if (nodes.isEmpty()) return
+        val body = nodes.indices.maxBy { nodes[it].size.height }
+        runCatching {
+            list[body].performScrollToNode(hasText(title))
+            compose.waitForIdle()
+            list[body].performTouchInput {
+                swipeUp(startY = height * 0.6f, endY = height * 0.35f, durationMillis = 400)
+            }
+            compose.waitForIdle()
+            Thread.sleep(500)
+            shot(name)
+            list[body].performScrollToIndex(0)
+            compose.waitForIdle()
         }
     }
 
@@ -172,5 +198,26 @@ class SmokeScreensTest {
         }
         app.database.dailySummaryDao().upsertAll(days)
         app.database.workoutDao().upsertAll(workouts)
+        // Garmin's daily summary is what lifts "Тренды" out of its empty state; values sit
+        // in Garmin's real ranges, with a few high-stress days so the axis has to stretch.
+        val extraDao = app.database.garminDailyExtraDao()
+        for (back in 0L until 90L) {
+            val k = (back * 37 % 11).toInt()
+            extraDao.upsert(
+                GarminDailyExtra(
+                    dateEpochDay = today.minusDays(back).toEpochDay(),
+                    averageStressLevel = if (back % 13 == 5L) 68 else 22 + k * 2,
+                    maxStressLevel = 85 + k,
+                    bodyBatteryAtWake = 45 + k * 4,
+                    bodyBatteryHighest = 60 + k * 3,
+                    bodyBatteryLowest = 10 + k,
+                    stressQualifier = if (k > 6) "stressful" else "balanced",
+                    totalSteps = 6000L + k * 700,
+                    restingHeartRate = 54 + k % 5,
+                    moderateIntensityMinutes = 20 + k,
+                    vigorousIntensityMinutes = k * 2
+                )
+            )
+        }
     }
 }
