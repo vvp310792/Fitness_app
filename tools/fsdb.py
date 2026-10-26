@@ -80,7 +80,7 @@ def cmd_status(db, uid, _):
         m = manifest.to_dict()
         print("манифест: документов", len(json.loads(m["manifestJson"])), "обновлён", m.get("updatedAt"))
     inbox = list(u.collection("inbox").stream())
-    done = sum(1 for d in inbox if d.get("appliedAt") is not None)
+    done = sum(1 for d in inbox if d.to_dict().get("appliedAt") is not None)
     print(f"входящие: всего {len(inbox)}, применено {done}, ждут телефона {len(inbox) - done}")
 
 
@@ -221,7 +221,7 @@ def cmd_results(db, uid, args):
     deadline = time.time() + args.wait
     while True:
         inbox = sorted(user(db, uid).collection("inbox").stream(), key=lambda d: d.id)
-        waiting = [d for d in inbox if d.get("appliedAt") is None]
+        waiting = [d for d in inbox if d.to_dict().get("appliedAt") is None]
         if not waiting or time.time() >= deadline:
             break
         time.sleep(5)
@@ -268,7 +268,7 @@ def cmd_logs(db, uid, args):
 def cmd_clean(db, uid, _):
     n = 0
     for d in user(db, uid).collection("inbox").stream():
-        if d.get("appliedAt") is not None:
+        if d.to_dict().get("appliedAt") is not None:
             # Подколлекция не удаляется вместе с документом — иначе части бэкапа остались бы сиротами.
             for part in d.reference.collection("parts").list_documents():
                 part.delete()
