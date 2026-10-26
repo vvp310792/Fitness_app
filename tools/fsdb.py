@@ -184,6 +184,17 @@ def cmd_send(db, uid, args):
     print("отправлено:", doc_id)
 
 
+def cmd_upsert_file(db, uid, args):
+    # Пачка строк из файла (например, tools/garmin_pull.py): по документу на строку,
+    # чтобы отказ телефона по одной строке был виден и не хоронил остальные.
+    rows = json.loads(pathlib.Path(args.file).read_text("utf-8"))
+    inbox = user(db, uid).collection("inbox")
+    for row in rows:
+        inbox.document(new_inbox_id()).set({"op": "upsert", "table": args.table, "createdAt": firestore.SERVER_TIMESTAMP,
+                                            "rowJson": json.dumps(row, ensure_ascii=False)})
+    print(f"отправлено строк: {len(rows)} в {args.table}")
+
+
 GYMUP_PART_BYTES = 512 * 1024
 
 
@@ -279,6 +290,9 @@ def main():
     p.add_argument("table", nargs="?", default="")
     p.add_argument("--row")
     p.add_argument("--key")
+    p = sub.add_parser("upsert-file", help="upsert каждой строки из JSON-списка")
+    p.add_argument("table")
+    p.add_argument("file")
     p = sub.add_parser("gymup", help="бэкап GymUp (*_workout.db) — телефон замещает им период файла")
     p.add_argument("file")
     p = sub.add_parser("results")
@@ -293,7 +307,7 @@ def main():
 
     db = connect()
     uid = pick_uid(db, args.uid)
-    {"status": cmd_status, "pull": cmd_pull, "send": cmd_send, "gymup": cmd_gymup,
+    {"status": cmd_status, "pull": cmd_pull, "send": cmd_send, "gymup": cmd_gymup, "upsert-file": cmd_upsert_file,
      "results": cmd_results, "clean": cmd_clean, "logs": cmd_logs}[args.cmd](db, uid, args)
 
 
