@@ -11,7 +11,8 @@
     ... bwsrun.py python -X utf8 tools\\fsdb.py upsert-file garmin_daily_extra C:\\Users\\Valerii\\fitness_data\\garmin_daily_extra.json
     ... bwsrun.py python -X utf8 tools\\fsdb.py upsert-file garmin_sleep C:\\Users\\Valerii\\fitness_data\\garmin_sleep.json
 
-Токены входа — ~/.creds/garmin_tokens (чтобы не ловить код подтверждения каждый раз),
+Токены входа — секрет GARMIN_TOKENS_JSON в Bitwarden SM (чтобы не ловить код подтверждения
+каждый раз; продлённые скрипт пишет туда же), запуск только через bwsrun.py;
 сырые ответы и результат — ~/fitness_data (данные о здоровье: вне Syncthing и репозитория).
 """
 import datetime as dt
@@ -19,12 +20,13 @@ import json
 import math
 import os
 import pathlib
+import subprocess
 import sys
 import time
 
 from garminconnect import Garmin
 
-TOKENS = pathlib.Path.home() / ".creds" / "garmin_tokens"
+PY_MAIN = r"C:\ProgramData\anaconda3\python.exe"
 DATA = pathlib.Path.home() / "fitness_data"
 OUT = DATA / "garmin_daily_extra.json"
 SLEEP_OUT = DATA / "garmin_sleep.json"
@@ -44,15 +46,24 @@ def ask_mfa():
 
 def login():
     api = Garmin(os.environ["GARMIN_EMAIL"], os.environ["GARMIN_PASSWORD"], prompt_mfa=ask_mfa)
-    try:
-        if not TOKENS.exists():
-            raise FileNotFoundError
-        api.login(str(TOKENS))
-    except Exception:
-        api.login()
-        TOKENS.mkdir(parents=True, exist_ok=True)
-        api.garth.dump(str(TOKENS))
+    # JSON-строку токенов garminconnect грузит сам; не подошла — сам же входит по паролю.
+    api.login(os.environ.get("GARMIN_TOKENS_JSON") or None)
+    save_tokens(api)
     return api
+
+
+def save_tokens(api):
+    # Токены живут в Bitwarden SM, а не файлом на ПК: продлённую пару пишем обратно,
+    # иначе следующий запуск получит мёртвую и упрётся в код подтверждения.
+    new = api.client.dumps()
+    if new == os.environ.get("GARMIN_TOKENS_JSON"):
+        return
+    # bwsput нужен win32crypt, которого нет в venv Garmin, — запускаем его основным Python.
+    r = subprocess.run([PY_MAIN, os.environ["BWSRUN_PUT"], "GARMIN_TOKENS_JSON"],
+                       input=new, text=True, capture_output=True)
+    print(r.stdout.strip() or r.stderr.strip()[:300])
+    if r.returncode == 0:
+        os.environ["GARMIN_TOKENS_JSON"] = new
 
 
 # Как JSONObject.int / rounded / str в GarminApiClient: optInt усекает, отрицательное → 0.
@@ -240,6 +251,7 @@ def main():
     SLEEP_OUT.write_text(json.dumps(sleeps, ensure_ascii=False), "utf-8")
     print(f"строк {len(rows)} из {days} дней → {OUT}")
     print(f"ночей {len(sleeps)} из {days} → {SLEEP_OUT}")
+    save_tokens(api)  # за долгий проход токен мог продлиться
 
 
 if __name__ == "__main__":
