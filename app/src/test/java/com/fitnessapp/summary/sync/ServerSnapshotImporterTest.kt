@@ -65,4 +65,30 @@ class ServerSnapshotImporterTest {
     @Test fun invalidPayloadPreservesPrevious() = runBlocking { rejected(Gateway(payload=listOf(part.copy(rowsJson=raw.replace("10","11"))))) }
     @Test fun concurrentPublicationPreservesPrevious() = runBlocking { rejected(Gateway(statusAfter=valid.copy(publishedNanos=1))) }
     @Test fun changedAccountPreservesPrevious() = runBlocking { rejected(Gateway(ownerLost=true)) }
+
+    @Test fun progressReportsRealVerifiedCounts() = runBlocking {
+        val events=mutableListOf<SnapshotProgress>()
+        val sink=Sink()
+        ServerSnapshotImporter(sink).refresh("test",Gateway()) { events.add(it) }
+        assertEquals("STATUS",events.first().phase)
+        assertEquals("ACTIVATE",events.last().phase)
+        assertEquals(1,events.last().partsDone)
+        assertEquals(1,events.last().partsTotal)
+        assertEquals(1L,events.last().rowsDone)
+        assertEquals(1L,events.last().rowsTotal)
+    }
+
+    @Test fun invalidPartHasSafeDiagnosticAndDoesNotActivate() = runBlocking {
+        val sink=Sink()
+        var failure: SnapshotImportFailure? = null
+        try {
+            ServerSnapshotImporter(sink).refresh("test",Gateway(payload=listOf(part.copy(rowsJson="[]"))))
+        } catch (e: SnapshotImportFailure) { failure=e }
+        assertEquals("PART_VERIFY",failure?.phase)
+        assertEquals(0,failure?.completedParts)
+        assertEquals(1,failure?.totalParts)
+        assertEquals("previous",sink.active)
+        assertEquals(1,sink.discards)
+    }
+
 }
