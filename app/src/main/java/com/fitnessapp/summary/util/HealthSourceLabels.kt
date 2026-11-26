@@ -16,6 +16,8 @@ object HealthSourceLabels {
         "com.google.android.apps.fitness" to "Google Fit",
         "com.google.android.apps.healthdata" to "Health Connect",
         "com.google.android.apps.health" to "Google Health",
+        "google_health" to "Google Health (сервер)",
+        "com.android.healthconnect.phone" to "Health Connect",
         "com.fitbit.FitbitMobile" to "Fitbit",
         "com.samsung.android.app.shealth" to "Samsung Health",
         "com.xiaomi.hm.health" to "Zepp Life",

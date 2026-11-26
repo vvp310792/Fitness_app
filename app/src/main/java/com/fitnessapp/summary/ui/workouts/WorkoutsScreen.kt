@@ -1,5 +1,8 @@
 package com.fitnessapp.summary.ui.workouts
 
+import com.fitnessapp.summary.analytics.WorkoutPeriod
+import com.fitnessapp.summary.util.formatDayMonth
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -94,10 +97,7 @@ fun WorkoutsScreen(app: FitnessSummaryApp) {
                 e.sets.any { it.exerciseName.contains(query.trim(),true) })
         }
     }
-    val confirmed=remember(filtered) { filtered.filterNot { it.episode.ambiguous } }
-    val uncertain=filtered.size-confirmed.size
-    val durations=confirmed.mapNotNull { it.durationSeconds }
-    val distances=confirmed.mapNotNull { it.distanceMeters }
+    val totals=remember(filtered) { WorkoutPeriod(filtered) }
 
     LazyColumn(modifier=Modifier.fillMaxSize(),contentPadding=PaddingValues(16.dp),
         verticalArrangement=Arrangement.spacedBy(10.dp)) {
@@ -128,16 +128,7 @@ fun WorkoutsScreen(app: FitnessSummaryApp) {
         } else {
             item {
                 InfoCard("За выбранный период") {
-                    StatRow("Однозначных занятий",formatCount(confirmed.size))
-                    StatRow("Требуют сверки",formatCount(uncertain))
-                    StatRow("Записанное время",if(durations.isEmpty()) "Нет данных" else secondsLabel(durations.sum()))
-                    Text("Длительность известна для ${durations.size} из ${confirmed.size} однозначных занятий.",
-                        style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                    StatRow("Дистанция",if(distances.isEmpty()) "Нет данных" else "${formatDecimal((distances.sum()/1000).toFloat())} км")
-                    Text("Дистанция известна для ${distances.size} из ${confirmed.size} однозначных занятий.",
-                        style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                    if(uncertain>0) Text("Сомнительные совпадения показаны отдельно и не входят в эти суммы.",
-                        style=MaterialTheme.typography.bodySmall)
+                    WorkoutTotals(totals)
                     val server=archive
                     if (server!=null && server.serverRawCount>0) {
                         StatRow("Записей тренировок с ПК",formatCount(server.serverRawCount))
@@ -170,14 +161,30 @@ fun WorkoutsScreen(app: FitnessSummaryApp) {
     }
 }
 
+/** Same confirmed totals for Day, Week, Trends and Workouts. */
+@Composable
+fun WorkoutTotals(period:WorkoutPeriod) {
+    StatRow("Однозначных занятий",formatCount(period.confirmed.size))
+    StatRow("Требуют сверки",formatCount(period.ambiguousCount))
+    StatRow("Записанное время",if(period.knownDurationCount==0) "Нет данных" else secondsLabel(period.durationSeconds))
+    Text("Длительность известна для ${period.knownDurationCount} из ${period.confirmed.size} однозначных занятий.",
+        style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+    StatRow("Дистанция",if(period.knownDistanceCount==0) "Нет данных" else "${formatDecimal((period.distanceMeters/1000).toFloat())} км")
+    Text("Дистанция известна для ${period.knownDistanceCount} из ${period.confirmed.size} однозначных занятий.",
+        style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+    if(period.ambiguousCount>0) Text("Возможные совпадения сохранены отдельно и не включены в эти суммы.",
+        style=MaterialTheme.typography.bodySmall)
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ArchiveCard(row: ArchiveEpisode) {
+fun ArchiveCard(row: ArchiveEpisode, showDate: Boolean = false) {
     var expanded by rememberSaveable(row.episode.primary.key) { mutableStateOf(false) }
     Card(onClick={expanded=!expanded},modifier=Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
             Text(row.primary.title,style=MaterialTheme.typography.titleMedium)
-            Text(formatTime(row.primary.session.startMillis)+" · "+row.primary.session.sport.label(),
+            Text((if(showDate) formatDayMonth(LocalDate.ofEpochDay(row.primary.day))+" · " else "")+
+                formatTime(row.primary.session.startMillis)+" · "+row.primary.session.sport.label(),
                 style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
             FlowRow(horizontalArrangement=Arrangement.spacedBy(12.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
                 row.durationSeconds?.let { Text(secondsLabel(it)) }

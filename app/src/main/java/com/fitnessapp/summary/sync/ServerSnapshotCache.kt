@@ -80,6 +80,13 @@ interface ServerSnapshotDao {
         "AND day BETWEEN :fromDay AND :throughDay ORDER BY day, source, nativeId")
     fun observeActiveWorkouts(uid: String, fromDay: String, throughDay: String): Flow<List<SnapshotRow>>
 
+    @Query("SELECT * FROM snapshot_rows WHERE ownerUid = :uid " +
+        "AND generation = (SELECT generation FROM snapshot_heads WHERE ownerUid = :uid) " +
+        "AND ((source IN ('zepp','zepp_archive','google_health') AND kind = 'weight') " +
+        "OR (source = 'garmin' AND kind IN ('weight','body_composition','body_composition_range','weigh_ins')) " +
+        "OR (source = 'legacy_app' AND kind = 'scale_measurements')) ORDER BY day,source,nativeId")
+    fun observeActiveBody(uid: String): Flow<List<SnapshotRow>>
+
     @Query("SELECT COUNT(*) FROM snapshot_rows WHERE ownerUid = :uid AND generation = :generation AND partId = :partId")
     suspend fun partCount(uid: String, generation: String, partId: String): Long
 
