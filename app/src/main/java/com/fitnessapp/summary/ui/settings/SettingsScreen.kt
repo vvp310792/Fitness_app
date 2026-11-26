@@ -91,6 +91,9 @@ fun SettingsScreen(app: FitnessSummaryApp) {
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        item { ServerSnapshotPanel(app) }
+        item { AccountSection(app) }
+        item { UpdateSection() }
         item { HealthConnectSection(app) }
         item { SyncSection(app) }
         item { GarminSection(app) }
@@ -100,9 +103,7 @@ fun SettingsScreen(app: FitnessSummaryApp) {
         item { StravaSection(app) }
         item { GoogleFitSection(app) }
         item { LogsSection() }
-        item { AccountSection(app) }
         item { ExportSection(app) }
-        item { UpdateSection() }
         item { AboutSection() }
     }
 }

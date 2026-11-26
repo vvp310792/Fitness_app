@@ -131,9 +131,9 @@ fun WorkoutsScreen(app: FitnessSummaryApp) {
         } else {
             item {
                 InfoCard("За выбранный период") {
-                    StatRow("Без неоднозначных совпадений",formatCount(confirmed.size))
-                    StatRow("Записей требуют сверки",formatCount(uncertain))
-                    StatRow("Время",if(durations.isEmpty()) "Нет данных" else secondsLabel(durations.sum()))
+                    StatRow("Однозначных занятий",formatCount(confirmed.size))
+                    StatRow("Требуют сверки",formatCount(uncertain))
+                    StatRow("Записанное время",if(durations.isEmpty()) "Нет данных" else secondsLabel(durations.sum()))
                     Text("Длительность известна для ${durations.size} из ${confirmed.size} однозначных занятий.",
                         style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     StatRow("Дистанция",if(distances.isEmpty()) "Нет данных" else "${formatDecimal((distances.sum()/1000).toFloat())} км")

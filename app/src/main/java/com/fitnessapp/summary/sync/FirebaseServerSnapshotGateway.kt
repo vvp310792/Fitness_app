@@ -25,6 +25,18 @@ class FirebaseServerSnapshotGateway(
     private fun DocumentSnapshot.strings(key: String): List<String> =
         (get(key) as? List<*>)?.map { it as? String ?: error("invalid list item") } ?: error("missing list")
 
+    /** Metadata only. Old v0 publishers remain visible, but not importable. */
+    suspend fun overview(): ServerSnapshotOverview? {
+        requireOwner()
+        val doc=withTimeout(30_000L) { user().collection("server_sync").document("status").get(Source.SERVER).await() }
+        requireOwner()
+        if(!doc.exists()) return null
+        val stamp=doc.getTimestamp("updatedAt")
+        return ServerSnapshotOverview(doc.getLong("schemaVersion") ?: 0L,
+            doc.getString("manifestSetSha256"),doc.getLong("groups"),doc.getLong("records"),
+            stamp?.seconds,stamp?.nanoseconds)
+    }
+
     override suspend fun status(): ServerCatalogStatus {
         requireOwner()
         val doc = withTimeout(30_000L) { user().collection("server_sync").document("status").get(Source.SERVER).await() }
