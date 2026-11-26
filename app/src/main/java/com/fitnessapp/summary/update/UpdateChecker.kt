@@ -20,12 +20,7 @@ private const val GITHUB_REPO = "Fitness_app"
 data class ReleaseInfo(
     val versionCode: Int,
     val releaseName: String,
-    /**
-     * Direct link to the `.apk`, for the one-tap install. **Empty when the release was found
-     * through the feed instead of the API** - the feed does not list a release's files, and
-     * building that URL from a filename convention would be a guess that fails as a 404 the
-     * moment CI renames its output.
-     */
+    /** Direct URL of the stable CI-published APK. */
     val downloadUrl: String,
     /** The release page, which always exists and can always be opened in a browser. */
     val pageUrl: String
@@ -50,16 +45,15 @@ sealed class UpdateCheckResult {
  * token inside an APK is a public token.
  *
  * The fallback is `github.com/<owner>/<repo>/releases.atom` - the website's own feed, not the
- * REST API, and not counted against that quota. It carries the tag of every release, which is
- * all the version check needs. What it does NOT carry is the list of files, so an update found
- * this way offers the release page instead of a one-tap install: an honest extra tap beats a
- * download URL assembled from a naming convention.
+ * REST API, and not counted against that quota. CI publishes a stable APK filename
+ * and fails if it is missing. A feed tag is enough to construct its download URL.
  */
 object UpdateChecker {
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .build()
 
     fun check(currentVersionCode: Int): UpdateCheckResult {
@@ -105,7 +99,7 @@ object UpdateChecker {
                 var apkUrl = ""
                 for (i in 0 until (assets?.length() ?: 0)) {
                     val asset = assets!!.getJSONObject(i)
-                    if (asset.optString("name").endsWith(".apk")) {
+                    if (asset.optString("name") == APK_NAME) {
                         apkUrl = asset.optString("browser_download_url")
                         break
                     }
@@ -115,7 +109,7 @@ object UpdateChecker {
                     currentVersionCode = currentVersionCode,
                     versionCode = versionCode,
                     releaseName = json.optString("name", tagName),
-                    downloadUrl = apkUrl,
+                    downloadUrl = apkUrl.ifBlank { stableApkUrl(tagName).orEmpty() },
                     pageUrl = json.optString("html_url", releasePage(tagName))
                 )
             }
@@ -149,8 +143,7 @@ object UpdateChecker {
                     currentVersionCode = currentVersionCode,
                     versionCode = versionCode,
                     releaseName = "Build $versionCode",
-                    // The feed lists no files - see ReleaseInfo.downloadUrl.
-                    downloadUrl = "",
+                    downloadUrl = stableApkUrl(tag).orEmpty(),
                     pageUrl = releasePage(tag)
                 )
             }
@@ -174,7 +167,15 @@ object UpdateChecker {
             .maxByOrNull { it.first }
             ?.second
 
-    private fun versionOf(tag: String): Int? = tag.substringAfterLast('-').toIntOrNull()
+    private const val APK_NAME = "fitness-summary-debug.apk"
+
+    internal fun stableApkUrl(tag: String): String? =
+        if (versionOf(tag) != null)
+            "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/$tag/$APK_NAME"
+        else null
+
+    private fun versionOf(tag: String): Int? =
+        Regex("build-([1-9][0-9]*)").matchEntire(tag)?.groupValues?.get(1)?.toIntOrNull()
 
     private fun releasePage(tag: String) =
         "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/tag/$tag"

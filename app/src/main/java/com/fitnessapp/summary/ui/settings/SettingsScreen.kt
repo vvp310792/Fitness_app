@@ -878,6 +878,14 @@ private fun UpdateSection() {
     var checking by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<UpdateCheckResult?>(null) }
     var downloading by remember { mutableStateOf(false) }
+    var downloadNote by remember { mutableStateOf<String?>(null) }
+    fun openInBrowser(url: String) {
+        try {
+            context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+        } catch (_: Exception) {
+            downloadNote = "Не удалось открыть браузер. Откройте страницу релиза вручную."
+        }
+    }
 
     InfoCard(title = "Обновления") {
         StatRow("Текущая версия", "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
@@ -907,20 +915,33 @@ private fun UpdateSection() {
                 if (current.release.canInstallDirectly) {
                     Button(
                         onClick = {
+                            downloadNote = null
                             if (!ApkInstaller.canRequestInstalls(context)) {
-                                ApkInstaller.requestInstallPermission(context)
+                                downloadNote = "Разрешите установку из этого приложения, вернитесь и нажмите кнопку ещё раз."
+                                try {
+                                    ApkInstaller.requestInstallPermission(context)
+                                } catch (_: Exception) {
+                                    downloadNote = "Не удалось открыть разрешение установки. Скачайте APK через браузер."
+                                }
                                 return@Button
                             }
                             downloading = true
                             scope.launch {
-                                val file = withContext(Dispatchers.IO) {
-                                    ApkInstaller.download(context, current.release.downloadUrl)
-                                }
-                                downloading = false
-                                if (file != null) {
-                                    ApkInstaller.install(context, file)
-                                } else {
-                                    Toast.makeText(context, "Не удалось скачать APK", Toast.LENGTH_LONG).show()
+                                try {
+                                    when (val download = withContext(Dispatchers.IO) {
+                                        ApkInstaller.download(context, current.release.downloadUrl, current.release.versionCode)
+                                    }) {
+                                        is ApkInstaller.DownloadResult.Ready -> {
+                                            try {
+                                                ApkInstaller.install(context, download.file)
+                                            } catch (_: Exception) {
+                                                downloadNote = "APK скачан, но не удалось открыть системную установку."
+                                            }
+                                        }
+                                        is ApkInstaller.DownloadResult.Failed -> downloadNote = download.reason
+                                    }
+                                } finally {
+                                    downloading = false
                                 }
                             }
                         },
@@ -929,40 +950,38 @@ private fun UpdateSection() {
                     ) {
                         Text(if (downloading) "Скачиваю..." else "Скачать и установить")
                     }
-                } else {
-                    // The release was found through the feed, which does not list its files.
-                    // Opening the page is one extra tap and always lands on the right APK;
-                    // a download URL guessed from a naming convention would not.
-                    Text(
-                        text = "Ссылку на APK сейчас не получить — GitHub ограничил запросы. " +
-                            "Страница релиза открывается всегда, файл там один.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    OutlinedButton(
+                        onClick = { openInBrowser(current.release.downloadUrl) },
+                        enabled = !downloading,
                         modifier = Modifier.padding(top = 4.dp)
-                    )
-                    Button(
-                        onClick = {
-                            context.startActivity(
-                                android.content.Intent(
-                                    android.content.Intent.ACTION_VIEW,
-                                    android.net.Uri.parse(current.release.pageUrl)
-                                )
-                            )
-                        },
-                        modifier = Modifier.padding(top = 8.dp)
-                    ) {
-                        Text("Открыть страницу релиза")
-                    }
+                    ) { Text("Скачать APK через браузер") }
                 }
+                OutlinedButton(
+                    onClick = { openInBrowser(current.release.pageUrl) },
+                    enabled = !downloading,
+                    modifier = Modifier.padding(top = 4.dp)
+                ) { Text("Открыть страницу релиза") }
             }
 
             null -> Unit
+        }
+
+        if (result is UpdateCheckResult.Failed) {
+            OutlinedButton(onClick = { openInBrowser("https://github.com/vvp310792/Fitness_app/releases/latest") }) {
+                Text("Открыть последние релизы в браузере")
+            }
+        }
+        downloadNote?.let { message ->
+            Text(message, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp))
         }
 
         Row(modifier = Modifier.padding(top = 8.dp)) {
             OutlinedButton(
                 onClick = {
                     checking = true
+                    downloadNote = null
                     scope.launch {
                         result = withContext(Dispatchers.IO) {
                             UpdateChecker.check(BuildConfig.VERSION_CODE)
@@ -970,7 +989,7 @@ private fun UpdateSection() {
                         checking = false
                     }
                 },
-                enabled = !checking
+                enabled = !checking && !downloading
             ) {
                 if (checking) {
                     CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp))

@@ -57,6 +57,22 @@ class UpdateCheckerTest {
         assertEquals("build-100", UpdateChecker.newestTag(feed))
     }
 
+    @Test
+    fun `release feed can build the stable APK URL without GitHub API`() {
+        assertEquals(
+            "https://github.com/vvp310792/Fitness_app/releases/download/build-43/fitness-summary-debug.apk",
+            UpdateChecker.stableApkUrl(UpdateChecker.newestTag(atom)!!)
+        )
+    }
+
+    @Test
+    fun `unexpected or unsafe tags never produce an APK URL`() {
+        assertNull(UpdateChecker.stableApkUrl("build-0"))
+        assertNull(UpdateChecker.stableApkUrl("other-70"))
+        assertNull(UpdateChecker.stableApkUrl("build-70/other"))
+        assertNull(UpdateChecker.stableApkUrl("build-999999999999999999999"))
+    }
+
     /**
      * GitHub names the exact second the quota returns, and saying it turns "попробуйте позже"
      * into something the user can act on.
