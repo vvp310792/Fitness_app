@@ -189,8 +189,9 @@ class FitnessSummaryApp : Application() {
             var previousUid = authManager.currentUser?.uid
             authManager.authStateFlow().collect { user ->
                 val uid = user?.uid
-                if (uid == null) snapshotSync.cancelForSignOut()
-                else {
+                if (uid == null) {
+                    if (previousUid != null) snapshotSync.cancelForSignOut()
+                } else {
                     if (previousUid != null && previousUid != uid) snapshotSync.cancelForSignOut()
                     snapshotSync.ensurePeriodic()
                     if (previousUid != uid) snapshotSync.enqueueNow()
