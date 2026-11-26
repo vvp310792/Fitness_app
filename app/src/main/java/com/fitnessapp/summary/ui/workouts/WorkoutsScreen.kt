@@ -142,6 +142,9 @@ fun WorkoutsScreen(app: FitnessSummaryApp) {
                     if (server!=null && server.serverRawCount>0) {
                         StatRow("Записей тренировок с ПК",formatCount(server.serverRawCount))
                         StatRow("Распознано с ПК",formatCount(server.serverMappedCount))
+                        Text("Сверка всего архива",style=MaterialTheme.typography.titleSmall)
+                        StatRow("Совпадений ID",formatCount(server.exactIdentityMatches))
+                        StatRow("Объединено копий между источниками",formatCount(server.confirmedDuplicateObservations))
                         if(server.serverEmptyGymSessions>0) Text("Пустые планы GymUp: ${server.serverEmptyGymSessions}. Не считаются тренировками.",style=MaterialTheme.typography.bodySmall)
                         if(server.serverRejected>0 || server.serverIdentityConflicts>0) Text(
                             "Не распознано: ${server.serverRejected}; конфликтов ID: ${server.serverIdentityConflicts}. Исходники сохранены.",

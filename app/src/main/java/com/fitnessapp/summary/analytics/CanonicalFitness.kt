@@ -20,15 +20,21 @@ data class FitnessSession(
     val elapsedSeconds: Long?,
     val distanceMeters: Double? = null,
     /** Namespaced *verified* upstream identity, not an unrelated app-local ID. */
-    val upstreamId: String? = null
+    val upstreamId: String? = null,
+    /** Google Health can transport records from multiple apps. A package name
+     * is a stream identifier, not proof of upstream workout identity. */
+    val transportOrigin: String? = null
 ) {
     init {
         require(nativeId.isNotBlank() && startMillis >= 0)
         require(elapsedSeconds == null || elapsedSeconds in 1..604800)
         require(distanceMeters == null || (distanceMeters.isFinite() && distanceMeters >= 0))
         require(upstreamId == null || upstreamId.isNotBlank())
+        require(transportOrigin == null || transportOrigin.isNotBlank())
     }
     val key: String get() = "${source.name}:$nativeId"
+    val channel: String get() = if (source == FitnessSource.GOOGLE_HEALTH && transportOrigin != null)
+        "${source.name}:$transportOrigin" else source.name
 }
 
 data class SessionEpisode(
@@ -77,8 +83,25 @@ object CanonicalFitness {
     private val endurance = setOf(FitnessSport.RUN, FitnessSport.CYCLE, FitnessSport.SWIM, FitnessSport.WALK)
 
     private fun match(a: FitnessSession, b: FitnessSession): Match {
-        if (a.source == b.source) return Match.NONE
         val sameUpstream = a.upstreamId != null && a.upstreamId == b.upstreamId
+        val distinctOrigins = a.source == FitnessSource.GOOGLE_HEALTH && b.source == a.source &&
+            a.transportOrigin != null && b.transportOrigin != null && a.transportOrigin != b.transportOrigin
+        if (a.source == b.source && !distinctOrigins) {
+            // Distinct IDs from a single stream are not silently merged. Flag
+            // extremely close full-interval collisions for review instead.
+            if (sameUpstream) return Match.POSSIBLE
+            if (abs(a.startMillis-b.startMillis)>1000L || a.sport!=b.sport ||
+                a.sport in setOf(FitnessSport.OTHER,FitnessSport.UNKNOWN)) return Match.NONE
+            val ad=a.elapsedSeconds ?: return Match.NONE
+            val bd=b.elapsedSeconds ?: return Match.NONE
+            if (abs(ad-bd)>2L) return Match.NONE
+            if (a.sport in endurance) {
+                val x=a.distanceMeters ?: return Match.NONE
+                val y=b.distanceMeters ?: return Match.NONE
+                if (x<=0 || y<=0 || abs(x-y)>max(5.0,max(x,y)*0.01)) return Match.NONE
+            }
+            return Match.POSSIBLE
+        }
         val near = abs(a.startMillis - b.startMillis) <= START_WINDOW_MS
         if (!near) return if (sameUpstream) Match.POSSIBLE else Match.NONE
         val knownSport = a.sport !in setOf(FitnessSport.OTHER, FitnessSport.UNKNOWN) &&
@@ -118,7 +141,7 @@ object CanonicalFitness {
 
     /**
      * Conservative connected components: every pair must agree confidently and
-     * each source can contribute at most one distinct observation. A chain A~B~C
+     * each source stream can contribute at most one distinct observation. A chain A~B~C
      * is not evidence that A and C are duplicates. Keep uncertain observations
      * separate and mark them; do not silently discard any activity.
      */
@@ -156,7 +179,7 @@ object CanonicalFitness {
                 edges[n].forEach { k -> if (!visited[k]) { visited[k] = true; pending.add(k) } }
             }
             val observations = group.map { rows[it] }.sortedBy { it.key }
-            val safe = observations.map { it.source }.toSet().size == observations.size &&
+            val safe = observations.map { it.channel }.toSet().size == observations.size &&
                 observations.indices.all { a ->
                     (a + 1 until observations.size).all { b -> match(observations[a], observations[b]) == Match.CONFIDENT }
                 }

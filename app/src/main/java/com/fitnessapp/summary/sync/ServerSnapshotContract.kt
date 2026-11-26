@@ -79,13 +79,18 @@ object ServerSnapshotContract {
         return digest(manifests.sortedBy { it.id }.joinToString("") { "${it.id}\t${it.sha256}\t${it.count}\n" })
     }
 
-    fun validateCatalog(status: ServerCatalogStatus, manifests: List<ServerManifest>) {
+    fun validateStatus(status: ServerCatalogStatus) {
         require(status.schemaVersion == SCHEMA_VERSION)
         require(status.groups in 0..MAX_GROUPS.toLong() && status.records in 0..MAX_ROWS)
         require(status.publishedSeconds > 0 && status.publishedNanos in 0..999_999_999)
+        require(hex.matches(status.manifestSetSha256))
+        require(status.groups <= status.records && (status.groups == 0L) == (status.records == 0L))
+    }
+
+    fun validateCatalog(status: ServerCatalogStatus, manifests: List<ServerManifest>) {
+        validateStatus(status)
         require(status.groups == manifests.size.toLong())
         require(status.records == manifests.sumOf { it.count })
-        require(hex.matches(status.manifestSetSha256))
         require(status.manifestSetSha256 == catalogDigest(manifests))
     }
 

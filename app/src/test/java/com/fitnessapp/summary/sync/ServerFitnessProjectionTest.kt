@@ -69,6 +69,7 @@ class ServerFitnessProjectionTest {
         assertEquals(1,archive.episodes.size)
         assertEquals(1800L,archive.episodes.single().primary.session.elapsedSeconds)
         assertEquals(1000,archive.episodes.single().garmin!!.zone2Seconds)
+        assertEquals(1,archive.exactIdentityMatches)
         assertEquals(1,archive.serverMappedCount)
     }
 
@@ -96,6 +97,7 @@ class ServerFitnessProjectionTest {
         assertEquals(1,a.episodes.size)
         assertFalse(a.episodes.single().episode.ambiguous)
         assertEquals(2,a.episodes.single().observations.size)
+        assertEquals(1,a.confirmedDuplicateObservations)
     }
 
     @Test fun gymUpUsesPerformedSetsAndContinuousNumbering() {
@@ -135,6 +137,7 @@ class ServerFitnessProjectionTest {
         val a=LocalWorkoutArchive.build(emptyList(),listOf(local),emptyList(),emptyList(),p)
         assertEquals(1,a.episodes.size)
         assertEquals(1,a.serverIdentityConflicts)
+        assertTrue(a.episodes.single().episode.ambiguous)
         assertEquals(start-3600000,a.episodes.single().primary.session.startMillis)
     }
 }

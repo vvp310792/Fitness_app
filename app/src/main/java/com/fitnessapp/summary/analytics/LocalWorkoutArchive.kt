@@ -47,7 +47,9 @@ data class ArchiveResult(
     val serverMappedCount: Int = 0,
     val serverRejected: Int = 0,
     val serverEmptyGymSessions: Int = 0,
-    val serverIdentityConflicts: Int = 0
+    val serverIdentityConflicts: Int = 0,
+    val exactIdentityMatches: Int = 0,
+    val confirmedDuplicateObservations: Int = 0
 )
 
 private fun sourceOrder(s: FitnessSource): Int = when (s) {
@@ -130,6 +132,8 @@ object LocalWorkoutArchive {
         rejected += unique.values.sumOf { it.size-1 }
         val byKey=unique.mapValues { it.value.first() }.toMutableMap()
         var identityConflicts=0
+        var identityMatches=0
+        val conflictedKeys=mutableSetOf<String>()
         for (remote in server.observations) {
             val key=remote.session.key
             val local=byKey[key]
@@ -144,8 +148,10 @@ object LocalWorkoutArchive {
             if (kotlin.math.abs(local.session.startMillis-remote.session.startMillis)>180000 ||
                 (knownLocal && knownRemote && local.session.sport!=remote.session.sport)) {
                 identityConflicts++
+                conflictedKeys.add(key)
                 continue
             }
+            identityMatches++
             // Keep detailed local data, enrich matching IDs with verified elapsed time.
             byKey[key]=local.copy(
                 session=local.session.copy(
@@ -159,10 +165,16 @@ object LocalWorkoutArchive {
                 garmin=local.garmin ?: remote.garmin
             )
         }
-        val episodes=CanonicalFitness.episodes(byKey.values.map { it.session }).map { e ->
-            ArchiveEpisode(e,byKey.getValue(e.primary.key),e.observations.map { byKey.getValue(it.key) })
+        val episodes=CanonicalFitness.episodes(byKey.values.map { it.session }).flatMap { e ->
+            // A contradictory identity must not be treated as a confirmed session,
+            // including when a different source otherwise matches it.
+            val resolved = if (e.observations.any { it.key in conflictedKeys }) e.observations.map { r ->
+                SessionEpisode(r,listOf(r),true,e.observations.filter { it.key!=r.key }.map { it.key })
+            } else listOf(e)
+            resolved.map { v -> ArchiveEpisode(v,byKey.getValue(v.primary.key),v.observations.map { byKey.getValue(it.key) }) }
         }
+        val merged=episodes.filterNot { it.episode.ambiguous }.sumOf { it.observations.size-1 }
         return ArchiveResult(episodes.sortedByDescending { it.primary.session.startMillis },rejected,
-            server.rawCount,server.observations.size,server.rejected,server.emptyGymSessions,identityConflicts)
+            server.rawCount,server.observations.size,server.rejected,server.emptyGymSessions,identityConflicts,identityMatches,merged)
     }
 }

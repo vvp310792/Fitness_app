@@ -21,13 +21,9 @@ import androidx.compose.ui.unit.dp
 import com.fitnessapp.summary.FitnessSummaryApp
 import com.fitnessapp.summary.sync.FirebaseServerSnapshotGateway
 import com.fitnessapp.summary.sync.FirebaseSetup
-import com.fitnessapp.summary.sync.RoomServerSnapshotSink
 import com.fitnessapp.summary.sync.ServerSnapshotDatabase
-import com.fitnessapp.summary.sync.ServerSnapshotImporter
-import com.fitnessapp.summary.sync.SnapshotImportFailure
 import com.fitnessapp.summary.sync.SnapshotProgress
 import com.fitnessapp.summary.debug.AppLog
-import com.google.firebase.firestore.FirebaseFirestoreException
 import com.fitnessapp.summary.sync.ServerSnapshotOverview
 import com.fitnessapp.summary.ui.components.InfoCard
 import com.fitnessapp.summary.ui.components.StatRow
@@ -46,6 +42,8 @@ private fun phaseLabel(phase: String): String = when (phase) {
     "STATUS" -> "Читаем статус"
     "CATALOG_READ" -> "Загружаем каталог"
     "CATALOG_VERIFY" -> "Проверяем каталог"
+    "LOCAL_REUSE" -> "Проверяем локальные блоки"
+    "UNCHANGED" -> "Копия актуальна"
     "PART_READ" -> "Загружаем блоки"
     "PART_VERIFY" -> "Проверяем контрольные суммы"
     "LOCAL_WRITE" -> "Сохраняем на телефон"
@@ -56,7 +54,7 @@ private fun phaseLabel(phase: String): String = when (phase) {
 
 private fun progressLabel(progress: SnapshotProgress): String =
     phaseLabel(progress.phase) + if (progress.partsTotal > 0)
-        " · ${progress.partsDone}/${progress.partsTotal} блоков, ${formatCount(progress.rowsDone)}/${formatCount(progress.rowsTotal)} записей"
+        " · ${progress.partsDone}/${progress.partsTotal} блоков, ${formatCount(progress.rowsDone)}/${formatCount(progress.rowsTotal)} записей. Скачано: ${progress.downloadedParts}, повторно использовано: ${progress.reusedParts}"
     else "…"
 
 private val dateFormat=DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm",Locale("ru"))
@@ -88,18 +86,29 @@ private fun OwnerSnapshotPanel(app: FitnessSummaryApp,uid: String) {
     val db=remember(app) { ServerSnapshotDatabase.getInstance(app) }
     val head by remember(db,uid) { db.snapshots().observeHead(uid) }.collectAsState(initial=null)
     val gateway=remember(uid) { FirebaseServerSnapshotGateway(uid) }
-    val importer=remember(db) { ServerSnapshotImporter(RoomServerSnapshotSink(db)) }
+    val syncState by app.snapshotSync.state.collectAsState()
+    val refresh = syncState?.takeIf { it.ownerUid == uid }
+    val syncing = refresh?.running == true
     val scope=rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
     var remote by remember { mutableStateOf<ServerSnapshotOverview?>(null) }
-    var note by remember { mutableStateOf("Сервер ещё не проверен.") }
+    var note by remember { mutableStateOf("Автоматическая проверка при открытии и примерно раз в час при наличии сети.") }
+    val workerRemote = refresh?.status?.let { s -> ServerSnapshotOverview(s.schemaVersion,s.manifestSetSha256,
+        s.groups,s.records,s.publishedSeconds,s.publishedNanos) }
+    val displayedRemote = listOfNotNull(remote,workerRemote).maxWithOrNull(
+        compareBy<ServerSnapshotOverview> { it.publishedSeconds ?: 0L }.thenBy { it.publishedNanos ?: 0 })
     Column(verticalArrangement=Arrangement.spacedBy(6.dp)) {
         Text("На ПК",style=MaterialTheme.typography.titleSmall)
-        remote?.let { r ->
+        displayedRemote?.let { r ->
             StatRow("Публикация",r.publishedSeconds?.let(::snapshotTime) ?: "Неизвестно")
             StatRow("Записей заявлено",r.records?.let(::formatCount) ?: "Неизвестно")
-            Text(if(r.supportsVerifiedImport) "Формат поддерживается. Содержимое ещё не сверено."
-                else "Старый или неполный формат. Импорт заблокирован.",
+            val verified = head?.let { h -> h.manifestSetSha256 == r.manifestSetSha256 &&
+                h.records == r.records && h.groups == r.groups } == true
+            Text(when {
+                !r.supportsVerifiedImport -> "Старый или неполный формат. Импорт заблокирован."
+                verified -> "Содержимое сверено: проверенная копия актуальна."
+                else -> "Формат поддерживается. Доступна новая серверная копия."
+            },
                 style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Text("На телефоне",style=MaterialTheme.typography.titleSmall)
@@ -115,7 +124,13 @@ private fun OwnerSnapshotPanel(app: FitnessSummaryApp,uid: String) {
         Text("Проверенная копия дополняет локальный архив тренировок и данные Garmin на экранах «День», «Неделя» и «Тренды». Неподдержанные показатели остаются локальными.",
             style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         Text(note,style=MaterialTheme.typography.bodySmall)
-        Button(enabled=!busy,modifier=Modifier.fillMaxWidth(),onClick={
+        when {
+            syncing -> Text(refresh?.progress?.let(::progressLabel) ?: "Начинаем обновление…",style=MaterialTheme.typography.bodySmall)
+            refresh?.error != null -> Text(refresh.error,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error)
+            refresh?.progress?.phase == "UNCHANGED" -> Text("Копия актуальна. Блоки не скачивались.",style=MaterialTheme.typography.bodySmall)
+            refresh?.status != null -> Text("Проверенная копия обновлена. Скачано блоков: ${refresh.progress?.downloadedParts ?: 0}; повторно использовано: ${refresh.progress?.reusedParts ?: 0}.",style=MaterialTheme.typography.bodySmall)
+        }
+        Button(enabled=!busy && !syncing,modifier=Modifier.fillMaxWidth(),onClick={
             scope.launch {
                 busy=true;note="Проверяем метаданные…"
                 try {
@@ -130,34 +145,9 @@ private fun OwnerSnapshotPanel(app: FitnessSummaryApp,uid: String) {
                 } finally { busy=false }
             }
         }) { Text("Проверить сервер") }
-        if(remote?.supportsVerifiedImport==true) {
-            OutlinedButton(enabled=!busy,modifier=Modifier.fillMaxWidth(),onClick={
-                scope.launch {
-                    busy=true;note="Проверяем и загружаем части снимка… Не закрывайте эту вкладку."
-                    try {
-                        withContext(Dispatchers.IO) {
-                            importer.refresh(uid,gateway) { progress ->
-                                withContext(Dispatchers.Main.immediate) { note=progressLabel(progress) }
-                            }
-                        }
-                        note="Проверенная копия применена. Поддерживаемые показатели доступны на обычных экранах."
-                    AppLog.i("ServerSnapshot", "Import completed")
-                    } catch(e: SnapshotImportFailure) {
-                        val code=(e.cause as? FirebaseFirestoreException)?.code?.name ?: e.reasonCode
-                        val details="${phaseLabel(e.phase)}: $code (${e.completedParts}/${e.totalParts} блоков)."
-                        // Diagnostic metadata only: do not log exception messages, UID or data.
-                        AppLog.w("ServerSnapshot", "Import failed ${e.phase} $code ${e.completedParts}/${e.totalParts}")
-                        note="$details Предыдущая проверенная копия сохранена. Можно повторить загрузку."
-                    } catch(e: TimeoutCancellationException) {
-                        AppLog.w("ServerSnapshot", "Import timed out")
-                        note="Время ожидания истекло. Предыдущая проверенная копия сохранена."
-                    } catch(e: CancellationException) { throw e }
-                    catch(e: Exception) {
-                        AppLog.w("ServerSnapshot", "Import failed ${e.javaClass.simpleName}")
-                        note="Снимок не принят (${e.javaClass.simpleName}). Предыдущая копия сохранена."
-                    } finally { busy=false }
-                }
-            }) { Text("Загрузить проверенную копию") }
-        }
+        OutlinedButton(enabled=!busy && !syncing,modifier=Modifier.fillMaxWidth(),onClick={
+            note="Обновление запланировано. При отсутствии сети оно запустится автоматически."
+            app.snapshotSync.enqueueNow()
+        }) { Text(if(head==null) "Загрузить проверенную копию" else "Обновить сейчас") }
     }
 }

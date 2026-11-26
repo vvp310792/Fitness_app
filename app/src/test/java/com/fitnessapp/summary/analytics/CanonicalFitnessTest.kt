@@ -133,4 +133,28 @@ class CanonicalFitnessTest {
         assertEquals(3,CanonicalFitness.completedWeekDays(monday,day))
         assertEquals(7,CanonicalFitness.completedWeekDays(monday,day.plusWeeks(1)))
     }
+
+    @Test fun differentGoogleHealthOriginsCanReconcileCompleteMatchingIntervals() {
+        val a=FitnessSession(FitnessSource.GOOGLE_HEALTH,"a",FitnessSport.RUN,1700000000000L,1800,5000.0,transportOrigin="app.a")
+        val b=a.copy(nativeId="b",startMillis=a.startMillis+1000,transportOrigin="app.b")
+        val episodes=CanonicalFitness.episodes(listOf(a,b))
+        assertEquals(1,episodes.size)
+        assertFalse(episodes.single().ambiguous)
+        assertEquals(2,episodes.single().observations.size)
+    }
+
+    @Test fun sameStreamCollisionIsFlaggedNotSilentlyMerged() {
+        val a=FitnessSession(FitnessSource.GOOGLE_HEALTH,"a",FitnessSport.RUN,1700000000000L,1800,5000.0,transportOrigin="app.a")
+        val b=a.copy(nativeId="b",startMillis=a.startMillis+500)
+        val episodes=CanonicalFitness.episodes(listOf(a,b))
+        assertEquals(2,episodes.size)
+        assertTrue(episodes.all { it.ambiguous })
+    }
+
+    @Test fun missingOriginDoesNotProveIndependentStreams() {
+        val a=FitnessSession(FitnessSource.GOOGLE_HEALTH,"a",FitnessSport.RUN,1700000000000L,1800,5000.0,transportOrigin="app.a")
+        val b=a.copy(nativeId="b",transportOrigin=null)
+        assertTrue(CanonicalFitness.episodes(listOf(a,b)).all { it.ambiguous })
+    }
+
 }

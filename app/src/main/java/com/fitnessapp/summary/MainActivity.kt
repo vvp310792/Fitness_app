@@ -11,6 +11,13 @@ import com.fitnessapp.summary.ui.theme.FitnessSummaryTheme
 
 class MainActivity : ComponentActivity() {
 
+    override fun onStart() {
+        super.onStart()
+        val app = application as FitnessSummaryApp
+        app.snapshotSync.ensurePeriodic()
+        app.snapshotSync.enqueueNow()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
