@@ -37,7 +37,7 @@ jobs:
         run: gradle testDebugUnitTest --stacktrace
 
       - name: Run server manifest contract tests
-        run: python3 -m unittest discover -s tools -p 'test_server_manifest_contract.py'
+        run: python3 -m unittest discover -s tools -p 'test_server_*.py'
 
       - name: Upload JVM test reports
         if: always()
