@@ -7,7 +7,6 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.Source
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -34,7 +33,7 @@ class FirebaseServerSnapshotGateway(
         (get(key) as? List<*>)?.map { it as? String ?: error("invalid list item") } ?: error("missing list")
 
     private fun transient(e: Exception): Boolean = when (e) {
-        is TimeoutCancellationException -> true
+        is TimeoutCancellationException, is SnapshotTaskInterrupted -> true
         is FirebaseFirestoreException -> e.code in setOf(
             FirebaseFirestoreException.Code.UNAVAILABLE,
             FirebaseFirestoreException.Code.DEADLINE_EXCEEDED,
@@ -53,8 +52,10 @@ class FirebaseServerSnapshotGateway(
                 requireOwner()
                 return result
             } catch (e: Exception) {
-                if (e is CancellationException && e !is TimeoutCancellationException) throw e
-                if (attempt == 2 || !transient(e)) throw e
+                // A cancelled Firebase Task can throw CancellationException while
+                // our own coroutine is still active. Treat it as a retriable read.
+                val failure = normalizeSnapshotReadFailure(e)
+                if (attempt == 2 || !transient(failure)) throw failure
                 delay(1000L * (attempt + 1))
             }
         }

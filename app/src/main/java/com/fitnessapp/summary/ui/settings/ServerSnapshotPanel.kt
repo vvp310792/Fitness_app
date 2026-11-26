@@ -127,6 +127,7 @@ private fun OwnerSnapshotPanel(app: FitnessSummaryApp,uid: String) {
         when {
             syncing -> Text(refresh?.progress?.let(::progressLabel) ?: "Начинаем обновление…",style=MaterialTheme.typography.bodySmall)
             refresh?.error != null -> Text(refresh.error,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error)
+            refresh?.notice != null -> Text(refresh.notice,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             refresh?.progress?.phase == "UNCHANGED" -> Text("Копия актуальна. Блоки не скачивались.",style=MaterialTheme.typography.bodySmall)
             refresh?.status != null -> Text("Проверенная копия обновлена. Скачано блоков: ${refresh.progress?.downloadedParts ?: 0}; повторно использовано: ${refresh.progress?.reusedParts ?: 0}.",style=MaterialTheme.typography.bodySmall)
         }
@@ -146,7 +147,7 @@ private fun OwnerSnapshotPanel(app: FitnessSummaryApp,uid: String) {
             }
         }) { Text("Проверить сервер") }
         OutlinedButton(enabled=!busy && !syncing,modifier=Modifier.fillMaxWidth(),onClick={
-            note="Обновление запланировано. При отсутствии сети оно запустится автоматически."
+            note="Проверка запрошена. При отсутствии сети она будет отложена."
             app.snapshotSync.enqueueNow()
         }) { Text(if(head==null) "Загрузить проверенную копию" else "Обновить сейчас") }
     }
