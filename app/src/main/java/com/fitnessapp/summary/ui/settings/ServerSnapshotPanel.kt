@@ -24,6 +24,10 @@ import com.fitnessapp.summary.sync.FirebaseSetup
 import com.fitnessapp.summary.sync.RoomServerSnapshotSink
 import com.fitnessapp.summary.sync.ServerSnapshotDatabase
 import com.fitnessapp.summary.sync.ServerSnapshotImporter
+import com.fitnessapp.summary.sync.SnapshotImportFailure
+import com.fitnessapp.summary.sync.SnapshotProgress
+import com.fitnessapp.summary.debug.AppLog
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.fitnessapp.summary.sync.ServerSnapshotOverview
 import com.fitnessapp.summary.ui.components.InfoCard
 import com.fitnessapp.summary.ui.components.StatRow
@@ -37,6 +41,23 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+
+private fun phaseLabel(phase: String): String = when (phase) {
+    "STATUS" -> "Читаем статус"
+    "CATALOG_READ" -> "Загружаем каталог"
+    "CATALOG_VERIFY" -> "Проверяем каталог"
+    "PART_READ" -> "Загружаем блоки"
+    "PART_VERIFY" -> "Проверяем контрольные суммы"
+    "LOCAL_WRITE" -> "Сохраняем на телефон"
+    "FINAL_VERIFY" -> "Итоговая проверка"
+    "ACTIVATE" -> "Активируем копию"
+    else -> phase
+}
+
+private fun progressLabel(progress: SnapshotProgress): String =
+    phaseLabel(progress.phase) + if (progress.partsTotal > 0)
+        " · ${progress.partsDone}/${progress.partsTotal} блоков, ${formatCount(progress.rowsDone)}/${formatCount(progress.rowsTotal)} записей"
+    else "…"
 
 private val dateFormat=DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm",Locale("ru"))
 private fun snapshotTime(seconds: Long): String =
@@ -112,15 +133,28 @@ private fun OwnerSnapshotPanel(app: FitnessSummaryApp,uid: String) {
         if(remote?.supportsVerifiedImport==true) {
             OutlinedButton(enabled=!busy,modifier=Modifier.fillMaxWidth(),onClick={
                 scope.launch {
-                    busy=true;note="Проверяем и загружаем части снимка…"
+                    busy=true;note="Проверяем и загружаем части снимка… Не закрывайте эту вкладку."
                     try {
-                        withContext(Dispatchers.IO) { importer.refresh(uid,gateway) }
+                        withContext(Dispatchers.IO) {
+                            importer.refresh(uid,gateway) { progress ->
+                                withContext(Dispatchers.Main.immediate) { note=progressLabel(progress) }
+                            }
+                        }
                         note="Проверенная копия применена. Поддерживаемые показатели доступны на обычных экранах."
+                    AppLog.i("ServerSnapshot", "Import completed")
+                    } catch(e: SnapshotImportFailure) {
+                        val code=(e.cause as? FirebaseFirestoreException)?.code?.name ?: e.reasonCode
+                        val details="${phaseLabel(e.phase)}: $code (${e.completedParts}/${e.totalParts} блоков)."
+                        // Diagnostic metadata only: do not log exception messages, UID or data.
+                        AppLog.w("ServerSnapshot", "Import failed ${e.phase} $code ${e.completedParts}/${e.totalParts}")
+                        note="$details Предыдущая проверенная копия сохранена. Можно повторить загрузку."
                     } catch(e: TimeoutCancellationException) {
+                        AppLog.w("ServerSnapshot", "Import timed out")
                         note="Время ожидания истекло. Предыдущая проверенная копия сохранена."
                     } catch(e: CancellationException) { throw e }
                     catch(e: Exception) {
-                        note="Снимок не принят: ошибка проверки или загрузки. Предыдущая копия сохранена."
+                        AppLog.w("ServerSnapshot", "Import failed ${e.javaClass.simpleName}")
+                        note="Снимок не принят (${e.javaClass.simpleName}). Предыдущая копия сохранена."
                     } finally { busy=false }
                 }
             }) { Text("Загрузить проверенную копию") }
