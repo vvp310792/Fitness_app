@@ -1,6 +1,7 @@
 package com.fitnessapp.summary.analytics
 
 import androidx.health.connect.client.records.ExerciseSessionRecord
+import com.fitnessapp.summary.sync.ServerWorkoutProjection
 import com.fitnessapp.summary.data.GarminActivity
 import com.fitnessapp.summary.data.StravaActivity
 import com.fitnessapp.summary.data.StrengthSet
@@ -39,7 +40,15 @@ data class ArchiveEpisode(
     val garmin: GarminActivity? get() = observations.firstNotNullOfOrNull { it.garmin }
 }
 
-data class ArchiveResult(val episodes: List<ArchiveEpisode>, val rejectedObservations: Int)
+data class ArchiveResult(
+    val episodes: List<ArchiveEpisode>,
+    val rejectedObservations: Int,
+    val serverRawCount: Int = 0,
+    val serverMappedCount: Int = 0,
+    val serverRejected: Int = 0,
+    val serverEmptyGymSessions: Int = 0,
+    val serverIdentityConflicts: Int = 0
+)
 
 private fun sourceOrder(s: FitnessSource): Int = when (s) {
     FitnessSource.GARMIN -> 0
@@ -86,7 +95,8 @@ object LocalWorkoutArchive {
 
     /** Use one common projection for archive consumers. Ambiguous groups remain
      * visible and are excluded from confirmed-only sums, never silently erased. */
-    fun build(health: List<Workout>,garmin: List<GarminActivity>,strava: List<StravaActivity>,strength: List<StrengthSet>): ArchiveResult {
+    fun build(health: List<Workout>,garmin: List<GarminActivity>,strava: List<StravaActivity>,strength: List<StrengthSet>,
+        server: ServerWorkoutProjection = ServerWorkoutProjection()): ArchiveResult {
         val rows = mutableListOf<ArchiveObservation>()
         var rejected = 0
         for (r in health) {
@@ -118,10 +128,41 @@ object LocalWorkoutArchive {
         // sees invalid repeated identities, retain a warning instead of crashing.
         val unique=rows.groupBy { it.session.key }
         rejected += unique.values.sumOf { it.size-1 }
-        val byKey=unique.mapValues { it.value.first() }
+        val byKey=unique.mapValues { it.value.first() }.toMutableMap()
+        var identityConflicts=0
+        for (remote in server.observations) {
+            val key=remote.session.key
+            val local=byKey[key]
+            if (local==null) {
+                byKey[key]=remote
+                continue
+            }
+            // Same source + stable native identity, not just a matching date.
+            // Do not hide a contradictory timestamp or known sport behind an overwrite.
+            val knownLocal=local.session.sport !in setOf(FitnessSport.UNKNOWN,FitnessSport.OTHER)
+            val knownRemote=remote.session.sport !in setOf(FitnessSport.UNKNOWN,FitnessSport.OTHER)
+            if (kotlin.math.abs(local.session.startMillis-remote.session.startMillis)>180000 ||
+                (knownLocal && knownRemote && local.session.sport!=remote.session.sport)) {
+                identityConflicts++
+                continue
+            }
+            // Keep detailed local data, enrich matching IDs with verified elapsed time.
+            byKey[key]=local.copy(
+                session=local.session.copy(
+                    elapsedSeconds=remote.session.elapsedSeconds ?: local.session.elapsedSeconds,
+                    distanceMeters=local.session.distanceMeters ?: remote.session.distanceMeters
+                ),
+                trainingSeconds=local.trainingSeconds ?: remote.trainingSeconds,
+                averageHr=local.averageHr ?: remote.averageHr,
+                maxHr=local.maxHr ?: remote.maxHr,
+                sets=local.sets.ifEmpty { remote.sets },
+                garmin=local.garmin ?: remote.garmin
+            )
+        }
         val episodes=CanonicalFitness.episodes(byKey.values.map { it.session }).map { e ->
             ArchiveEpisode(e,byKey.getValue(e.primary.key),e.observations.map { byKey.getValue(it.key) })
         }
-        return ArchiveResult(episodes.sortedByDescending { it.primary.session.startMillis },rejected)
+        return ArchiveResult(episodes.sortedByDescending { it.primary.session.startMillis },rejected,
+            server.rawCount,server.observations.size,server.rejected,server.emptyGymSessions,identityConflicts)
     }
 }

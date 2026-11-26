@@ -80,12 +80,7 @@ private fun secondsLabel(seconds: Long): String {
 fun WorkoutsScreen(app: FitnessSummaryApp) {
     val today=LocalDate.now()
     val stream=remember(app) {
-        combine(app.database.workoutDao().observeAll(),
-            app.database.garminActivityDao().observeRange(Long.MIN_VALUE,Long.MAX_VALUE),
-            app.database.stravaActivityDao().observeRange(Long.MIN_VALUE,Long.MAX_VALUE),
-            app.database.strengthSetDao().observeRange(Long.MIN_VALUE,Long.MAX_VALUE)) { h,g,s,w ->
-            LocalWorkoutArchive.build(h,g,s,w)
-        }.flowOn(Dispatchers.Default)
+        app.unifiedRead.observeArchive()
     }
     val archive: ArchiveResult? by stream.collectAsState(initial=null)
     var sportName by rememberSaveable { mutableStateOf("ALL") }
@@ -108,7 +103,9 @@ fun WorkoutsScreen(app: FitnessSummaryApp) {
         verticalArrangement=Arrangement.spacedBy(10.dp)) {
         item {
             Text("Тренировки",style=MaterialTheme.typography.headlineMedium)
-            Text("Локальный архив • данные сервера пока не подключены",
+            Text(if ((archive?.serverRawCount ?: 0)>0)
+                "Единый архив • проверенная серверная копия + локальная база"
+                else "Локальный архив • загрузите проверенную копию в разделе «Я»",
                 style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item {
@@ -141,13 +138,22 @@ fun WorkoutsScreen(app: FitnessSummaryApp) {
                         style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     if(uncertain>0) Text("Сомнительные совпадения показаны отдельно и не входят в эти суммы.",
                         style=MaterialTheme.typography.bodySmall)
+                    val server=archive
+                    if (server!=null && server.serverRawCount>0) {
+                        StatRow("Записей тренировок с ПК",formatCount(server.serverRawCount))
+                        StatRow("Распознано с ПК",formatCount(server.serverMappedCount))
+                        if(server.serverEmptyGymSessions>0) Text("Пустые планы GymUp: ${server.serverEmptyGymSessions}. Не считаются тренировками.",style=MaterialTheme.typography.bodySmall)
+                        if(server.serverRejected>0 || server.serverIdentityConflicts>0) Text(
+                            "Не распознано: ${server.serverRejected}; конфликтов ID: ${server.serverIdentityConflicts}. Исходники сохранены.",
+                            style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error)
+                    }
                     val rejected=archive?.rejectedObservations ?: 0
                     if(rejected>0) Text("Некорректных или повторных локальных идентификаторов: $rejected. Исходные записи сохранены.",
                         style=MaterialTheme.typography.bodySmall)
                 }
             }
             if(filtered.isEmpty()) item {
-                Text(if(archive?.episodes.isNullOrEmpty()) "В локальной базе пока нет занятий." else "Нет занятий по выбранным фильтрам.")
+                Text(if(archive?.episodes.isNullOrEmpty()) "В доступном архиве пока нет занятий." else "Нет занятий по выбранным фильтрам.")
                 if(!archive?.episodes.isNullOrEmpty()) TextButton(onClick={period=0;sportName="ALL";query=""}) { Text("Сбросить фильтры") }
             }
             filtered.groupBy { it.primary.day }.forEach { (day,episodes) ->

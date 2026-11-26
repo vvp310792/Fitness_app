@@ -110,16 +110,16 @@ fun TrendsScreen(app: FitnessSummaryApp) {
 
     val smoothWindow = LifestyleAnalytics.smoothWindowDaysFor(windowDays)
 
-    val summaries by remember(windowDays) { app.database.garminDailyExtraDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
-    val sleeps by remember(windowDays) { app.database.garminSleepDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
+    val summaries by remember(windowDays) { app.unifiedRead.observeGarminDays(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
+    val sleeps by remember(windowDays) { app.unifiedRead.observeGarminSleeps(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val hrvs by remember(windowDays) { app.database.garminHrvDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val readiness by remember(windowDays) { app.database.garminReadinessDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val training by remember(windowDays) { app.database.garminTrainingDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val weights by remember(windowDays) { app.database.garminBodyCompositionDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
-    val activities by remember(windowDays) { app.database.garminActivityDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
+    val activities by remember(windowDays) { app.unifiedRead.observeGarminActivities(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val healthDays by remember(windowDays) { app.summaryRepository.observeRange(from, today) }.collectAsState(initial = emptyList())
     val scaleWeights by remember(windowDays) { app.database.scaleMeasurementDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
-    val strengthSets by remember(windowDays) { app.database.strengthSetDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
+    val strengthSets by remember(windowDays) { app.unifiedRead.observeStrengthSets(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val workouts by remember(windowDays) { app.workoutRepository.observeRange(from, today) }.collectAsState(initial = emptyList())
     val stravaActivities by remember(windowDays) { app.database.stravaActivityDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val fitDays by remember(windowDays) { app.database.fitDayDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
@@ -134,7 +134,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     // counting, and how far the phone's count sits below it. Computed over everything and
     // deliberately not keyed to the chips - an estimate that moves when the axis moves is not
     // an estimate, which is the same reason HRmax is sampled over a fixed year.
-    val allGarminDays by remember { app.database.garminDailyExtraDao().observeRange(0, toEpoch) }.collectAsState(initial = emptyList())
+    val allGarminDays by remember { app.unifiedRead.observeGarminDays(0, toEpoch) }.collectAsState(initial = emptyList())
     val allFitDays by remember { app.database.fitDayDao().observeRange(0, toEpoch) }.collectAsState(initial = emptyList())
     val stepGap = remember(allFitDays, allGarminDays) {
         LifestyleAnalytics.phoneStepGap(allFitDays, allGarminDays)
@@ -172,7 +172,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     // made this screen and the Я tab disagree about the same number.
     val sampleFrom = remember { today.minusDays((IntensityAnalytics.HR_MAX_SAMPLE_DAYS - 1).toLong()) }
     val sampleActivities by remember {
-        app.database.garminActivityDao().observeRange(sampleFrom.toEpochDay(), toEpoch)
+        app.unifiedRead.observeGarminActivities(sampleFrom.toEpochDay(), toEpoch)
     }.collectAsState(initial = emptyList())
     val sampleWorkouts by remember { app.workoutRepository.observeRange(sampleFrom, today) }
         .collectAsState(initial = emptyList())

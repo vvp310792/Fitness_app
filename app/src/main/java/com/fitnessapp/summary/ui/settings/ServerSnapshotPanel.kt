@@ -91,7 +91,7 @@ private fun OwnerSnapshotPanel(app: FitnessSummaryApp,uid: String) {
             StatRow("Применён",snapshotTime(local.appliedAtMillis/1000))
             StatRow("Проверенных записей",formatCount(local.records))
         }
-        Text("Тестовый контур: обычные экраны пока используют старую локальную базу.",
+        Text("Проверенная копия дополняет локальный архив тренировок и данные Garmin на экранах «День», «Неделя» и «Тренды». Неподдержанные показатели остаются локальными.",
             style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         Text(note,style=MaterialTheme.typography.bodySmall)
         Button(enabled=!busy,modifier=Modifier.fillMaxWidth(),onClick={
@@ -115,7 +115,7 @@ private fun OwnerSnapshotPanel(app: FitnessSummaryApp,uid: String) {
                     busy=true;note="Проверяем и загружаем части снимка…"
                     try {
                         withContext(Dispatchers.IO) { importer.refresh(uid,gateway) }
-                        note="Проверенная копия применена в тестовом хранилище."
+                        note="Проверенная копия применена. Поддерживаемые показатели доступны на обычных экранах."
                     } catch(e: TimeoutCancellationException) {
                         note="Время ожидания истекло. Предыдущая проверенная копия сохранена."
                     } catch(e: CancellationException) { throw e }

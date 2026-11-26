@@ -29,6 +29,7 @@ import com.fitnessapp.summary.sync.CloudMirror
 import com.fitnessapp.summary.sync.FirebaseSetup
 import com.fitnessapp.summary.sync.FirestoreSyncManager
 import com.fitnessapp.summary.sync.InboxApplier
+import com.fitnessapp.summary.sync.UnifiedFitnessRead
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -49,6 +50,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 class FitnessSummaryApp : Application() {
 
     val database: AppDatabase by lazy { AppDatabase.getInstance(this) }
+    val unifiedRead: UnifiedFitnessRead by lazy { UnifiedFitnessRead(this) }
 
     val authManager: AuthManager by lazy { AuthManager(BuildConfig.GOOGLE_WEB_CLIENT_ID) }
 

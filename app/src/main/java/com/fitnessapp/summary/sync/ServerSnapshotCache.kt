@@ -62,6 +62,18 @@ interface ServerSnapshotDao {
         "AND day BETWEEN :fromDay AND :throughDay ORDER BY day, nativeId")
     fun observeActiveRows(uid: String, source: String, kind: String, fromDay: String, throughDay: String): Flow<List<SnapshotRow>>
 
+    @Query("SELECT * FROM snapshot_rows WHERE ownerUid = :uid AND source = :source AND kind IN (:kinds) " +
+        "AND generation = (SELECT generation FROM snapshot_heads WHERE ownerUid = :uid) " +
+        "AND day BETWEEN :fromDay AND :throughDay ORDER BY day, nativeId")
+    fun observeActiveKinds(uid: String, source: String, kinds: List<String>, fromDay: String, throughDay: String): Flow<List<SnapshotRow>>
+
+    @Query("SELECT * FROM snapshot_rows WHERE ownerUid = :uid " +
+        "AND generation = (SELECT generation FROM snapshot_heads WHERE ownerUid = :uid) " +
+        "AND ((source = 'garmin' AND kind = 'activity') OR (source = 'gymup' AND kind = 'training') " +
+        "OR (source = 'google_health' AND kind = 'exercise')) " +
+        "AND day BETWEEN :fromDay AND :throughDay ORDER BY day, source, nativeId")
+    fun observeActiveWorkouts(uid: String, fromDay: String, throughDay: String): Flow<List<SnapshotRow>>
+
     @Query("DELETE FROM snapshot_rows WHERE ownerUid = :uid AND generation = :generation " +
         "AND NOT EXISTS (SELECT 1 FROM snapshot_heads WHERE ownerUid = :uid AND generation = :generation)")
     suspend fun discardInactive(uid: String, generation: String)

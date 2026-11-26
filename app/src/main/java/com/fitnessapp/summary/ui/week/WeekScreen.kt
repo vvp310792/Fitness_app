@@ -92,8 +92,8 @@ fun WeekScreen(app: FitnessSummaryApp) {
     // disagreed in the first place. All empty for an install without the Garmin login.
     val weekFromEpoch = selectedWeekStart.toEpochDay()
     val weekToEpoch = selectedWeekStart.plusDays(6).toEpochDay()
-    val garminDaysRange by remember(selectedWeekStart) { app.database.garminDailyExtraDao().observeRange(weekFromEpoch - 7, weekToEpoch) }.collectAsState(initial = emptyList())
-    val garminSleepsRange by remember(selectedWeekStart) { app.database.garminSleepDao().observeRange(weekFromEpoch - 7, weekToEpoch) }.collectAsState(initial = emptyList())
+    val garminDaysRange by remember(selectedWeekStart) { app.unifiedRead.observeGarminDays(weekFromEpoch - 7, weekToEpoch) }.collectAsState(initial = emptyList())
+    val garminSleepsRange by remember(selectedWeekStart) { app.unifiedRead.observeGarminSleeps(weekFromEpoch - 7, weekToEpoch) }.collectAsState(initial = emptyList())
     val garminDays = remember(garminDaysRange, weekFromEpoch) { garminDaysRange.filter { it.dateEpochDay >= weekFromEpoch } }
     val garminSleeps = remember(garminSleepsRange, weekFromEpoch) { garminSleepsRange.filter { it.dateEpochDay >= weekFromEpoch } }
     val fitDaysRange by remember(selectedWeekStart) { app.database.fitDayDao().observeRange(weekFromEpoch - 7, weekToEpoch) }.collectAsState(initial = emptyList())
@@ -114,7 +114,7 @@ fun WeekScreen(app: FitnessSummaryApp) {
     }
     val garminHrvs by remember(selectedWeekStart) { app.database.garminHrvDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
     val garminReadiness by remember(selectedWeekStart) { app.database.garminReadinessDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
-    val garminActivities by remember(selectedWeekStart) { app.database.garminActivityDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
+    val garminActivities by remember(selectedWeekStart) { app.unifiedRead.observeGarminActivities(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
     val garminWeek = remember(garminDays, garminSleeps, garminHrvs, garminReadiness, garminActivities, selectedWeekStart) {
         LifestyleAnalytics.computeWeek(selectedWeekStart, garminDays, garminSleeps, garminHrvs, garminReadiness, garminActivities)
     }
