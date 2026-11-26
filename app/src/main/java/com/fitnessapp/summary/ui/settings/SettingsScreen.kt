@@ -1053,17 +1053,9 @@ private fun HeartRateZoneSection(app: FitnessSummaryApp) {
     val storedHrMax by app.heartRateZones.hrMax.collectAsState()
     val garminZones by remember { app.database.garminHeartRateZoneDao().observeAll() }
         .collectAsState(initial = emptyList())
-    val activities by remember {
-        app.database.garminActivityDao().observeRange(sampleFrom.toEpochDay(), today.toEpochDay())
-    }.collectAsState(initial = emptyList())
-    val workouts by remember { app.workoutRepository.observeRange(sampleFrom, today) }
-        .collectAsState(initial = emptyList())
-
-    // The same fixed year the Тренды card samples, so the two screens can never report a
-    // different estimate for the same person.
-    val suggested = remember(activities, workouts) {
-        IntensityAnalytics.suggestHrMax(IntensityAnalytics.sessions(activities, workouts))
-    }
+    val archive: com.fitnessapp.summary.analytics.ArchiveResult? by remember(app) { app.unifiedRead.observeArchive() }.collectAsState(initial=null)
+    val sample=remember(archive,sampleFrom,today) { com.fitnessapp.summary.analytics.WorkoutPeriod.between(archive,sampleFrom.toEpochDay(),today.toEpochDay()) }
+    val suggested=remember(sample) { IntensityAnalytics.suggestHrMax(sample.intensitySessions()) }
     val fromGarmin = remember(garminZones) { IntensityAnalytics.garminDefault(garminZones) }
     val inForce = remember(garminZones, storedHrMax, suggested) {
         ZoneLadders.of(garminZones, storedHrMax, suggested)?.primary

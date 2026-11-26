@@ -45,6 +45,38 @@ class UnifiedFitnessRead(private val app: FitnessSummaryApp) {
             LocalDate.ofEpochDay(from).toString(),LocalDate.ofEpochDay(to).toString()) }
             .map(ServerFitnessProjection::workouts)
 
+    /** One daily value per metric, with Google Health filling gaps in local Health Connect.
+     * The existing DayView still gives original Garmin measurements precedence. */
+    fun observeHealthDays(from: Long,to: Long): Flow<List<GoogleHealthDay>> =
+        combine(db.dailySummaryDao().observeRange(from,to),rows("google_health",listOf(
+            "steps","distance","active-energy-burned","heart-rate","daily-resting-heart-rate",
+            "sleep","total-calories","floors"),from-1,to+1)) { local,remote ->
+            val byDay=local.associateBy { it.dateEpochDay }
+            val google=GoogleHealthProjection.days(remote).associateBy { it.summary.dateEpochDay }
+            (byDay.keys+google.keys).filter { it in from..to }.sorted().mapNotNull { day ->
+                val r=google[day]
+                GoogleHealthProjection.merge(byDay[day],r?.summary)?.let {
+                    GoogleHealthDay(it,r?.floors,r?.metricSources.orEmpty())
+                }
+            }
+        }.flowOn(Dispatchers.Default)
+
+    fun observeHeightUpTo(day:Long):Flow<GoogleHeight?> =
+        rows("google_health",listOf("height"),LocalDate.of(1900,1,1).toEpochDay(),day+1)
+            .map { GoogleHealthProjection.heights(it).lastOrNull { r -> r.day<=day } }.flowOn(Dispatchers.Default)
+
+    /** Select one coherent weigh-in per calendar day across primary and transported copies. */
+    fun observeBodyDays(from:Long,to:Long):Flow<List<BodyDay>> = combine(
+        db.scaleMeasurementDao().observeRange(from,to),
+        db.garminBodyCompositionDao().observeRange(from,to),
+        db.fitDayDao().observeRange(from,to),
+        ownerRows { uid -> snapshots.observeActiveBody(uid) }
+    ) { scales,garmin,fit,remote ->
+        BodyProjection.choose(scales.mapNotNull(BodyProjection::scale)+garmin.mapNotNull(BodyProjection::garmin)+
+            fit.mapNotNull(BodyProjection::fit)+BodyProjection.readings(remote))
+            .filter { it.day in from..to }
+    }.flowOn(Dispatchers.Default)
+
     fun observeArchive(): Flow<ArchiveResult> {
         val first=LocalDate.of(1900,1,1).toEpochDay()
         val last=LocalDate.of(9999,12,31).toEpochDay()

@@ -1,5 +1,11 @@
 package com.fitnessapp.summary.ui.trends
 
+import com.fitnessapp.summary.analytics.ArchiveResult
+import com.fitnessapp.summary.analytics.WorkoutPeriod
+import com.fitnessapp.summary.data.DayView
+import com.fitnessapp.summary.sync.BodyProjection
+import com.fitnessapp.summary.ui.workouts.WorkoutTotals
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -115,20 +121,23 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     val hrvs by remember(windowDays) { app.database.garminHrvDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val readiness by remember(windowDays) { app.database.garminReadinessDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val training by remember(windowDays) { app.database.garminTrainingDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
-    val weights by remember(windowDays) { app.database.garminBodyCompositionDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
-    val activities by remember(windowDays) { app.unifiedRead.observeGarminActivities(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
-    val healthDays by remember(windowDays) { app.summaryRepository.observeRange(from, today) }.collectAsState(initial = emptyList())
-    val scaleWeights by remember(windowDays) { app.database.scaleMeasurementDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
+    val bodyDays by remember(windowDays) { app.unifiedRead.observeBodyDays(fromEpoch,toEpoch) }.collectAsState(initial=emptyList())
+    val weights=remember(bodyDays) { bodyDays.mapNotNull { it.garmin } }
+    val scaleWeights=remember(bodyDays) { bodyDays.mapNotNull { it.scale } }
+    val archive: ArchiveResult? by remember(app) { app.unifiedRead.observeArchive() }.collectAsState(initial=null)
+    val period=remember(archive,fromEpoch,toEpoch) { WorkoutPeriod.between(archive,fromEpoch,toEpoch) }
+    val activities=period.garminActivities
+    val healthRows by remember(windowDays) { app.unifiedRead.observeHealthDays(fromEpoch,toEpoch) }.collectAsState(initial=emptyList())
+    val healthDays=remember(healthRows) { healthRows.map { it.summary } }
     val strengthSets by remember(windowDays) { app.unifiedRead.observeStrengthSets(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
-    val workouts by remember(windowDays) { app.workoutRepository.observeRange(from, today) }.collectAsState(initial = emptyList())
-    val stravaActivities by remember(windowDays) { app.database.stravaActivityDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
     val fitDays by remember(windowDays) { app.database.fitDayDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
 
     // Google Fit sits beneath Health Connect, which sits beneath Garmin - see
     // LifestyleAnalytics.withFitFallback. Only the charts get it: the insight rules are
     // about metrics only the watch produces, and a phone pedometer from 2016 has no
     // business inside a verdict about recovery.
-    val daysWithFit = remember(healthDays, fitDays) { LifestyleAnalytics.withFitFallback(healthDays, fitDays) }
+    val daysWithFit = remember(healthDays, fitDays) { DayView.mergeRange(healthDays,emptyList(),emptyList(),fitDays) }
+    val mergedDays=remember(healthDays,summaries,sleeps,fitDays) { DayView.mergeRange(healthDays,summaries,sleeps,fitDays) }
 
     // Two facts about the ACCOUNT, not about the chosen period: when the watch started
     // counting, and how far the phone's count sits below it. Computed over everything and
@@ -144,8 +153,8 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     // Weekly kilometres per sport, from both sources with the duplicates dropped. Computed
     // once for all three sports: the de-duplication has to see every session, not one
     // sport's worth, or a ride would be matched against a run.
-    val sportWeeks = remember(activities, workouts, stravaActivities, windowDays) {
-        val merged = SportDistanceAnalytics.sessions(activities, workouts, stravaActivities)
+    val sportWeeks = remember(period, windowDays) {
+        val merged = period.sportSessions()
         DistanceSport.entries
             .map { it to SportDistanceAnalytics.weeks(it, merged, from, today) }
             .filter { (_, weeks) -> weeks.any { it.meters > 0 } }
@@ -157,9 +166,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
 
     // Every recorded session of the window, from both sources, de-duplicated once - the
     // same merge the distance charts do, but keeping all sports rather than three.
-    val intensitySessions = remember(activities, workouts, stravaActivities) {
-        IntensityAnalytics.sessions(activities, workouts, stravaActivities)
-    }
+    val intensitySessions = remember(period) { period.intensitySessions() }
 
     // The zones the user actually has configured in Garmin - the authoritative ladder,
     // read rather than modelled (see analytics/ZoneBoundaries).
@@ -171,14 +178,8 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     // Reading it off the chip window made every boundary move when the period changed, and
     // made this screen and the Я tab disagree about the same number.
     val sampleFrom = remember { today.minusDays((IntensityAnalytics.HR_MAX_SAMPLE_DAYS - 1).toLong()) }
-    val sampleActivities by remember {
-        app.unifiedRead.observeGarminActivities(sampleFrom.toEpochDay(), toEpoch)
-    }.collectAsState(initial = emptyList())
-    val sampleWorkouts by remember { app.workoutRepository.observeRange(sampleFrom, today) }
-        .collectAsState(initial = emptyList())
-    val suggestedHrMax = remember(sampleActivities, sampleWorkouts) {
-        IntensityAnalytics.suggestHrMax(IntensityAnalytics.sessions(sampleActivities, sampleWorkouts))
-    }
+    val samplePeriod=remember(archive,sampleFrom,toEpoch) { WorkoutPeriod.between(archive,sampleFrom.toEpochDay(),toEpoch) }
+    val suggestedHrMax=remember(samplePeriod) { IntensityAnalytics.suggestHrMax(samplePeriod.intensitySessions()) }
 
     // Every ladder Garmin has configured, not just DEFAULT: it counts a run on the running
     // profile and the gym on the default one, and the card must not contradict that.
@@ -202,7 +203,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     val insights = remember(inputs) { LifestyleAnalytics.insights(inputs) }
     val palette = metricPalette()
 
-    val nothingFromGarmin = summaries.isEmpty() && sleeps.isEmpty() && readiness.isEmpty() && hrvs.isEmpty()
+    val nothingFromGarmin = mergedDays.isEmpty() && readiness.isEmpty() && hrvs.isEmpty() && bodyDays.isEmpty() && healthRows.isEmpty()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -234,6 +235,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
             }
         }
 
+        if(archive!=null) item { InfoCard("Тренировки за период") { WorkoutTotals(period) } }
         if (nothingFromGarmin) {
             item {
                 EmptyState(
@@ -276,7 +278,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
 
         trendCard("Готовность к тренировке", LifestyleAnalytics.readinessTrend(readiness), fromEpoch, toEpoch, palette.readiness, smoothWindow, floorAtZero = true) { it.toInt().toString() }
         trendCard("Sleep Score", LifestyleAnalytics.sleepScoreTrend(sleeps), fromEpoch, toEpoch, palette.sleep, smoothWindow, floorAtZero = true) { it.toInt().toString() }
-        trendCard("Длительность сна", LifestyleAnalytics.sleepDurationTrend(sleeps), fromEpoch, toEpoch, palette.sleep, smoothWindow, goal = 480f) { formatSleepDuration(it.toInt()) }
+        trendCard("Длительность сна", mergedDays.filter { it.sleepTotalMinutes>0 }.map { TrendPoint(it.dateEpochDay,it.sleepTotalMinutes.toFloat()) }, fromEpoch, toEpoch, palette.sleep, smoothWindow, goal = 480f) { formatSleepDuration(it.toInt()) }
 
         val latestHrv = hrvs.lastOrNull { it.hasBaseline }
         trendCard(
@@ -370,7 +372,19 @@ fun TrendsScreen(app: FitnessSummaryApp) {
             ) { it.toInt().toString() }
         }
 
-        val weightPoints = LifestyleAnalytics.weightTrend(weights, scaleWeights, fitDays)
+        val weightPoints = bodyDays.map { TrendPoint(it.day,it.weightGrams/1000f) }
+        val floorsByDay=summaries.filter { it.floorsAscended>0 }.associate { it.dateEpochDay to it.floorsAscended.toFloat() }.toMutableMap()
+        healthRows.forEach { r -> r.floors?.let { v -> floorsByDay.putIfAbsent(r.summary.dateEpochDay,v.toFloat()) } }
+        trendCard("Этажи",floorsByDay.entries.sortedBy { it.key }.map { TrendPoint(it.key,it.value) },fromEpoch,toEpoch,palette.steps,smoothWindow,floorAtZero=true) { formatDecimal(it) }
+        trendCard("Средний пульс за день",mergedDays.filter { it.avgHeartRate>0 }.map { TrendPoint(it.dateEpochDay,it.avgHeartRate.toFloat()) },fromEpoch,toEpoch,palette.heart,smoothWindow) { formatDecimal(it) }
+        trendCard("Дневная дистанция",mergedDays.filter { it.distanceMeters>0 }.map { TrendPoint(it.dateEpochDay,it.distanceMeters/1000f) },fromEpoch,toEpoch,palette.distance,smoothWindow,floorAtZero=true) { "${formatDecimal(it)} км" }
+        for(source in listOf(BodyProjection.Z,BodyProjection.G,BodyProjection.H,BodyProjection.GH)) {
+            val values=bodyDays.filter { it.source==source }
+            trendCard("Жир, % · $source",values.filter { it.fatPercent>0 }.map { TrendPoint(it.day,it.fatPercent) },fromEpoch,toEpoch,palette.weight,smoothWindow) { formatDecimal(it) }
+            trendCard("Вода, % · $source",values.filter { it.waterPercent>0 }.map { TrendPoint(it.day,it.waterPercent) },fromEpoch,toEpoch,palette.weight,smoothWindow) { formatDecimal(it) }
+            val muscleTitle=if(source==BodyProjection.G) "Скелетная мышечная масса Garmin, кг" else "Мышечная масса, кг · $source"
+            trendCard(muscleTitle,values.filter { it.muscleGrams>0 }.map { TrendPoint(it.day,it.muscleGrams/1000f) },fromEpoch,toEpoch,palette.weight,smoothWindow) { formatDecimal(it) }
+        }
         if (weightPoints.isNotEmpty()) trendCard("Вес, кг", weightPoints, fromEpoch, toEpoch, palette.weight, smoothWindow) { formatDecimal(it) }
 
         intensitySection(intensity, suggestedHrMax, intensitySessions.size, palette)

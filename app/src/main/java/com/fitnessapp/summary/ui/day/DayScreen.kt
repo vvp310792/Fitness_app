@@ -1,5 +1,11 @@
 package com.fitnessapp.summary.ui.day
 
+import com.fitnessapp.summary.analytics.ArchiveResult
+import com.fitnessapp.summary.analytics.WorkoutPeriod
+import com.fitnessapp.summary.sync.BodyDay
+import com.fitnessapp.summary.ui.workouts.ArchiveCard
+import com.fitnessapp.summary.ui.workouts.WorkoutTotals
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -95,17 +101,20 @@ fun DayScreen(app: FitnessSummaryApp) {
 
     // Keyed on the date so switching days resubscribes to the right row instead of
     // holding the Flow built for the day the screen first opened with.
-    val summary by remember(selectedDate) { app.summaryRepository.observeDay(selectedDate) }.collectAsState(initial = null)
-    val workouts by remember(selectedDate) { app.workoutRepository.observeForDay(selectedDate) }.collectAsState(initial = emptyList())
+    val healthRows by remember(selectedDate) { app.unifiedRead.observeHealthDays(epochDay,epochDay) }.collectAsState(initial = emptyList())
+    val health=healthRows.firstOrNull()
+    val summary=health?.summary
+    val archive: ArchiveResult? by remember(app) { app.unifiedRead.observeArchive() }.collectAsState(initial=null)
+    val period=remember(archive,epochDay) { WorkoutPeriod.between(archive,epochDay,epochDay) }
 
     val garmin by remember(selectedDate) { app.unifiedRead.observeGarminDay(epochDay) }.collectAsState(initial = null)
     val garminSleep by remember(selectedDate) { app.unifiedRead.observeGarminSleep(epochDay) }.collectAsState(initial = null)
     val hrv by remember(selectedDate) { app.database.garminHrvDao().observeDay(epochDay) }.collectAsState(initial = null)
     val readiness by remember(selectedDate) { app.database.garminReadinessDao().observeDay(epochDay) }.collectAsState(initial = null)
     val training by remember(selectedDate) { app.database.garminTrainingDao().observeDay(epochDay) }.collectAsState(initial = null)
-    val bodyComp by remember(selectedDate) { app.database.garminBodyCompositionDao().observeLatestUpTo(epochDay) }.collectAsState(initial = null)
-    val garminActivities by remember(selectedDate) { app.unifiedRead.observeGarminActivitiesForDay(epochDay) }.collectAsState(initial = emptyList())
-    val scaleToday by remember(selectedDate) { app.database.scaleMeasurementDao().observeLatestForDay(epochDay) }.collectAsState(initial = null)
+    val bodyRows by remember(selectedDate) { app.unifiedRead.observeBodyDays(LocalDate.of(1900,1,1).toEpochDay(),epochDay) }.collectAsState(initial = emptyList())
+    val body=bodyRows.lastOrNull()
+    val height by remember(selectedDate) { app.unifiedRead.observeHeightUpTo(epochDay) }.collectAsState(initial=null)
     val fitDay by remember(selectedDate) { app.database.fitDayDao().observeDay(epochDay) }.collectAsState(initial = null)
 
     val palette = metricPalette()
@@ -163,7 +172,7 @@ fun DayScreen(app: FitnessSummaryApp) {
                 item { MorningReport(readiness, sleep, extra, hrv, palette) }
             }
             displayDay?.let { day ->
-                item { DayMetrics(day, extra, palette) }
+                item { DayMetrics(day, extra, palette, health?.floors) }
             }
             item { SleepCard(displayDay, sleep, palette) }
             extra?.let { if (it.hasStress || it.hasBodyBattery) item { StressBatteryCard(it, palette) } }
@@ -172,21 +181,24 @@ fun DayScreen(app: FitnessSummaryApp) {
             training?.takeUnless { it.isEmpty }?.let { item { TrainingCard(it) } }
             displayDay?.let { day -> item { HeartCard(day, extra) } }
             extra?.let { item { ActivityDetailsCard(it, palette) } }
-            if (scaleToday != null || bodyComp?.isEmpty == false) {
-                item { BodyCompositionCard(bodyComp, scaleToday, selectedDate) }
-            }
+
         }
 
-        val unmatched = unmatchedGarminActivities(workouts, garminActivities)
-        val total = workouts.size + unmatched.size
-        if (total > 0) {
-            item { SectionHeader("$total ${declineWorkouts(total)}") }
-            items(workouts, key = { it.recordId }) { workout ->
-                WorkoutRow(workout = workout, garmin = matchGarminActivity(workout, garminActivities))
+        if (body!=null) item { BodyCompositionCard(body,selectedDate) }
+        height?.let { h -> item { InfoCard("Рост · Google Health") {
+            StatRow("Рост","${formatDecimal(h.centimeters.toFloat())} см")
+            Text("Измерение: ${formatDayMonth(LocalDate.ofEpochDay(h.day))}",style=MaterialTheme.typography.bodySmall)
+        } } }
+        if (displayDay==null && (health?.floors!=null || (summary?.totalCaloriesKcal ?: 0)>0)) item {
+            InfoCard("Данные Google Health") {
+                health?.floors?.let { StatRow("Этажи",formatDecimal(it.toFloat())) }
+                summary?.totalCaloriesKcal?.takeIf { it>0 }?.let { StatRow("Расход калорий (сводка)",formatCount(it)) }
+                Text("Другие измерения за этот день отсутствуют.",style=MaterialTheme.typography.bodySmall)
             }
-            items(unmatched, key = { "garmin_${it.activityId}" }) { activity ->
-                GarminActivityRow(activity = activity)
-            }
+        }
+        if (archive!=null) {
+            item { InfoCard("Тренировки за день") { WorkoutTotals(period) } }
+            items(period.episodes,key={it.episode.primary.key}) { row -> ArchiveCard(row) }
         }
     }
 }
@@ -241,7 +253,7 @@ private fun MorningReport(
 }
 
 @Composable
-private fun DayMetrics(day: DailySummary, extra: GarminDailyExtra?, palette: MetricPalette) {
+private fun DayMetrics(day: DailySummary, extra: GarminDailyExtra?, palette: MetricPalette, googleFloors: Double? = null) {
     val resting = if (day.restingHeartRate > 0) day.restingHeartRate else extra?.restingHeartRate ?: 0
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -252,6 +264,7 @@ private fun DayMetrics(day: DailySummary, extra: GarminDailyExtra?, palette: Met
                 accent = palette.steps,
                 modifier = Modifier.weight(1f),
                 caption = extra?.floorsAscended?.takeIf { it > 0 }?.let { "этажей вверх: $it" }
+                    ?: googleFloors?.let { "этажи Google Health: ${formatDecimal(it.toFloat())}" }
             )
             MetricCard(
                 emoji = "📍",
@@ -280,7 +293,7 @@ private fun DayMetrics(day: DailySummary, extra: GarminDailyExtra?, palette: Met
                     // total and the active part, so the rest is the difference, not a
                     // separate reading.
                     day.totalCaloriesKcal > 0 && day.activeCaloriesKcal > 0 ->
-                        "${formatCount(day.activeCaloriesKcal)} активных · ${formatCount(day.totalCaloriesKcal - day.activeCaloriesKcal)} в покое"
+                        "${formatCount(day.activeCaloriesKcal)} активных (по доступным данным)"
                     day.activeCaloriesKcal > 0 -> "${formatCount(day.activeCaloriesKcal)} активных"
                     else -> null
                 }
@@ -305,8 +318,7 @@ private fun DayMetrics(day: DailySummary, extra: GarminDailyExtra?, palette: Met
         // tile, different thing, and before 2021 the phone's is all there is.
         if (day.sourceApps.isNotEmpty()) {
             Text(
-                text = "Данные за этот день не от Garmin: ${HealthSourceLabels.labels(day.sourceApps)}. " +
-                    "Шаги с телефона обычно расходятся с часами.",
+                text = "Источники дневной сводки: ${HealthSourceLabels.labels(day.sourceApps)}. Перекрывающиеся данные не суммируются.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -657,9 +669,13 @@ private fun ActivityDetailsCard(extra: GarminDailyExtra, palette: MetricPalette)
  * carried forward and dated when the day itself had none.
  */
 @Composable
-private fun BodyCompositionCard(garmin: GarminBodyComposition?, scale: ScaleMeasurement?, selectedDate: LocalDate) {
+private fun BodyCompositionCard(reading: BodyDay, selectedDate: LocalDate) {
+    val scale=reading.scale
+    val garmin=reading.garmin
+    val title="Вес и состав тела · ${reading.source}" + if(reading.day==selectedDate.toEpochDay()) "" else
+        " · ${formatDayMonth(LocalDate.ofEpochDay(reading.day))}"
     if (scale != null) {
-        InfoCard(title = "Вес и состав тела · весы") {
+        InfoCard(title = title) {
             StatRow("Вес", formatKg(scale.weightGrams))
             if (scale.bmi > 0f) StatRow("ИМТ", formatDecimal(scale.bmi))
             if (scale.bodyFatPercent > 0f) StatRow("Жир", "${formatDecimal(scale.bodyFatPercent)}%")
@@ -672,9 +688,7 @@ private fun BodyCompositionCard(garmin: GarminBodyComposition?, scale: ScaleMeas
             if (scale.metabolicAge > 0) StatRow("Метаболический возраст", scale.metabolicAge.toString())
             if (scale.bodyScore > 0) StatRow("Оценка тела", "${scale.bodyScore} из 100")
             Text(
-                text = "Взвешивание в ${formatTime(scale.timestampMillis)} · " +
-                    (if (scale.source == ScaleMeasurement.SOURCE_ZEPP) "Zepp Life" else "Health Connect") + " · " +
-                    if (scale.isUploadedToGarmin) "передано в Garmin" else "в Garmin ещё не отправлено",
+                text = "Взвешивание в ${formatTime(scale.timestampMillis)} · ${reading.source}",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 6.dp)
@@ -684,11 +698,11 @@ private fun BodyCompositionCard(garmin: GarminBodyComposition?, scale: ScaleMeas
     }
     val body = garmin?.takeUnless { it.isEmpty } ?: return
     val sameDay = body.dateEpochDay == selectedDate.toEpochDay()
-    InfoCard(title = if (sameDay) "Вес и состав тела" else "Вес и состав тела · ${formatDayMonth(LocalDate.ofEpochDay(body.dateEpochDay))}") {
+    InfoCard(title = title) {
         StatRow("Вес", formatKg(body.weightGrams))
         if (body.bmi > 0f) StatRow("ИМТ", formatDecimal(body.bmi))
         if (body.bodyFatPercent > 0f) StatRow("Жир", "${formatDecimal(body.bodyFatPercent)}%")
-        if (body.muscleMassGrams > 0) StatRow("Мышечная масса", formatKg(body.muscleMassGrams))
+        if (body.muscleMassGrams > 0) StatRow("Скелетная мышечная масса Garmin", formatKg(body.muscleMassGrams))
         if (body.bodyWaterPercent > 0f) StatRow("Вода", "${formatDecimal(body.bodyWaterPercent)}%")
         if (body.boneMassGrams > 0) StatRow("Костная масса", formatKg(body.boneMassGrams))
         if (body.visceralFat > 0f) StatRow("Висцеральный жир", formatDecimal(body.visceralFat))

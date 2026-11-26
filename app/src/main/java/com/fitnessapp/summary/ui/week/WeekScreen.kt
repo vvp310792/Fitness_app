@@ -1,5 +1,10 @@
 package com.fitnessapp.summary.ui.week
 
+import com.fitnessapp.summary.analytics.ArchiveResult
+import com.fitnessapp.summary.analytics.WorkoutPeriod
+import com.fitnessapp.summary.ui.workouts.ArchiveCard
+import com.fitnessapp.summary.ui.workouts.WorkoutTotals
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -75,23 +80,12 @@ fun WeekScreen(app: FitnessSummaryApp) {
     // Two weeks are loaded in one query - the selected one and the one before it -
     // because the week-over-week comparison needs both, and a second subscription
     // would just re-read overlapping rows.
-    val days by remember(selectedWeekStart) {
-        app.summaryRepository.observeRange(
-            selectedWeekStart.minusWeeks(1),
-            selectedWeekStart.plusDays(6)
-        )
-    }.collectAsState(initial = emptyList())
-
-    val workouts by remember(selectedWeekStart) {
-        app.workoutRepository.observeRange(selectedWeekStart, selectedWeekStart.plusDays(6))
-    }.collectAsState(initial = emptyList())
-
-    // Garmin's own numbers, over the same two weeks the Health Connect query covers, so
-    // the previous week is merged from both sources too - a comparison chip built from a
-    // Health-Connect-only baseline against a Garmin-backed current week is how the two
-    // disagreed in the first place. All empty for an install without the Garmin login.
     val weekFromEpoch = selectedWeekStart.toEpochDay()
     val weekToEpoch = selectedWeekStart.plusDays(6).toEpochDay()
+    val healthRows by remember(selectedWeekStart) { app.unifiedRead.observeHealthDays(weekFromEpoch-7,weekToEpoch) }.collectAsState(initial=emptyList())
+    val days=remember(healthRows) { healthRows.map { it.summary } }
+    val archive: ArchiveResult? by remember(app) { app.unifiedRead.observeArchive() }.collectAsState(initial=null)
+    val period=remember(archive,weekFromEpoch,weekToEpoch) { WorkoutPeriod.between(archive,weekFromEpoch,weekToEpoch) }
     val garminDaysRange by remember(selectedWeekStart) { app.unifiedRead.observeGarminDays(weekFromEpoch - 7, weekToEpoch) }.collectAsState(initial = emptyList())
     val garminSleepsRange by remember(selectedWeekStart) { app.unifiedRead.observeGarminSleeps(weekFromEpoch - 7, weekToEpoch) }.collectAsState(initial = emptyList())
     val garminDays = remember(garminDaysRange, weekFromEpoch) { garminDaysRange.filter { it.dateEpochDay >= weekFromEpoch } }
@@ -106,15 +100,17 @@ fun WeekScreen(app: FitnessSummaryApp) {
         DayView.mergeRange(days, garminDaysRange, garminSleepsRange, fitDaysRange)
     }
 
-    val week = remember(mergedDays, workouts, selectedWeekStart) {
-        SummaryRepository.computeWeekSummary(selectedWeekStart, mergedDays, workouts)
+    val week = remember(mergedDays, period, selectedWeekStart) {
+        SummaryRepository.computeWeekSummary(selectedWeekStart, mergedDays, emptyList()).copy(
+            workoutCount=period.confirmed.size,workoutMinutes=(period.durationSeconds/60).toInt(),
+            workoutDistanceMeters=period.distanceMeters.coerceAtMost(Int.MAX_VALUE.toDouble()).toInt())
     }
     val comparison = remember(mergedDays, selectedWeekStart, today) {
         WeekComparison.compare(mergedDays, selectedWeekStart, today)
     }
     val garminHrvs by remember(selectedWeekStart) { app.database.garminHrvDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
     val garminReadiness by remember(selectedWeekStart) { app.database.garminReadinessDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
-    val garminActivities by remember(selectedWeekStart) { app.unifiedRead.observeGarminActivities(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
+    val garminActivities=period.garminActivities
     val garminWeek = remember(garminDays, garminSleeps, garminHrvs, garminReadiness, garminActivities, selectedWeekStart) {
         LifestyleAnalytics.computeWeek(selectedWeekStart, garminDays, garminSleeps, garminHrvs, garminReadiness, garminActivities)
     }
@@ -156,7 +152,7 @@ fun WeekScreen(app: FitnessSummaryApp) {
             }
         }
 
-        if (week.isEmpty && garminWeek.isEmpty) {
+        if (week.isEmpty && garminWeek.isEmpty && period.episodes.isEmpty() && healthRows.none { it.floors!=null && it.summary.dateEpochDay in weekFromEpoch..weekToEpoch }) {
             item {
                 EmptyState(
                     emoji = "📊",
@@ -181,25 +177,16 @@ fun WeekScreen(app: FitnessSummaryApp) {
             item { HeartSection(week) }
         }
 
-        val unmatched = unmatchedGarminActivities(workouts, garminActivities)
-        val total = workouts.size + unmatched.size
-        if (total > 0) {
-            item {
-                SectionHeader("$total ${declineWorkouts(total)} за неделю")
-            }
-            items(workouts, key = { it.recordId }) { workout ->
-                WorkoutRow(
-                    workout = workout,
-                    showDate = formatDayMonth(LocalDate.ofEpochDay(workout.dateEpochDay)),
-                    garmin = matchGarminActivity(workout, garminActivities)
-                )
-            }
-            items(unmatched, key = { "garmin_${it.activityId}" }) { activity ->
-                GarminActivityRow(
-                    activity = activity,
-                    showDate = formatDayMonth(LocalDate.ofEpochDay(activity.dateEpochDay))
-                )
-            }
+        val ghFloors=healthRows.filter { it.summary.dateEpochDay in weekFromEpoch..weekToEpoch && it.floors!=null }
+        val floorDays=garminDays.filter { it.floorsAscended>0 }.map { it.dateEpochDay }.toSet()
+        val additionalFloors=ghFloors.filter { it.summary.dateEpochDay !in floorDays }
+        if(additionalFloors.isNotEmpty()) item { InfoCard("Этажи · Google Health") {
+            StatRow("По дням без Garmin",formatCount(additionalFloors.sumOf { it.floors ?: 0.0 }.toLong()))
+            Text("Дополнительные дни: ${additionalFloors.size}. Не суммируются с копиями Garmin.",style=MaterialTheme.typography.bodySmall)
+        } }
+        if (archive!=null) {
+            item { InfoCard("Тренировки за неделю") { WorkoutTotals(period) } }
+            items(period.episodes,key={it.episode.primary.key}) { row -> ArchiveCard(row,showDate=true) }
         }
     }
 }
@@ -394,7 +381,7 @@ private fun WeekTotals(
             )
             MetricCard(
                 emoji = "🏋",
-                label = "Тренировки",
+                label = "Однозначные занятия",
                 value = week.workoutCount.toString(),
                 accent = palette.workout,
                 modifier = Modifier.weight(1f),
