@@ -98,13 +98,13 @@ fun DayScreen(app: FitnessSummaryApp) {
     val summary by remember(selectedDate) { app.summaryRepository.observeDay(selectedDate) }.collectAsState(initial = null)
     val workouts by remember(selectedDate) { app.workoutRepository.observeForDay(selectedDate) }.collectAsState(initial = emptyList())
 
-    val garmin by remember(selectedDate) { app.database.garminDailyExtraDao().observeDay(epochDay) }.collectAsState(initial = null)
-    val garminSleep by remember(selectedDate) { app.database.garminSleepDao().observeDay(epochDay) }.collectAsState(initial = null)
+    val garmin by remember(selectedDate) { app.unifiedRead.observeGarminDay(epochDay) }.collectAsState(initial = null)
+    val garminSleep by remember(selectedDate) { app.unifiedRead.observeGarminSleep(epochDay) }.collectAsState(initial = null)
     val hrv by remember(selectedDate) { app.database.garminHrvDao().observeDay(epochDay) }.collectAsState(initial = null)
     val readiness by remember(selectedDate) { app.database.garminReadinessDao().observeDay(epochDay) }.collectAsState(initial = null)
     val training by remember(selectedDate) { app.database.garminTrainingDao().observeDay(epochDay) }.collectAsState(initial = null)
     val bodyComp by remember(selectedDate) { app.database.garminBodyCompositionDao().observeLatestUpTo(epochDay) }.collectAsState(initial = null)
-    val garminActivities by remember(selectedDate) { app.database.garminActivityDao().observeForDay(epochDay) }.collectAsState(initial = emptyList())
+    val garminActivities by remember(selectedDate) { app.unifiedRead.observeGarminActivitiesForDay(epochDay) }.collectAsState(initial = emptyList())
     val scaleToday by remember(selectedDate) { app.database.scaleMeasurementDao().observeLatestForDay(epochDay) }.collectAsState(initial = null)
     val fitDay by remember(selectedDate) { app.database.fitDayDao().observeDay(epochDay) }.collectAsState(initial = null)
 

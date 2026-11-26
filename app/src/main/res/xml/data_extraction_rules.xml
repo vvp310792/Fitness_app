@@ -3,9 +3,17 @@
     <cloud-backup>
         <include domain="database" path="." />
         <include domain="sharedpref" path="." />
+        <exclude domain="database" path="server_snapshot.db" />
+        <exclude domain="database" path="server_snapshot.db-wal" />
+        <exclude domain="database" path="server_snapshot.db-shm" />
+        <exclude domain="database" path="server_snapshot.db-journal" />
     </cloud-backup>
     <device-transfer>
         <include domain="database" path="." />
         <include domain="sharedpref" path="." />
+        <exclude domain="database" path="server_snapshot.db" />
+        <exclude domain="database" path="server_snapshot.db-wal" />
+        <exclude domain="database" path="server_snapshot.db-shm" />
+        <exclude domain="database" path="server_snapshot.db-journal" />
     </device-transfer>
 </data-extraction-rules>
