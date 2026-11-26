@@ -34,7 +34,8 @@ data class FitnessSession(
 data class SessionEpisode(
     val primary: FitnessSession,
     val observations: List<FitnessSession>,
-    val ambiguous: Boolean
+    val ambiguous: Boolean,
+    val possibleDuplicateKeys: List<String> = emptyList()
 )
 
 data class DailyObservation(
@@ -79,27 +80,28 @@ object CanonicalFitness {
         if (a.source == b.source) return Match.NONE
         val sameUpstream = a.upstreamId != null && a.upstreamId == b.upstreamId
         val near = abs(a.startMillis - b.startMillis) <= START_WINDOW_MS
-        if (!sameUpstream && !near) return Match.NONE
+        if (!near) return if (sameUpstream) Match.POSSIBLE else Match.NONE
         val knownSport = a.sport !in setOf(FitnessSport.OTHER, FitnessSport.UNKNOWN) &&
             b.sport !in setOf(FitnessSport.OTHER, FitnessSport.UNKNOWN)
         if (knownSport && a.sport != b.sport) return if (sameUpstream) Match.POSSIBLE else Match.NONE
-        if (sameUpstream) return if (near) Match.CONFIDENT else Match.POSSIBLE
-        if (!knownSport) return Match.POSSIBLE
-        val ad = a.elapsedSeconds ?: return Match.POSSIBLE
-        val bd = b.elapsedSeconds ?: return Match.POSSIBLE
-        val overlap = min(a.startMillis + ad * 1000, b.startMillis + bd * 1000) -
-            max(a.startMillis, b.startMillis)
-        if (overlap <= 0) return Match.NONE
-        val durationOk = overlap.toDouble() / (max(ad, bd) * 1000.0) >= 0.80 &&
-            abs(ad - bd) <= max(120.0, max(ad, bd) * 0.12)
-        if (!durationOk) return Match.POSSIBLE
-        if (a.sport in endurance) {
+        if (!knownSport && !sameUpstream) return Match.POSSIBLE
+        val ad = a.elapsedSeconds
+        val bd = b.elapsedSeconds
+        if (ad != null && bd != null) {
+            val overlap = min(a.startMillis + ad * 1000, b.startMillis + bd * 1000) -
+                max(a.startMillis, b.startMillis)
+            if (overlap <= 0) return if (sameUpstream) Match.POSSIBLE else Match.NONE
+            val durationOk = overlap.toDouble() / (max(ad, bd) * 1000.0) >= 0.80 &&
+                abs(ad - bd) <= max(120.0, max(ad, bd) * 0.12)
+            if (!durationOk) return Match.POSSIBLE
+        } else if (!sameUpstream) return Match.POSSIBLE
+        if (a.sport in endurance || b.sport in endurance) {
             val x = a.distanceMeters
             val y = b.distanceMeters
-            // Missing distance does not disprove a match, but weaker evidence is not
-            // sufficient to merge two separately recorded endurance activities.
-            if (x == null || y == null || x <= 0 || y <= 0) return Match.POSSIBLE
-            if (abs(x - y) > max(100.0, max(x, y) * 0.05)) return Match.POSSIBLE
+            // A verified origin can establish identity when an optional metric is
+            // missing. Contradictory observed metrics still need explicit review.
+            if (x != null && y != null && abs(x-y) > max(100.0,max(x,y)*0.05)) return Match.POSSIBLE
+            if (!sameUpstream && (x == null || y == null || x <= 0 || y <= 0)) return Match.POSSIBLE
         }
         return Match.CONFIDENT
     }
@@ -162,7 +164,10 @@ object CanonicalFitness {
                 val primary = observations.minWith(compareBy<FitnessSession> { sessionRank(it) }.thenBy { it.key })
                 result.add(SessionEpisode(primary, observations, false))
             } else {
-                observations.forEach { result.add(SessionEpisode(it, listOf(it), true)) }
+                observations.forEach { row ->
+                    result.add(SessionEpisode(row, listOf(row), true,
+                        observations.filter { it.key != row.key }.map { it.key }))
+                }
             }
         }
         return result.sortedWith(compareBy<SessionEpisode> { it.primary.startMillis }.thenBy { it.primary.key })

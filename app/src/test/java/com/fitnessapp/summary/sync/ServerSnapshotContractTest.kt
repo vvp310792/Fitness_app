@@ -27,6 +27,11 @@ class ServerSnapshotContractTest {
         assertEquals("a",row.nativeId)
         assertEquals("2026-11-25",row.day)
     }
+    @Test fun matchesIndependentPythonGoldenVector() {
+        assertEquals("370623c3de42e233900997c60a6a306c35ce4fc7427077837d91f3ec86586359",
+            ServerSnapshotContract.catalogDigest(listOf(manifest)))
+    }
+
     @Test fun compressedPartMatchesSameHash() {
         val out=ByteArrayOutputStream()
         DeflaterOutputStream(out).use { it.write(raw.toByteArray(Charsets.UTF_8)) }

@@ -76,6 +76,20 @@ class CanonicalFitnessTest {
         assertTrue(CanonicalFitness.episodes(listOf(g,s)).all { it.ambiguous })
     }
 
+    @Test fun verifiedIdentityDoesNotOverrideConflictingMeasurements() {
+        val a = run(FitnessSource.GARMIN,"a").copy(upstreamId="garmin:shared")
+        val b = run(FitnessSource.STRAVA,"b",distance=9000.0).copy(upstreamId="garmin:shared")
+        val result=CanonicalFitness.episodes(listOf(a,b))
+        assertEquals(2,result.size)
+        assertTrue(result.all { it.ambiguous && it.possibleDuplicateKeys.size==1 })
+    }
+
+    @Test fun verifiedIdentityCanFillMissingEvidence() {
+        val a=run(FitnessSource.GARMIN,"a").copy(upstreamId="garmin:shared")
+        val b=run(FitnessSource.STRAVA,"b",distance=null,duration=null).copy(upstreamId="garmin:shared")
+        assertEquals(2,CanonicalFitness.episodes(listOf(a,b)).single().observations.size)
+    }
+
     @Test fun missingZeroAndAlternativesRemainDifferent() {
         val empty = daily(FitnessSource.GARMIN, "g", day, null)
         val zero = daily(FitnessSource.HEALTH_CONNECT, "h", day, 0.0)

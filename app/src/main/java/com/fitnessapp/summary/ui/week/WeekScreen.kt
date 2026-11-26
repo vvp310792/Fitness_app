@@ -28,13 +28,15 @@ import androidx.compose.ui.unit.dp
 import com.fitnessapp.summary.FitnessSummaryApp
 import com.fitnessapp.summary.analytics.GarminWeekSummary
 import com.fitnessapp.summary.analytics.LifestyleAnalytics
+import com.fitnessapp.summary.analytics.WeekComparison
+import com.fitnessapp.summary.analytics.WeekComparisonResult
+import com.fitnessapp.summary.analytics.ComparedWeekMetric
 import com.fitnessapp.summary.data.DayView
 import com.fitnessapp.summary.data.GarminDailyExtra
 import com.fitnessapp.summary.data.GarminSleep
 import com.fitnessapp.summary.data.SummaryRepository
 import com.fitnessapp.summary.data.WeekSummary
 import com.fitnessapp.summary.ui.components.BarDatum
-import com.fitnessapp.summary.ui.components.Chip
 import com.fitnessapp.summary.ui.components.EmptyState
 import com.fitnessapp.summary.ui.components.GarminActivityRow
 import com.fitnessapp.summary.ui.components.InfoCard
@@ -61,7 +63,6 @@ import com.fitnessapp.summary.util.formatSleepDuration
 import com.fitnessapp.summary.util.formatWeekHeader
 import com.fitnessapp.summary.util.formatWeekRange
 import com.fitnessapp.summary.util.hrvStatusLabel
-import com.fitnessapp.summary.util.percentChange
 import com.fitnessapp.summary.util.weekStart
 import java.time.LocalDate
 
@@ -83,13 +84,6 @@ fun WeekScreen(app: FitnessSummaryApp) {
 
     val workouts by remember(selectedWeekStart) {
         app.workoutRepository.observeRange(selectedWeekStart, selectedWeekStart.plusDays(6))
-    }.collectAsState(initial = emptyList())
-
-    val previousWorkouts by remember(selectedWeekStart) {
-        app.workoutRepository.observeRange(
-            selectedWeekStart.minusWeeks(1),
-            selectedWeekStart.minusDays(1)
-        )
     }.collectAsState(initial = emptyList())
 
     // Garmin's own numbers, over the same two weeks the Health Connect query covers, so
@@ -115,12 +109,8 @@ fun WeekScreen(app: FitnessSummaryApp) {
     val week = remember(mergedDays, workouts, selectedWeekStart) {
         SummaryRepository.computeWeekSummary(selectedWeekStart, mergedDays, workouts)
     }
-    val previousWeek = remember(mergedDays, previousWorkouts, selectedWeekStart) {
-        SummaryRepository.computeWeekSummary(
-            selectedWeekStart.minusWeeks(1),
-            mergedDays,
-            previousWorkouts
-        )
+    val comparison = remember(mergedDays, selectedWeekStart, today) {
+        WeekComparison.compare(mergedDays, selectedWeekStart, today)
     }
     val garminHrvs by remember(selectedWeekStart) { app.database.garminHrvDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
     val garminReadiness by remember(selectedWeekStart) { app.database.garminReadinessDao().observeRange(weekFromEpoch, weekToEpoch) }.collectAsState(initial = emptyList())
@@ -179,7 +169,7 @@ fun WeekScreen(app: FitnessSummaryApp) {
 
         if (!week.isEmpty) {
             item {
-                WeekTotals(week = week, previous = previousWeek, palette = palette)
+                WeekTotals(week = week, comparison = comparison, palette = palette)
             }
         }
         if (!garminWeek.isEmpty) {
@@ -361,7 +351,7 @@ private fun GarminWeekSection(
 @Composable
 private fun WeekTotals(
     week: WeekSummary,
-    previous: WeekSummary,
+    comparison: WeekComparisonResult,
     palette: MetricPalette
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -412,28 +402,33 @@ private fun WeekTotals(
             )
         }
 
-        // Comparison chips are rendered only for metrics that have a real baseline -
-        // percentChange returns null against a zero previous week, and "+∞%" after a
-        // week off is worse than saying nothing.
-        val comparisons = buildList {
-            percentChange(week.totalSteps, previous.totalSteps)?.let { add("Шаги" to it) }
-            percentChange(week.totalDistanceMeters, previous.totalDistanceMeters)?.let { add("Дистанция" to it) }
-            percentChange(week.workoutMinutes, previous.workoutMinutes)?.let { add("Тренировки" to it) }
-            percentChange(week.avgSleepMinutes, previous.avgSleepMinutes)?.let { add("Сон" to it) }
-        }
-        if (comparisons.isNotEmpty()) {
-            InfoCard(title = "К прошлой неделе") {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    comparisons.forEach { (label, change) ->
-                        Chip(
-                            text = "$label ${formatSignedPercent(change)}",
-                            // Growth is not automatically good - more sleep and more
-                            // steps both are, but this app has no opinion about pace,
-                            // so the chip carries the direction and no verdict colour.
-                            color = if (change >= 0) palette.distance else palette.calories
-                        )
+        InfoCard(title = "К прошлой неделе") {
+            val n = comparison.completedDays
+            if (n == 0) {
+                Text("Сравнение появится после завершения первого дня недели.",
+                    style = MaterialTheme.typography.bodyMedium)
+            } else {
+                Text("Первые $n завершённых дней каждой недели. Сегодняшний неполный день исключён.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 6.dp))
+                comparison.metrics.forEach { metric ->
+                    val label = when (metric.metric) {
+                        ComparedWeekMetric.STEPS -> "Шаги"
+                        ComparedWeekMetric.DISTANCE -> "Дистанция"
+                        ComparedWeekMetric.SLEEP -> "Сон"
+                    }
+                    if (metric.percent != null) {
+                        StatRow(label, formatSignedPercent(metric.percent))
+                    } else {
+                        Text("$label: недостаточно данных (${metric.currentDays}/$n и ${metric.previousDays}/$n дн.)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 5.dp))
                     }
                 }
+                // The present WorkoutRepository does not yet reconcile every source.
+                // Do not compare its partial training totals as the complete archive.
             }
         }
     }
