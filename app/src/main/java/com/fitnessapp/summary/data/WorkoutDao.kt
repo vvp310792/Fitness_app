@@ -32,6 +32,9 @@ interface WorkoutDao {
     @Query("SELECT * FROM workouts ORDER BY startTimeMillis DESC LIMIT :limit")
     fun observeRecent(limit: Int): Flow<List<Workout>>
 
+    @Query("SELECT * FROM workouts ORDER BY startTimeMillis DESC")
+    fun observeAll(): Flow<List<Workout>>
+
     @Query("SELECT * FROM workouts ORDER BY startTimeMillis ASC")
     suspend fun getAllOnce(): List<Workout>
 
