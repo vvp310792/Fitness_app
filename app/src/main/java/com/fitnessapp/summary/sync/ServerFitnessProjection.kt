@@ -203,7 +203,9 @@ object ServerFitnessProjection {
             ?.removeSuffix("s")?.toDoubleOrNull()?.takeIf { it.isFinite() && it>0 }
             ?.toLong()?.takeIf { it in 1..elapsed }
         return ArchiveObservation(
-            FitnessSession(FitnessSource.GOOGLE_HEALTH,row.nativeId,sport,start,elapsed,distance),
+            FitnessSession(FitnessSource.GOOGLE_HEALTH,row.nativeId,sport,start,elapsed,distance,
+                transportOrigin=d.optJSONObject("dataSource")?.optJSONObject("application")
+                    ?.text("packageName")?.takeIf { it.isNotBlank() }),
             day,e.text("displayName").ifBlank { type.ifBlank { "Тренировка" } },
             active, summary.int("averageHeartRateBeatsPerMinute").takeIf { it > 0 },
             summary.int("maxHeartRateBeatsPerMinute").takeIf { it > 0 }

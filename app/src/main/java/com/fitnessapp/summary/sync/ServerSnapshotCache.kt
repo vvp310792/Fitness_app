@@ -2,6 +2,7 @@ package com.fitnessapp.summary.sync
 
 import android.content.Context
 import androidx.room.Database
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Entity
 import androidx.room.Index
@@ -12,11 +13,14 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.withTransaction
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "snapshot_rows",
     primaryKeys = ["ownerUid", "generation", "source", "kind", "nativeId"],
-    indices = [Index(value = ["ownerUid", "generation", "source", "kind", "day"])])
+    indices = [Index(value = ["ownerUid", "generation", "source", "kind", "day"]),
+        Index(value = ["ownerUid", "generation", "partId"])])
 data class SnapshotRow(
     val ownerUid: String,
     val generation: String,
@@ -24,7 +28,9 @@ data class SnapshotRow(
     val kind: String,
     val nativeId: String,
     val day: String,
-    val rowJson: String
+    val rowJson: String,
+    // Empty for migrated v1 rows, which lack a trustworthy immutable-part identity.
+    @ColumnInfo(defaultValue = "''") val partId: String = ""
 )
 
 @Entity(tableName = "snapshot_heads")
@@ -74,6 +80,18 @@ interface ServerSnapshotDao {
         "AND day BETWEEN :fromDay AND :throughDay ORDER BY day, source, nativeId")
     fun observeActiveWorkouts(uid: String, fromDay: String, throughDay: String): Flow<List<SnapshotRow>>
 
+    @Query("SELECT COUNT(*) FROM snapshot_rows WHERE ownerUid = :uid AND generation = :generation AND partId = :partId")
+    suspend fun partCount(uid: String, generation: String, partId: String): Long
+
+    @Query("INSERT INTO snapshot_rows (ownerUid,generation,source,kind,nativeId,day,rowJson,partId) " +
+        "SELECT ownerUid,:target,source,kind,nativeId,day,rowJson,partId FROM snapshot_rows " +
+        "WHERE ownerUid = :uid AND generation = :active AND partId = :partId")
+    suspend fun copyPart(uid: String, active: String, target: String, partId: String)
+
+    @Query("DELETE FROM snapshot_rows WHERE ownerUid = :uid AND NOT EXISTS " +
+        "(SELECT 1 FROM snapshot_heads WHERE ownerUid = :uid AND generation = snapshot_rows.generation)")
+    suspend fun pruneInactive(uid: String)
+
     @Query("DELETE FROM snapshot_rows WHERE ownerUid = :uid AND generation = :generation " +
         "AND NOT EXISTS (SELECT 1 FROM snapshot_heads WHERE ownerUid = :uid AND generation = :generation)")
     suspend fun discardInactive(uid: String, generation: String)
@@ -83,23 +101,65 @@ interface ServerSnapshotDao {
 }
 
 /** Separate additive Room database. Does not migrate, overwrite or mirror AppDatabase. */
-@Database(entities = [SnapshotRow::class, SnapshotHead::class], version = 1, exportSchema = false)
+@Database(entities = [SnapshotRow::class, SnapshotHead::class], version = 2, exportSchema = false)
 abstract class ServerSnapshotDatabase : RoomDatabase() {
     abstract fun snapshots(): ServerSnapshotDao
 
     companion object {
         const val NAME = "server_snapshot.db"
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE snapshot_rows ADD COLUMN partId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_snapshot_rows_ownerUid_generation_partId ON snapshot_rows(ownerUid,generation,partId)")
+            }
+        }
         @Volatile private var instance: ServerSnapshotDatabase? = null
         fun getInstance(context: Context): ServerSnapshotDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(context.applicationContext, ServerSnapshotDatabase::class.java, NAME)
-                    .build().also { instance = it }
+                    .addMigrations(MIGRATION_1_2).build().also { instance = it }
             }
     }
 }
 
 class RoomServerSnapshotSink(private val db: ServerSnapshotDatabase) : ServerSnapshotSink {
     private val dao get() = db.snapshots()
+
+    override suspend fun prepare(ownerUid: String) {
+        dao.pruneInactive(ownerUid)
+    }
+
+    override suspend fun acknowledgeIfUnchanged(ownerUid: String, status: ServerCatalogStatus): Boolean = db.withTransaction {
+        val head = dao.head(ownerUid) ?: return@withTransaction false
+        if (head.manifestSetSha256 != status.manifestSetSha256 || head.groups != status.groups ||
+            head.records != status.records || dao.count(ownerUid,head.generation) != status.records) return@withTransaction false
+        val newerOrSame = status.publishedSeconds > head.publishedSeconds ||
+            (status.publishedSeconds == head.publishedSeconds && status.publishedNanos >= head.publishedNanos)
+        require(newerOrSame) { "older publication" }
+        if (head.publishedSeconds != status.publishedSeconds || head.publishedNanos != status.publishedNanos)
+            dao.setHead(head.copy(publishedSeconds=status.publishedSeconds,publishedNanos=status.publishedNanos))
+        true
+    }
+
+    override suspend fun reusePart(ownerUid: String, generation: String, partId: String): Long = db.withTransaction {
+        require(partId.isNotBlank())
+        val active = dao.head(ownerUid)?.generation ?: return@withTransaction 0L
+        val count = dao.partCount(ownerUid,active,partId)
+        if (count == 0L) return@withTransaction 0L
+        dao.copyPart(ownerUid,active,generation,partId)
+        require(dao.partCount(ownerUid,generation,partId) == count)
+        count
+    }
+
+    override suspend fun stageVerifiedPart(ownerUid: String, generation: String, partId: String, rows: List<VerifiedServerRow>) {
+        require(partId.isNotBlank() && rows.isNotEmpty())
+        db.withTransaction {
+            require(dao.partCount(ownerUid,generation,partId) == 0L)
+            for (chunk in rows.chunked(250)) dao.insertRows(chunk.map {
+                SnapshotRow(ownerUid,generation,it.source,it.kind,it.nativeId,it.day,it.rowJson,partId)
+            })
+        }
+    }
 
     override suspend fun stage(ownerUid: String, generation: String, rows: List<VerifiedServerRow>) {
         require(ownerUid.isNotBlank() && generation.isNotBlank())

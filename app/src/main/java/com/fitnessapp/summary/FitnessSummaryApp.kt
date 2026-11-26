@@ -30,6 +30,7 @@ import com.fitnessapp.summary.sync.FirebaseSetup
 import com.fitnessapp.summary.sync.FirestoreSyncManager
 import com.fitnessapp.summary.sync.InboxApplier
 import com.fitnessapp.summary.sync.UnifiedFitnessRead
+import com.fitnessapp.summary.sync.SnapshotSyncCoordinator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -51,6 +52,7 @@ class FitnessSummaryApp : Application() {
 
     val database: AppDatabase by lazy { AppDatabase.getInstance(this) }
     val unifiedRead: UnifiedFitnessRead by lazy { UnifiedFitnessRead(this) }
+    val snapshotSync: SnapshotSyncCoordinator by lazy { SnapshotSyncCoordinator(this) }
 
     val authManager: AuthManager by lazy { AuthManager(BuildConfig.GOOGLE_WEB_CLIENT_ID) }
 
@@ -180,6 +182,21 @@ class FitnessSummaryApp : Application() {
         if (!FirebaseSetup.isConfigured) {
             AppLog.i("FitnessSummaryApp", "Firebase не настроен (заглушка google-services.json) - облако выключено")
             return
+        }
+
+        // A separate listener is not blocked by legacy mirror/upload work.
+        appScope.launch {
+            var previousUid = authManager.currentUser?.uid
+            authManager.authStateFlow().collect { user ->
+                val uid = user?.uid
+                if (uid == null) snapshotSync.cancelForSignOut()
+                else {
+                    if (previousUid != null && previousUid != uid) snapshotSync.cancelForSignOut()
+                    snapshotSync.ensurePeriodic()
+                    if (previousUid != uid) snapshotSync.enqueueNow()
+                }
+                previousUid = uid
+            }
         }
 
         appScope.launch {
