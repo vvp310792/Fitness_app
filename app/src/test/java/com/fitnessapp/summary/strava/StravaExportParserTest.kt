@@ -79,6 +79,8 @@ class StravaExportParserTest {
         assertEquals("Утро", a.name)
         // Moving time, not elapsed: 3300 s, the number the training is measured in.
         assertEquals(3300, a.durationSeconds)
+        assertEquals(3300, a.movingSeconds)
+        assertEquals(3600, a.elapsedSeconds)
         assertEquals(10500, a.distanceMeters)
         assertEquals(150, a.avgHeartRate)
         assertEquals(170, a.maxHeartRate)
@@ -147,6 +149,23 @@ class StravaExportParserTest {
     fun `elapsed time stands in when moving time is absent`() {
         val ok = parse(file(row(moving = "", elapsed1 = "1800", elapsed2 = ""))) as StravaExportParser.Result.Ok
         assertEquals(1800, ok.activities.single().durationSeconds)
+        assertEquals(1800, ok.activities.single().elapsedSeconds)
+        assertNull(ok.activities.single().movingSeconds)
+    }
+
+    @Test
+    fun `contradictory elapsed time is not used as evidence`() {
+        val ok = parse(file(row(moving = "3300", elapsed1 = "1200", elapsed2 = ""))) as StravaExportParser.Result.Ok
+        assertEquals(3300, ok.activities.single().durationSeconds)
+        assertEquals(3300, ok.activities.single().movingSeconds)
+        assertNull(ok.activities.single().elapsedSeconds)
+    }
+
+    @Test
+    fun `missing elapsed is not invented from moving time`() {
+        val ok = parse(file(row(moving = "3300", elapsed1 = "", elapsed2 = ""))) as StravaExportParser.Result.Ok
+        assertNull(ok.activities.single().elapsedSeconds)
+        assertEquals(3300, ok.activities.single().movingSeconds)
     }
 
     @Test
