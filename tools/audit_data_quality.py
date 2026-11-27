@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import sqlite3
 from audit_all_workout_overlap import DB,load,KNOWN,ENDURANCE,num,ts
-from materialize_canonical_workouts import reconcile,report,match,nested,overlap,journal_fit_pair
+from materialize_canonical_workouts import reconcile,report,match,nested,overlap,journal_fit_pair,long_journal
 
 OUT=DB.parent/"data_quality"
 TODAY=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=7)).date()
@@ -169,6 +169,10 @@ def main():
     rows,input_stats=load()
     episodes=reconcile(rows,True)
     owner={i:g for g,(_,members,_,_) in enumerate(episodes) for i in members}
+    membership=[i for _,members,_,_ in episodes for i in members]
+    assert len(membership)==len(rows) and sorted(membership)==list(range(len(rows))), "canonical membership mismatch"
+    assert all(p in members and p not in nested_ids and set(nested_ids)<=set(members)
+        for p,members,nested_ids,_ in episodes), "invalid primary or nested membership"
     fragments={i for _,_,members,_ in episodes for i in members}
     pair_cases=[]
     pair_counts=C.Counter()
@@ -192,6 +196,8 @@ def main():
                 reason="canonical_membership"
             elif a.sport in KNOWN and b.sport in KNOWN and a.sport!=b.sport:
                 status="different_sport";reason="different_known_sport"
+            elif (long_journal(a) or long_journal(b)) and abs(a.start-b.start)>900000:
+                status="overlap_only";reason="unreliable_journal_wall_clock_tail"
             elif a.sport not in KNOWN or b.sport not in KNOWN:
                 status="review";reason="unknown_sport"
             elif a.elapsed is None or b.elapsed is None:
@@ -216,6 +222,26 @@ def main():
             case_id=hashlib.sha256(json.dumps(sorted((a.key,b.key)),separators=(",",":")).encode()).hexdigest()
             pair_cases.append((case_id,a.key,b.key,a.day,a.source,b.source,a.sport,b.sport,a.start,b.start,a.elapsed,b.elapsed,
                 round(ov/1000,3),frac_short,frac_long,episodes[owner[i]][0],episodes[owner[j]][0],status,reason))
+    # Account for every review episode in a connected case group, without
+    # declaring a chain of possible matches one actual workout.
+    group_for_primary={p:g for g,(p,_,_,_) in enumerate(episodes)}
+    review_links=C.defaultdict(set)
+    for p in pair_cases:
+        if p[-2]!="review":continue
+        g,h=group_for_primary[p[15]],group_for_primary[p[16]]
+        review_links[g].add(h);review_links[h].add(g)
+    seen_groups=set()
+    review_groups=[]
+    for g in sorted(unresolved_episodes):
+        if g in seen_groups:continue
+        todo=[g];seen_groups.add(g);members=[]
+        while todo:
+            n=todo.pop();members.append(n)
+            for h in review_links[n]-seen_groups:
+                seen_groups.add(h);todo.append(h)
+        review_groups.append(members)
+    assert seen_groups==unresolved_episodes
+    assert sum(pair_counts.values())==len(pair_cases)
     # Store case registry in a derived private database, with atomic replacement.
     # Membership and source rows are never changed here.
     path=OUT/"quality_cases.db";tmp=path.with_name(path.name+".staging."+str(os.getpid()))
@@ -257,8 +283,14 @@ def main():
         "gymup_quality":dict(gym_stats),"metric_flags":dict(issue_counts),
         "same_payload_repeats":sum(n-1 for n in duplicate_payloads.values() if n>1),
         "google_health_interval_collisions":dict(interval_collisions),"canonical_reference":report(rows,episodes),
+        "accounting":{"unique_source_observations":len(rows),"canonical_memberships":len(membership),
+            "duplicate_memberships":len(membership)-len(set(membership)),
+            "unassigned_observations":len(rows)-len(owner),
+            "canonical_review_episode_count":sum(bool(ext) for _,_,_,ext in episodes)},
         "overlap_registry":{"cases":len(pair_cases),"by_status":dict(pair_counts),
-            "review_episodes":len(unresolved_episodes),"by_source_pair":[[s,p,n] for (s,p),n in sorted(source_pairs.items())],
+            "review_episodes":len(unresolved_episodes),"review_groups":len(review_groups),
+            "review_group_sizes":dict(C.Counter(len(g) for g in review_groups)),
+            "by_source_pair":[[s,p,n] for (s,p),n in sorted(source_pairs.items())],
             "review_reasons":dict(C.Counter(p[-1] for p in pair_cases if p[-2]=="review")),
             "path":str(path),"issues":len(issues)}}
     # Keep a stable history keyed by source-pair identity. A missing case is
