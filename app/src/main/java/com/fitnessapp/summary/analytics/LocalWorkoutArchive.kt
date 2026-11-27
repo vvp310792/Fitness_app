@@ -31,8 +31,26 @@ data class ArchiveEpisode(
     // Partial Google Fit records can add provenance, but their metrics describe
     // only a sub-interval and must never substitute for whole-session metrics.
     private val wholeObservations get() = observations.filterNot { it.session.key in episode.fragmentKeys }
-    val durationSeconds: Long? get() = wholeObservations.sortedBy { sourceOrder(it.session.source) }
-        .firstNotNullOfOrNull { it.trainingSeconds }
+    val durationSeconds: Long? get() {
+        val longJournal=observations.any {
+            it.session.source==FitnessSource.GYMUP && (it.session.elapsedSeconds ?: 0)>4*3600L
+        }
+        return wholeObservations.sortedBy { sourceOrder(it.session.source) }.firstNotNullOfOrNull {
+            val recorded=it.trainingSeconds
+            when {
+                // A long-open journal's wall clock is not a training timer.
+                it.session.source==FitnessSource.GYMUP && (recorded ?: 0)>4*3600L -> null
+                // Standalone exact-time Fit export with a long-open journal:
+                // the fixed hour is not independently measured device time.
+                longJournal && it.session.key==primary.session.key &&
+                    (it.session.source==FitnessSource.GOOGLE_FIT ||
+                     (it.session.source==FitnessSource.GOOGLE_HEALTH &&
+                      it.session.transportOrigin=="com.google.android.apps.fitness")) &&
+                    recorded==3600L -> null
+                else -> recorded
+            }
+        }
+    }
     val distanceMeters: Double? get() = wholeObservations.sortedBy { sourceOrder(it.session.source) }
         .firstNotNullOfOrNull { it.session.distanceMeters }
     val averageHr: Int? get() = wholeObservations.sortedBy { sourceOrder(it.session.source) }

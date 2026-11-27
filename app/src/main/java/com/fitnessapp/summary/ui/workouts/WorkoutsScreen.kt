@@ -1,6 +1,7 @@
 package com.fitnessapp.summary.ui.workouts
 
 import com.fitnessapp.summary.analytics.WorkoutPeriod
+import com.fitnessapp.summary.analytics.WorkoutDisplayGroup
 import com.fitnessapp.summary.util.formatDayMonth
 
 import androidx.compose.foundation.layout.Arrangement
@@ -76,8 +77,8 @@ private fun secondsLabel(seconds: Long): String {
     }
 }
 
-/** Whole LOCAL archive, not a claim that the server archive is already connected.
- * Lazy rendering and source-aware filters; preserve uncertain matches as separate rows. */
+/** Unified archive with source-aware filters. Review candidates are grouped
+ * for display, without falsely declaring them one workout. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun WorkoutsScreen(app: FitnessSummaryApp) {
@@ -153,12 +154,12 @@ fun WorkoutsScreen(app: FitnessSummaryApp) {
                 Text(if(archive?.episodes.isNullOrEmpty()) "В доступном архиве пока нет занятий." else "Нет занятий по выбранным фильтрам.")
                 if(!archive?.episodes.isNullOrEmpty()) TextButton(onClick={period=0;sportName="ALL";query=""}) { Text("Сбросить фильтры") }
             }
-            filtered.groupBy { it.primary.day }.forEach { (day,episodes) ->
+            totals.displayGroups.groupBy { it.day }.forEach { (day,groups) ->
                 item(key="date_$day") {
                     val date=LocalDate.ofEpochDay(day)
                     SectionHeader(formatDayHeader(date,today)+if(date.year!=today.year) ", ${date.year}" else "")
                 }
-                items(episodes,key={it.episode.primary.key}) { row -> ArchiveCard(row) }
+                items(groups,key={it.key}) { group -> WorkoutGroupCard(group) }
             }
         }
     }
@@ -168,15 +169,48 @@ fun WorkoutsScreen(app: FitnessSummaryApp) {
 @Composable
 fun WorkoutTotals(period:WorkoutPeriod) {
     StatRow("Однозначных занятий",formatCount(period.confirmed.size))
-    StatRow("Требуют сверки",formatCount(period.ambiguousCount))
+    StatRow("Учтено исходных наблюдений",formatCount(period.accountedObservationCount))
+    if(period.ambiguousCount>0) {
+        StatRow("Групп для сверки",formatCount(period.reviewGroupCount))
+        StatRow("Эпизодов-кандидатов",formatCount(period.ambiguousCount))
+        StatRow("Наблюдений в этих группах",formatCount(period.reviewObservationCount))
+    }
     StatRow("Записанное время",if(period.knownDurationCount==0) "Нет данных" else secondsLabel(period.durationSeconds))
     Text("Длительность известна для ${period.knownDurationCount} из ${period.confirmed.size} однозначных занятий.",
         style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
     StatRow("Дистанция",if(period.knownDistanceCount==0) "Нет данных" else "${formatDecimal((period.distanceMeters/1000).toFloat())} км")
     Text("Дистанция известна для ${period.knownDistanceCount} из ${period.confirmed.size} однозначных занятий.",
         style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-    if(period.ambiguousCount>0) Text("Возможные совпадения сохранены отдельно и не включены в эти суммы.",
+    if(period.ambiguousCount>0) Text("Подтверждённые суммы не включают группы с неопределённым числом занятий. Все кандидаты и их показатели доступны для сверки; их время и дистанция не складываются.",
         style=MaterialTheme.typography.bodySmall)
+}
+
+@Composable
+fun WorkoutGroupCard(group: WorkoutDisplayGroup, showDate: Boolean = false) {
+    if(!group.requiresReview) {
+        ArchiveCard(group.members.single(),showDate)
+        return
+    }
+    var expanded by rememberSaveable(group.key) { mutableStateOf(false) }
+    Card(onClick={expanded=!expanded},modifier=Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+            Text("Группа для сверки",style=MaterialTheme.typography.titleMedium)
+            Text(group.members.map { it.primary.session.sport.label() }.distinct().joinToString(" · "),
+                style=MaterialTheme.typography.labelMedium)
+            Text("${group.members.size} эпизодов-кандидатов · ${group.observationCount} наблюдений",
+                style=MaterialTheme.typography.bodySmall)
+            Text(group.members.joinToString(" · ") {
+                formatDayMonth(LocalDate.ofEpochDay(it.primary.day))+" "+formatTime(it.primary.session.startMillis)
+            },style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Не подтверждено, что это одно занятие. Исходные показатели сохранены.",
+                color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall)
+            Text(if(expanded) "Свернуть" else "Посмотреть все записи",
+                color=MaterialTheme.colorScheme.primary,style=MaterialTheme.typography.labelLarge)
+            if(expanded) {
+                group.members.forEach { member -> ArchiveCard(member,showDate=true) }
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
