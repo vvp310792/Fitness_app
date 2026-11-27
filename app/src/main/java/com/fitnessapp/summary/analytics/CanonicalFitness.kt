@@ -164,35 +164,54 @@ object CanonicalFitness {
         return Match.CONFIDENT
     }
 
-    private fun isFitFragment(s:FitnessSession):Boolean =
-        s.source==FitnessSource.GOOGLE_FIT ||
-            (s.source==FitnessSource.GOOGLE_HEALTH && s.transportOrigin=="com.google.android.apps.fitness")
+    private val transportSources=setOf(FitnessSource.GOOGLE_HEALTH,FitnessSource.HEALTH_CONNECT,FitnessSource.GOOGLE_FIT)
+    private val deviceSources=setOf(FitnessSource.GARMIN,FitnessSource.STRAVA)
+    private val anchorSources=deviceSources+FitnessSource.GYMUP
 
-    /** Separate matching phase: a Fit interval can describe part of a directly
-     * recorded session. No inferred elapsed time, no different-sport merges.
-     * A partial observation cannot become an anchor for another fragment. */
-    private fun fragmentMatch(fragment:FitnessSession,anchor:FitnessSession):Match {
-        if(!isFitFragment(fragment) || anchor.source !in setOf(FitnessSource.GARMIN,FitnessSource.GYMUP,FitnessSource.STRAVA))
-            return Match.NONE
-        if(fragment.sport!=anchor.sport || fragment.sport in setOf(FitnessSport.OTHER,FitnessSport.UNKNOWN))
-            return Match.NONE
-        val f=fragment.elapsedSeconds ?: return Match.NONE
-        val a=anchor.elapsedSeconds ?: return Match.NONE
-        if(f<180L || a<=f+60L)return Match.NONE
-        val overlap=min(fragment.startMillis+f*1000L,anchor.startMillis+a*1000L)-
-            max(fragment.startMillis,anchor.startMillis)
-        if(overlap<=0 || overlap.toDouble()/(f*1000.0)<0.90)return Match.NONE
-        // Permit slightly different timestamps, not a fragment extending far
-        // outside the original session.
-        if(fragment.startMillis<anchor.startMillis-60_000L ||
-            fragment.startMillis+f*1000L>anchor.startMillis+a*1000L+60_000L) return Match.POSSIBLE
+    /** A measured shorter interval or a complementary strength journal can
+     * belong to a complete device session. Do not confuse journal wall time
+     * with watch timer time. Candidate does not mean confirmed. */
+    private fun nestedMatch(child:FitnessSession,anchor:FitnessSession):Match {
+        val journal=child.source==FitnessSource.GYMUP && anchor.source in deviceSources
+        if(!journal && (child.source !in transportSources || anchor.source !in anchorSources))return Match.NONE
+        if(child.sport!=anchor.sport || child.sport in setOf(FitnessSport.OTHER,FitnessSport.UNKNOWN))return Match.NONE
+        if(journal && child.sport!=FitnessSport.STRENGTH)return Match.NONE
+        val f=child.elapsedSeconds
+        val a=anchor.elapsedSeconds
+        if(f==null || a==null) {
+            // Missing duration does not establish containment.
+            return if(abs(child.startMillis-anchor.startMillis)<=START_WINDOW_MS) Match.POSSIBLE else Match.NONE
+        }
+        val overlap=min(child.startMillis+f*1000L,anchor.startMillis+a*1000L)-
+            max(child.startMillis,anchor.startMillis)
+        val short=min(f,a)
+        val long=max(f,a)
+        if(overlap<180_000L || overlap.toDouble()/(short*1000.0)<0.50)return Match.NONE
+        val coveredShort=overlap.toDouble()/(short*1000.0)
+        val coveredLong=overlap.toDouble()/(long*1000.0)
+        if(coveredShort<0.90 && coveredLong<0.80)return Match.POSSIBLE
+        if(journal) {
+            // Direct watch + strength journal are complementary. Even when
+            // the journal begins before or ends after the watch, its set log
+            // is retained, but its wall-clock duration must not replace timer.
+            return Match.CONFIDENT
+        }
         val timer=anchor.recordedSeconds ?: return Match.POSSIBLE
-        // A long paused interval is not evidence that the watch was recording
-        // activity throughout it. In that case do not automatically attach.
-        if(timer<f-60L || abs(a-timer)>max(120.0,a*0.15))return Match.POSSIBLE
-        val x=fragment.distanceMeters?.takeIf { it>0 }
+        // Long pauses are not evidence of recorded exercise throughout the interval.
+        if(abs(a-timer)>max(120.0,a*0.15))return Match.POSSIBLE
+        val x=child.distanceMeters?.takeIf { it>0 }
         val y=anchor.distanceMeters?.takeIf { it>0 }
-        if(x!=null && y!=null && x>y+max(10.0,y*0.05))return Match.POSSIBLE
+        if(f<a-60L) {
+            if(coveredShort<0.90 || child.startMillis<anchor.startMillis-60_000L ||
+                child.startMillis+f*1000L>anchor.startMillis+a*1000L+60_000L ||
+                timer<f-60L)return Match.POSSIBLE
+            if(x!=null && y!=null && x>y+max(10.0,y*0.05))return Match.POSSIBLE
+            return Match.CONFIDENT
+        }
+        // Comparable full intervals: tolerate missing optional distance only
+        // when endpoints strongly agree, not merely an overlapping activity.
+        if(coveredLong<0.85 || abs(f-a)>max(120.0,a*0.15))return Match.POSSIBLE
+        if(x!=null && y!=null && abs(x-y)>max(10.0,max(x,y)*0.05))return Match.POSSIBLE
         return Match.CONFIDENT
     }
 
@@ -221,7 +240,9 @@ object CanonicalFitness {
             val m=match(rows[i],rows[j])
             if(m==Match.NONE)return
             related[i].add(j);related[j].add(i)
-            if(m==Match.CONFIDENT){strong[i].add(j);strong[j].add(i)}
+            val journalDevice=(rows[i].source==FitnessSource.GYMUP && rows[j].source!=FitnessSource.GYMUP) ||
+                (rows[j].source==FitnessSource.GYMUP && rows[i].source!=FitnessSource.GYMUP)
+            if(m==Match.CONFIDENT && !journalDevice){strong[i].add(j);strong[j].add(i)}
         }
         for(i in rows.indices) {
             var j=i+1
@@ -244,31 +265,73 @@ object CanonicalFitness {
                 group.all { a-> group.all { b-> a==b || b in strong[a] } }
             if(safe)groups.add(group) else group.forEach { groups.add(listOf(it)) }
         }
-        // Match partial intervals against the original complete-link groups.
-        // Unique direct anchor required; no transitive chains and no arbitrary
-        // selection between two real sessions. Preserve the raw member even
-        // when it is a fragment of an already reconciled episode.
+        // Attach complementary log/transport groups only to a unique direct
+        // anchor. Work with the original complete-link groups; never create a
+        // chain through a transported fragment. Ambiguous links remain reviewable.
         val attached=mutableMapOf<Int,Int>()
         val fragmentIndices=mutableSetOf<Int>()
         val byGroup=groups.withIndex().flatMap { (g,indices) -> indices.map { it to g } }.toMap()
-        val anchors=rows.indices.filter {
-            rows[it].source in setOf(FitnessSource.GARMIN,FitnessSource.GYMUP,FitnessSource.STRAVA)
+        val anchors=rows.indices.filter { rows[it].source in anchorSources }
+        fun root(g:Int):Int = attached[g] ?: g
+        fun candidates(group:Int,children:List<Int>,journal:Boolean):Map<Int,List<Pair<Int,Match>>> {
+            val out=mutableMapOf<Int,MutableList<Pair<Int,Match>>>()
+            for(i in children) for(j in anchors) {
+                val target=root(byGroup.getValue(j))
+                if(target==group || (journal && rows[j].source !in deviceSources))continue
+                val n=nestedMatch(rows[i],rows[j])
+                // A full transported copy of a standalone journal can still
+                // supply its measured heart rate. Never use a nested journal
+                // as independent evidence to extend a device interval.
+                val full=!journal && byGroup.getValue(j) !in attached &&
+                    match(rows[i],rows[j])==Match.CONFIDENT
+                val m=when {
+                    full -> Match.CONFIDENT
+                    byGroup.getValue(j) in attached && n!=Match.NONE -> Match.POSSIBLE
+                    else -> n
+                }
+                if(m==Match.NONE)continue
+                related[i].add(j);related[j].add(i)
+                out.getOrPut(target){mutableListOf()}.add(i to m)
+            }
+            return out
         }
-        for(i in rows.indices){
-            if(!isFitFragment(rows[i]))continue
-            val sourceGroup=byGroup.getValue(i)
-            if(groups[sourceGroup].size!=1 || strong[i].isNotEmpty())continue
-            val candidates=anchors.mapNotNull { j ->
-                val m=fragmentMatch(rows[i],rows[j])
-                if(m==Match.NONE || sourceGroup==byGroup.getValue(j))null else j to m
-            }
-            for((j,_) in candidates){related[i].add(j);related[j].add(i)}
-            val targetGroups=candidates.map { byGroup.getValue(it.first) }.distinct()
-            if(targetGroups.size==1 && candidates.any { it.second==Match.CONFIDENT } &&
-                candidates.all { it.second==Match.CONFIDENT }) {
-                attached[sourceGroup]=targetGroups.single()
-                fragmentIndices.add(i)
-            }
+        fun attach(group:Int,target:Int,journal:Boolean) {
+            attached[group]=target
+            fragmentIndices.addAll(groups[group].filter { i ->
+                journal || groups[target].none { j ->
+                    rows[j].source in anchorSources && match(rows[i],rows[j])==Match.CONFIDENT
+                }
+            })
+        }
+        // A single performed journal per watch episode may be nested. If two
+        // separate GymUp sessions both point to one watch, retain them for
+        // review rather than counting duplicated exercises as independent sets.
+        val journals=groups.indices.filter { g ->
+            groups[g].any { rows[it].source==FitnessSource.GYMUP } &&
+                groups[g].none { rows[it].source in deviceSources }
+        }
+        val journalChoices=mutableMapOf<Int,Int>()
+        for(g in journals) {
+            val c=candidates(g,groups[g].filter { rows[it].source==FitnessSource.GYMUP },true)
+            if(c.size==1 && c.values.single().all { it.second==Match.CONFIDENT })journalChoices[g]=c.keys.single()
+        }
+        journalChoices.entries.groupBy { it.value }.values.filter { it.size==1 }.forEach { entries ->
+            val (g,target)=entries.single()
+            attach(g,target,true)
+        }
+        for(g in groups.indices) {
+            if(g in attached || groups[g].any { rows[it].source !in transportSources })continue
+            val c=candidates(g,groups[g],false)
+            if(c.size!=1)continue
+            val target=c.keys.single()
+            // Every member must have positive evidence for this same original
+            // workout, and a contradictory confident external link blocks it.
+            val evidence=c.values.single()
+            if(evidence.none { it.second==Match.CONFIDENT } ||
+                groups[g].any { i -> evidence.none { it.first==i && it.second==Match.CONFIDENT } } ||
+                groups[g].any { i -> strong[i].any { j -> root(byGroup.getValue(j))!=target && byGroup.getValue(j)!=g } })
+                continue
+            attach(g,target,false)
         }
         val fragmentsByGroup=attached.entries.groupBy({it.value},{it.key})
         val mergedGroups=groups.indices.filter { it !in attached }.map { g ->

@@ -197,7 +197,7 @@ fun ArchiveCard(row: ArchiveEpisode, showDate: Boolean = false) {
             }
             Text(row.observations.map { it.session.source.label() }.distinct().joinToString(" · "),
                 style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
-            if(row.episode.fragmentKeys.isNotEmpty()) Text("Включены фрагменты: "+row.episode.fragmentKeys.size,
+            if(row.episode.fragmentKeys.isNotEmpty()) Text("Вложенные записи: "+row.episode.fragmentKeys.size,
                 style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
             if(row.episode.ambiguous) Text("Возможное совпадение с другой записью",style=MaterialTheme.typography.labelMedium,
                 color=MaterialTheme.colorScheme.error)
@@ -206,9 +206,9 @@ fun ArchiveCard(row: ArchiveEpisode, showDate: Boolean = false) {
             if(expanded) {
                 row.maxHr?.let { StatRow("Максимальный пульс","$it уд/мин") }
                 if(row.episode.fragmentKeys.isNotEmpty()) {
-                    Text("Частичные записи не увеличивают время и дистанцию занятия.",style=MaterialTheme.typography.bodySmall)
+                    Text("Вложенные записи не увеличивают время, дистанцию и число занятий.",style=MaterialTheme.typography.bodySmall)
                     row.observations.filter { it.session.key in row.episode.fragmentKeys }.forEach { fragment ->
-                        StatRow("Фрагмент "+fragment.session.source.label(),formatTime(fragment.session.startMillis)+
+                        StatRow("Вложенная запись · "+fragment.session.source.label(),formatTime(fragment.session.startMillis)+
                             (fragment.trainingSeconds?.let { " · "+secondsLabel(it) } ?: ""))
                     }
                 }

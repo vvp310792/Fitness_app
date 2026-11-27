@@ -39,7 +39,8 @@ data class ArchiveEpisode(
         .firstNotNullOfOrNull { it.averageHr }
     val maxHr: Int? get() = wholeObservations.sortedBy { sourceOrder(it.session.source) }
         .firstNotNullOfOrNull { it.maxHr }
-    val sets: List<StrengthSet> get() = observations.firstOrNull { it.session.source == FitnessSource.GYMUP }?.sets.orEmpty()
+    val sets: List<StrengthSet> get() = observations.filter { it.session.source == FitnessSource.GYMUP }
+        .flatMap { it.sets }.distinctBy { Triple(it.startMillis,it.exerciseName,it.setIndex) }
     val garmin: GarminActivity? get() = observations.firstNotNullOfOrNull { it.garmin }
 }
 
