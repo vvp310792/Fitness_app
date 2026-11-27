@@ -125,6 +125,8 @@ object CanonicalFitness {
     private fun directEnduranceCopy(a:FitnessSession,b:FitnessSession):Boolean {
         if(setOf(a.source,b.source)!=setOf(FitnessSource.GARMIN,FitnessSource.STRAVA))return false
         if(a.sport!=b.sport || a.sport !in endurance || abs(a.startMillis-b.startMillis)>2_000L)return false
+        // A moving-time-only pair stays unresolved. Never infer elapsed time.
+        if(a.elapsedSeconds==null && b.elapsedSeconds==null)return false
         val x=a.distanceMeters?.takeIf { it>0 } ?: return false
         val y=b.distanceMeters?.takeIf { it>0 } ?: return false
         if(abs(x-y)>max(20.0,max(x,y)*0.015))return false
