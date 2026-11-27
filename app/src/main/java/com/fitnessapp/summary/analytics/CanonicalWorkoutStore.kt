@@ -2,6 +2,9 @@ package com.fitnessapp.summary.analytics
 
 import android.content.Context
 import androidx.room.Dao
+import androidx.room.ColumnInfo
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.room.Database
 import androidx.room.Entity
 import androidx.room.ForeignKey
@@ -44,7 +47,8 @@ data class CanonicalWorkoutRow(
 data class CanonicalWorkoutMember(
     val ownerKey:String,
     val observationKey:String,
-    val episodeKey:String
+    val episodeKey:String,
+    @ColumnInfo(defaultValue="0") val isFragment:Boolean=false
 )
 
 @Dao
@@ -61,15 +65,20 @@ interface CanonicalWorkoutDao {
     suspend fun insertMembers(rows:List<CanonicalWorkoutMember>)
 }
 
-@Database(entities=[CanonicalWorkoutRow::class,CanonicalWorkoutMember::class],version=1,exportSchema=false)
+@Database(entities=[CanonicalWorkoutRow::class,CanonicalWorkoutMember::class],version=2,exportSchema=false)
 abstract class CanonicalWorkoutDatabase:RoomDatabase() {
     abstract fun canonical():CanonicalWorkoutDao
     companion object {
         const val NAME="canonical_workouts.db"
+        val MIGRATION_1_2=object:Migration(1,2) {
+            override fun migrate(db:SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE canonical_workout_members ADD COLUMN isFragment INTEGER NOT NULL DEFAULT 0")
+            }
+        }
         @Volatile private var instance:CanonicalWorkoutDatabase?=null
         fun get(context:Context):CanonicalWorkoutDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext,CanonicalWorkoutDatabase::class.java,NAME)
-                .build().also { instance=it }
+                .addMigrations(MIGRATION_1_2).build().also { instance=it }
         }
     }
 }
@@ -95,7 +104,10 @@ class CanonicalWorkoutStore(private val db:CanonicalWorkoutDatabase) {
                 e.episode.ambiguous,JSONArray(e.episode.possibleDuplicateKeys.sorted()).toString())
         }.sortedWith(compareByDescending<CanonicalWorkoutRow> { it.startMillis }.thenBy { it.episodeKey })
         val members=episodes.flatMap { e ->
-            e.observations.map { o -> CanonicalWorkoutMember(ownerKey,o.session.key,e.episode.primary.key) }
+            require(e.episode.primary.key !in e.episode.fragmentKeys)
+            require(e.episode.fragmentKeys.all { key -> e.observations.any { it.session.key==key } })
+            e.observations.map { o -> CanonicalWorkoutMember(ownerKey,o.session.key,e.episode.primary.key,
+                isFragment=o.session.key in e.episode.fragmentKeys) }
         }.sortedBy { it.observationKey }
         require(rows.map { it.episodeKey }.distinct().size==rows.size)
         var storedRows=dao.episodes(ownerKey).sortedWith(compareByDescending<CanonicalWorkoutRow> { it.startMillis }.thenBy { it.episodeKey })
@@ -114,7 +126,8 @@ class CanonicalWorkoutStore(private val db:CanonicalWorkoutDatabase) {
             val items=grouped.getValue(row.episodeKey).map { byKey.getValue(it.observationKey) }.sortedBy { it.session.key }
             require(items.any { it.session.key==primary.session.key })
             val related=JSONArray(row.possibleKeysJson).let { a -> (0 until a.length()).map { a.getString(it) } }
-            ArchiveEpisode(SessionEpisode(primary.session,items.map { it.session },row.ambiguous,related),primary,items)
+            val fragments=grouped.getValue(row.episodeKey).filter { it.isFragment }.map { it.observationKey }.sorted()
+            ArchiveEpisode(SessionEpisode(primary.session,items.map { it.session },row.ambiguous,related,fragments),primary,items)
         }
         require(result.sumOf { it.observations.size }==byKey.size)
         archive.copy(episodes=result,canonicalStored=true)

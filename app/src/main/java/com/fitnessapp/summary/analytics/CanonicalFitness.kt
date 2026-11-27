@@ -44,7 +44,9 @@ data class SessionEpisode(
     val primary: FitnessSession,
     val observations: List<FitnessSession>,
     val ambiguous: Boolean,
-    val possibleDuplicateKeys: List<String> = emptyList()
+    val possibleDuplicateKeys: List<String> = emptyList(),
+    /** Transported partial intervals, not independent workouts or full-session metrics. */
+    val fragmentKeys: List<String> = emptyList()
 )
 
 data class DailyObservation(
@@ -162,6 +164,38 @@ object CanonicalFitness {
         return Match.CONFIDENT
     }
 
+    private fun isFitFragment(s:FitnessSession):Boolean =
+        s.source==FitnessSource.GOOGLE_FIT ||
+            (s.source==FitnessSource.GOOGLE_HEALTH && s.transportOrigin=="com.google.android.apps.fitness")
+
+    /** Separate matching phase: a Fit interval can describe part of a directly
+     * recorded session. No inferred elapsed time, no different-sport merges.
+     * A partial observation cannot become an anchor for another fragment. */
+    private fun fragmentMatch(fragment:FitnessSession,anchor:FitnessSession):Match {
+        if(!isFitFragment(fragment) || anchor.source !in setOf(FitnessSource.GARMIN,FitnessSource.GYMUP,FitnessSource.STRAVA))
+            return Match.NONE
+        if(fragment.sport!=anchor.sport || fragment.sport in setOf(FitnessSport.OTHER,FitnessSport.UNKNOWN))
+            return Match.NONE
+        val f=fragment.elapsedSeconds ?: return Match.NONE
+        val a=anchor.elapsedSeconds ?: return Match.NONE
+        if(f<180L || a<=f+60L)return Match.NONE
+        val overlap=min(fragment.startMillis+f*1000L,anchor.startMillis+a*1000L)-
+            max(fragment.startMillis,anchor.startMillis)
+        if(overlap<=0 || overlap.toDouble()/(f*1000.0)<0.90)return Match.NONE
+        // Permit slightly different timestamps, not a fragment extending far
+        // outside the original session.
+        if(fragment.startMillis<anchor.startMillis-60_000L ||
+            fragment.startMillis+f*1000L>anchor.startMillis+a*1000L+60_000L) return Match.POSSIBLE
+        val timer=anchor.recordedSeconds ?: return Match.POSSIBLE
+        // A long paused interval is not evidence that the watch was recording
+        // activity throughout it. In that case do not automatically attach.
+        if(timer<f-60L || abs(a-timer)>max(120.0,a*0.15))return Match.POSSIBLE
+        val x=fragment.distanceMeters?.takeIf { it>0 }
+        val y=anchor.distanceMeters?.takeIf { it>0 }
+        if(x!=null && y!=null && x>y+max(10.0,y*0.05))return Match.POSSIBLE
+        return Match.CONFIDENT
+    }
+
     private fun sessionRank(s: FitnessSession): Int = when (s.source) {
         FitnessSource.GARMIN -> 0
         FitnessSource.GYMUP -> 1
@@ -210,15 +244,47 @@ object CanonicalFitness {
                 group.all { a-> group.all { b-> a==b || b in strong[a] } }
             if(safe)groups.add(group) else group.forEach { groups.add(listOf(it)) }
         }
-        // Ambiguous links are between episodes, not between the copies already
-        // proven to be members of one episode. Preserve references for review.
-        val result=groups.map { group->
+        // Match partial intervals against the original complete-link groups.
+        // Unique direct anchor required; no transitive chains and no arbitrary
+        // selection between two real sessions. Preserve the raw member even
+        // when it is a fragment of an already reconciled episode.
+        val attached=mutableMapOf<Int,Int>()
+        val fragmentIndices=mutableSetOf<Int>()
+        val byGroup=groups.withIndex().flatMap { (g,indices) -> indices.map { it to g } }.toMap()
+        val anchors=rows.indices.filter {
+            rows[it].source in setOf(FitnessSource.GARMIN,FitnessSource.GYMUP,FitnessSource.STRAVA)
+        }
+        for(i in rows.indices){
+            if(!isFitFragment(rows[i]))continue
+            val sourceGroup=byGroup.getValue(i)
+            if(groups[sourceGroup].size!=1 || strong[i].isNotEmpty())continue
+            val candidates=anchors.mapNotNull { j ->
+                val m=fragmentMatch(rows[i],rows[j])
+                if(m==Match.NONE || sourceGroup==byGroup.getValue(j))null else j to m
+            }
+            for((j,_) in candidates){related[i].add(j);related[j].add(i)}
+            val targetGroups=candidates.map { byGroup.getValue(it.first) }.distinct()
+            if(targetGroups.size==1 && candidates.any { it.second==Match.CONFIDENT } &&
+                candidates.all { it.second==Match.CONFIDENT }) {
+                attached[sourceGroup]=targetGroups.single()
+                fragmentIndices.add(i)
+            }
+        }
+        val fragmentsByGroup=attached.entries.groupBy({it.value},{it.key})
+        val mergedGroups=groups.indices.filter { it !in attached }.map { g ->
+            groups[g]+fragmentsByGroup[g].orEmpty().flatMap { groups[it] }
+        }
+        // Ambiguous links are between episodes, not between the copies or
+        // partial intervals that are already members of one episode.
+        val result=mergedGroups.map { group->
             val members=group.toSet()
             val observations=group.map { rows[it] }.sortedBy { it.key }
             val external=group.flatMap { related[it] }.filter { it !in members }.distinct()
                 .map { rows[it].key }.sorted()
-            val primary=observations.minWith(compareBy<FitnessSession> { sessionRank(it) }.thenBy { it.key })
-            SessionEpisode(primary,observations,external.isNotEmpty(),external)
+            val fragments=group.filter { it in fragmentIndices }.map { rows[it].key }.sorted()
+            val primary=observations.filterNot { it.key in fragments }
+                .minWith(compareBy<FitnessSession> { sessionRank(it) }.thenBy { it.key })
+            SessionEpisode(primary,observations,external.isNotEmpty(),external,fragments)
         }
         return result.sortedWith(compareBy<SessionEpisode> { it.primary.startMillis }.thenBy { it.primary.key })
     }

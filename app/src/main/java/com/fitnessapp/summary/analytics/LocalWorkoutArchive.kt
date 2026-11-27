@@ -28,13 +28,16 @@ data class ArchiveEpisode(
     val primary: ArchiveObservation,
     val observations: List<ArchiveObservation>
 ) {
-    val durationSeconds: Long? get() = observations.sortedBy { sourceOrder(it.session.source) }
+    // Partial Google Fit records can add provenance, but their metrics describe
+    // only a sub-interval and must never substitute for whole-session metrics.
+    private val wholeObservations get() = observations.filterNot { it.session.key in episode.fragmentKeys }
+    val durationSeconds: Long? get() = wholeObservations.sortedBy { sourceOrder(it.session.source) }
         .firstNotNullOfOrNull { it.trainingSeconds }
-    val distanceMeters: Double? get() = observations.sortedBy { sourceOrder(it.session.source) }
+    val distanceMeters: Double? get() = wholeObservations.sortedBy { sourceOrder(it.session.source) }
         .firstNotNullOfOrNull { it.session.distanceMeters }
-    val averageHr: Int? get() = observations.sortedBy { sourceOrder(it.session.source) }
+    val averageHr: Int? get() = wholeObservations.sortedBy { sourceOrder(it.session.source) }
         .firstNotNullOfOrNull { it.averageHr }
-    val maxHr: Int? get() = observations.sortedBy { sourceOrder(it.session.source) }
+    val maxHr: Int? get() = wholeObservations.sortedBy { sourceOrder(it.session.source) }
         .firstNotNullOfOrNull { it.maxHr }
     val sets: List<StrengthSet> get() = observations.firstOrNull { it.session.source == FitnessSource.GYMUP }?.sets.orEmpty()
     val garmin: GarminActivity? get() = observations.firstNotNullOfOrNull { it.garmin }
