@@ -23,7 +23,9 @@ data class FitnessSession(
     val upstreamId: String? = null,
     /** Google Health can transport records from multiple apps. A package name
      * is a stream identifier, not proof of upstream workout identity. */
-    val transportOrigin: String? = null
+    val transportOrigin: String? = null,
+    /** Recorded timer/active time, explicitly separate from elapsed time. */
+    val recordedSeconds: Long? = null
 ) {
     init {
         require(nativeId.isNotBlank() && startMillis >= 0)
@@ -31,6 +33,7 @@ data class FitnessSession(
         require(distanceMeters == null || (distanceMeters.isFinite() && distanceMeters >= 0))
         require(upstreamId == null || upstreamId.isNotBlank())
         require(transportOrigin == null || transportOrigin.isNotBlank())
+        require(recordedSeconds == null || recordedSeconds in 1..604800)
     }
     val key: String get() = "${source.name}:$nativeId"
     val channel: String get() = if (source == FitnessSource.GOOGLE_HEALTH && transportOrigin != null)
@@ -82,6 +85,35 @@ object CanonicalFitness {
     private enum class Match { NONE, POSSIBLE, CONFIDENT }
     private val endurance = setOf(FitnessSport.RUN, FitnessSport.CYCLE, FitnessSport.SWIM, FitnessSport.WALK)
 
+    /** Exact-time copies can omit distance or represent timer rather than elapsed
+     * duration. Require a transported source, known identical sport, two independently
+     * recorded times and no contradictory positive distance. Do not invent an upstream ID. */
+    private fun exactTransportMatch(a: FitnessSession,b: FitnessSession): Boolean {
+        val transport=setOf(FitnessSource.HEALTH_CONNECT,FitnessSource.GOOGLE_HEALTH)
+        if(a.source !in transport && b.source !in transport) return false
+        if(a.sport!=b.sport || a.sport in setOf(FitnessSport.UNKNOWN,FitnessSport.OTHER)) return false
+        if(abs(a.startMillis-b.startMillis)>2000L) return false
+        val x=a.distanceMeters?.takeIf { it>0 }
+        val y=b.distanceMeters?.takeIf { it>0 }
+        if(x!=null && y!=null && abs(x-y)>max(10.0,max(x,y)*0.05)) return false
+        // Prefer exact timer evidence. Health Connect stores integer minutes;
+        // its precise start/end interval is also available when recorded.
+        val at=a.recordedSeconds ?: return false
+        val bt=b.recordedSeconds ?: return false
+        val hc=a.source==FitnessSource.HEALTH_CONNECT || b.source==FitnessSource.HEALTH_CONNECT
+        val tolerance=if(hc) 59L else 2L
+        if(abs(at-bt)>tolerance) return false
+        // For Health Connect, distinguish rounded minutes from a genuinely
+        // different interval. Garmin and a Garmin-origin Google Health record
+        // may legitimately report different elapsed time.
+        if(hc && a.source!=FitnessSource.GARMIN && b.source!=FitnessSource.GARMIN) {
+            val ae=a.elapsedSeconds
+            val be=b.elapsedSeconds
+            if(ae!=null && be!=null && abs(ae-be)>60L && abs(at-bt)>2L) return false
+        }
+        return true
+    }
+
     private fun match(a: FitnessSession, b: FitnessSession): Match {
         val sameUpstream = a.upstreamId != null && a.upstreamId == b.upstreamId
         val distinctOrigins = a.source == FitnessSource.GOOGLE_HEALTH && b.source == a.source &&
@@ -108,6 +140,7 @@ object CanonicalFitness {
             b.sport !in setOf(FitnessSport.OTHER, FitnessSport.UNKNOWN)
         if (knownSport && a.sport != b.sport) return if (sameUpstream) Match.POSSIBLE else Match.NONE
         if (!knownSport && !sameUpstream) return Match.POSSIBLE
+        if (exactTransportMatch(a,b)) return Match.CONFIDENT
         val ad = a.elapsedSeconds
         val bd = b.elapsedSeconds
         if (ad != null && bd != null) {
@@ -140,58 +173,52 @@ object CanonicalFitness {
     }
 
     /**
-     * Conservative connected components: every pair must agree confidently and
-     * each source stream can contribute at most one distinct observation. A chain A~B~C
-     * is not evidence that A and C are duplicates. Keep uncertain observations
-     * separate and mark them; do not silently discard any activity.
+     * Form complete-link confident components first; weak edges never pull
+     * unrelated observations into a merged group. A confirmed clique can retain
+     * possible links to other groups without being split into duplicate cards.
+     * Non-clique or repeated-channel strong components remain separate.
      */
     fun episodes(input: List<FitnessSession>): List<SessionEpisode> {
         require(input.map { it.key }.toSet().size == input.size) { "duplicate source identity" }
-        val rows = input.sortedWith(compareBy<FitnessSession> { it.startMillis }.thenBy { it.key })
-        val edges = Array(rows.size) { mutableSetOf<Int>() }
-        fun connect(i: Int, j: Int) {
-            if (match(rows[i], rows[j]) != Match.NONE) {
-                edges[i].add(j)
-                edges[j].add(i)
-            }
+        val rows=input.sortedWith(compareBy<FitnessSession> { it.startMillis }.thenBy { it.key })
+        val strong=Array(rows.size) { mutableSetOf<Int>() }
+        val related=Array(rows.size) { mutableSetOf<Int>() }
+        fun connect(i:Int,j:Int) {
+            val m=match(rows[i],rows[j])
+            if(m==Match.NONE)return
+            related[i].add(j);related[j].add(i)
+            if(m==Match.CONFIDENT){strong[i].add(j);strong[j].add(i)}
         }
-        for (i in rows.indices) {
-            var j = i + 1
-            while (j < rows.size && rows[j].startMillis - rows[i].startMillis <= START_WINDOW_MS) {
-                connect(i, j++)
-            }
+        for(i in rows.indices) {
+            var j=i+1
+            while(j<rows.size && rows[j].startMillis-rows[i].startMillis<=START_WINDOW_MS) connect(i,j++)
         }
-        // A shared upstream identity with a conflicting timestamp is also flagged.
-        rows.indices.filter { rows[it].upstreamId != null }
-            .groupBy { rows[it].upstreamId }.values.forEach { ids ->
-                for (i in ids.indices) for (j in i + 1 until ids.size) connect(ids[i], ids[j])
+        rows.indices.filter { rows[it].upstreamId!=null }.groupBy { rows[it].upstreamId }.values.forEach { ids ->
+            for(i in ids.indices) for(j in i+1 until ids.size)connect(ids[i],ids[j])
+        }
+        val visited=BooleanArray(rows.size)
+        val groups=mutableListOf<List<Int>>()
+        for(i in rows.indices){
+            if(visited[i])continue
+            val pending=ArrayDeque<Int>(); val group=mutableListOf<Int>()
+            pending.add(i);visited[i]=true
+            while(pending.isNotEmpty()){
+                val n=pending.removeFirst();group.add(n)
+                strong[n].forEach { k->if(!visited[k]){visited[k]=true;pending.add(k)} }
             }
-        val visited = BooleanArray(rows.size)
-        val result = mutableListOf<SessionEpisode>()
-        for (i in rows.indices) {
-            if (visited[i]) continue
-            val pending = ArrayDeque<Int>()
-            val group = mutableListOf<Int>()
-            pending.add(i); visited[i] = true
-            while (pending.isNotEmpty()) {
-                val n = pending.removeFirst()
-                group.add(n)
-                edges[n].forEach { k -> if (!visited[k]) { visited[k] = true; pending.add(k) } }
-            }
-            val observations = group.map { rows[it] }.sortedBy { it.key }
-            val safe = observations.map { it.channel }.toSet().size == observations.size &&
-                observations.indices.all { a ->
-                    (a + 1 until observations.size).all { b -> match(observations[a], observations[b]) == Match.CONFIDENT }
-                }
-            if (safe) {
-                val primary = observations.minWith(compareBy<FitnessSession> { sessionRank(it) }.thenBy { it.key })
-                result.add(SessionEpisode(primary, observations, false))
-            } else {
-                observations.forEach { row ->
-                    result.add(SessionEpisode(row, listOf(row), true,
-                        observations.filter { it.key != row.key }.map { it.key }))
-                }
-            }
+            val safe=group.map { rows[it].channel }.distinct().size==group.size &&
+                group.all { a-> group.all { b-> a==b || b in strong[a] } }
+            if(safe)groups.add(group) else group.forEach { groups.add(listOf(it)) }
+        }
+        // Ambiguous links are between episodes, not between the copies already
+        // proven to be members of one episode. Preserve references for review.
+        val result=groups.map { group->
+            val members=group.toSet()
+            val observations=group.map { rows[it] }.sortedBy { it.key }
+            val external=group.flatMap { related[it] }.filter { it !in members }.distinct()
+                .map { rows[it].key }.sorted()
+            val primary=observations.minWith(compareBy<FitnessSession> { sessionRank(it) }.thenBy { it.key })
+            SessionEpisode(primary,observations,external.isNotEmpty(),external)
         }
         return result.sortedWith(compareBy<SessionEpisode> { it.primary.startMillis }.thenBy { it.primary.key })
     }
