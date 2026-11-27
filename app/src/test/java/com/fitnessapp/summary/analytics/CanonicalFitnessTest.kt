@@ -157,4 +157,38 @@ class CanonicalFitnessTest {
         assertTrue(CanonicalFitness.episodes(listOf(a,b)).all { it.ambiguous })
     }
 
+
+    private fun anchorFixture(source: FitnessSource, id: String, elapsed: Long?, timer: Long, distance: Double) =
+        FitnessSession(source, id, FitnessSport.RUN, 1_000_000L, elapsed, distance, recordedSeconds = timer)
+
+    @Test
+    fun corroboratesMissingElapsedOnlyThroughUniqueMeasuredGarminAnchor() {
+        val g = anchorFixture(FitnessSource.GARMIN, "g", 3600, 3300, 10000.0)
+        val s = anchorFixture(FitnessSource.STRAVA, "s", null, 3200, 10000.0)
+        val h = anchorFixture(FitnessSource.HEALTH_CONNECT, "h", 3600, 3300, 10000.0)
+        val result = CanonicalFitness.episodes(listOf(g, s, h))
+        org.junit.Assert.assertEquals(1, result.size)
+        org.junit.Assert.assertEquals(3, result.single().observations.size)
+    }
+
+    @Test
+    fun rejectsCorroborationWhenNonAnchorDistancesConflict() {
+        val g = anchorFixture(FitnessSource.GARMIN, "g", 3600, 3300, 10000.0)
+        val s = anchorFixture(FitnessSource.STRAVA, "s", null, 3200, 10140.0)
+        val h = anchorFixture(FitnessSource.HEALTH_CONNECT, "h", 3600, 3300, 9850.0)
+        val result = CanonicalFitness.episodes(listOf(g, s, h))
+        org.junit.Assert.assertTrue(result.size > 1)
+        org.junit.Assert.assertEquals(3, result.sumOf { it.observations.size })
+    }
+
+    @Test
+    fun rejectsCompetingStravaIdentityDespiteDirectAnchor() {
+        val g = anchorFixture(FitnessSource.GARMIN, "g", 3600, 3300, 10000.0)
+        val s = anchorFixture(FitnessSource.STRAVA, "s", null, 3200, 10000.0)
+        val other = s.copy(nativeId = "s2")
+        val h = anchorFixture(FitnessSource.HEALTH_CONNECT, "h", 3600, 3300, 10000.0)
+        val result = CanonicalFitness.episodes(listOf(g, s, other, h))
+        org.junit.Assert.assertTrue(result.size > 1)
+        org.junit.Assert.assertEquals(4, result.sumOf { it.observations.size })
+    }
 }
