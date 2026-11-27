@@ -61,6 +61,7 @@ def nested(child,anchor):
         if cs<.9 or child.start<anchor.start-60000 or child.end>anchor.end+60000 or timer<f-60:return 1
         if x and y and x>y+max(10,y*.05):return 1
         return 2
+    if child.sport in ENDURANCE and (x is None or y is None):return 1
     if cl<.85 or abs(f-a)>max(120,a*.15):return 1
     if x and y and abs(x-y)>max(10,max(x,y)*.05):return 1
     return 2
@@ -191,7 +192,7 @@ def materialize(rows,groups,stats,baseline):
             for p,items,nested_ids,ext in groups:
                 c.executemany("INSERT INTO possible_matches VALUES (?,?)",[(rows[p].key,key) for key in ext])
             meta={"input_sha256":digest.hexdigest(),"generated_epoch":str(int(time.time())),
-                  "algorithm":"overlap-reconciliation-reference-v1","input_stats":json.dumps(dict(stats)),
+                  "algorithm":"overlap-reconciliation-reference-v2","input_stats":json.dumps(dict(stats)),
                   "baseline":json.dumps(baseline),"result":json.dumps(report(rows,groups))}
             c.executemany("INSERT INTO metadata VALUES (?,?)",meta.items())
         assert c.execute("PRAGMA integrity_check").fetchone()==("ok",)

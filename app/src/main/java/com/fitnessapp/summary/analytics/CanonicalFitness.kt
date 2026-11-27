@@ -208,8 +208,10 @@ object CanonicalFitness {
             if(x!=null && y!=null && x>y+max(10.0,y*0.05))return Match.POSSIBLE
             return Match.CONFIDENT
         }
-        // Comparable full intervals: tolerate missing optional distance only
-        // when endpoints strongly agree, not merely an overlapping activity.
+        // Comparable full endurance intervals need independent distance evidence.
+        // Exact recorded timer matches can already be established by match();
+        // approximate endpoints alone cannot prove a duplicate with missing distance.
+        if(child.sport in endurance && (x==null || y==null))return Match.POSSIBLE
         if(coveredLong<0.85 || abs(f-a)>max(120.0,a*0.15))return Match.POSSIBLE
         if(x!=null && y!=null && abs(x-y)>max(10.0,max(x,y)*0.05))return Match.POSSIBLE
         return Match.CONFIDENT

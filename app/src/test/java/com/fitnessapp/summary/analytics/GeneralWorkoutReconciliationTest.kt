@@ -81,4 +81,16 @@ class GeneralWorkoutReconciliationTest {
         assertTrue(e.fragmentKeys.isEmpty())
         assertEquals(2,e.observations.size)
     }
+    @Test fun approximateFullEnduranceIntervalWithoutDistanceRequiresReview() {
+        val a=watch(sport=FitnessSport.RUN).copy(distanceMeters=5000.0)
+        val h=FitnessSession(FitnessSource.GOOGLE_HEALTH,"copy",FitnessSport.RUN,
+            t+30000,1800,transportOrigin="com.garmin.android.apps.connectmobile",recordedSeconds=1800)
+        val uncertain=CanonicalFitness.episodes(listOf(a,h))
+        assertEquals(2,uncertain.size)
+        assertTrue(uncertain.all { it.ambiguous })
+        val exact=CanonicalFitness.episodes(listOf(a,h.copy(startMillis=t))).single()
+        assertFalse(exact.ambiguous)
+        assertEquals(2,exact.observations.size)
+    }
+
 }
