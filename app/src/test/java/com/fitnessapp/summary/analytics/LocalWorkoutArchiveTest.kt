@@ -46,4 +46,13 @@ class LocalWorkoutArchiveTest {
         assertNull(e.distanceMeters)
         assertEquals(1800L,e.durationSeconds)
     }
+    @Test fun ownerApprovedCopyKeepsElapsedUnknown() {
+        val g=GarminActivity(1,d,t,typeKey="running",durationSeconds=1800,distanceMeters=5000)
+        val s=StravaActivity(1,d,t,typeRaw="Бег",durationSeconds=1800,distanceMeters=5000)
+        val result=LocalWorkoutArchive.build(emptyList(),listOf(g),listOf(s),emptyList(),garminStravaCutoffMillis=1635267600000L)
+        val e=result.episodes.single()
+        assertEquals(FitnessSource.GARMIN,e.primary.session.source)
+        assertNull(e.primary.session.elapsedSeconds)
+        assertEquals(2,e.episode.observations.size)
+    }
 }
