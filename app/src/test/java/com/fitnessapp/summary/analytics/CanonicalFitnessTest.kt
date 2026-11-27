@@ -191,4 +191,43 @@ class CanonicalFitnessTest {
         org.junit.Assert.assertTrue(result.size > 1)
         org.junit.Assert.assertEquals(4, result.sumOf { it.observations.size })
     }
+
+    private val provenanceCutoff = 1635267600000L
+    private fun provenanceFixture(source: FitnessSource, id: String,
+        sport: FitnessSport = FitnessSport.STRENGTH, start: Long = provenanceCutoff + 1000,
+        elapsed: Long? = 3600, timer: Long = 3300, distance: Double? = null) =
+        FitnessSession(source, id, sport, start, elapsed, distance, recordedSeconds = timer)
+
+    @Test
+    fun ownerApprovedStrengthCopyIsNotASecondAnchor() {
+        val g = provenanceFixture(FitnessSource.GARMIN, "g")
+        val s = provenanceFixture(FitnessSource.STRAVA, "s", elapsed = null, timer = 3299)
+        val e = CanonicalFitness.episodes(listOf(g,s), provenanceCutoff).single()
+        org.junit.Assert.assertEquals(g.key,e.primary.key)
+        org.junit.Assert.assertEquals(setOf(g.key,s.key),e.observations.map { it.key }.toSet())
+    }
+    @Test
+    fun ownerApprovedEnduranceCopyMayHaveDifferentMovingTime() {
+        val g = provenanceFixture(FitnessSource.GARMIN,"g",FitnessSport.RUN,distance=10000.0)
+        val s = provenanceFixture(FitnessSource.STRAVA,"s",FitnessSport.RUN,elapsed=null,timer=2400,distance=10010.0)
+        org.junit.Assert.assertEquals(1,CanonicalFitness.episodes(listOf(g,s),provenanceCutoff).size)
+    }
+    @Test
+    fun ownerPolicyRetainsHistoryAndUnmatchedRecords() {
+        val s = provenanceFixture(FitnessSource.STRAVA,"s",elapsed=null)
+        val old = s.copy(nativeId="old", startMillis=provenanceCutoff-10000)
+        val result = CanonicalFitness.episodes(listOf(s,old),provenanceCutoff)
+        org.junit.Assert.assertEquals(setOf(s.key,old.key),result.map { it.primary.key }.toSet())
+    }
+    @Test
+    fun ownerPolicyDoesNotForceConflictingOrCompetingIdentity() {
+        val g = provenanceFixture(FitnessSource.GARMIN,"g")
+        val s = provenanceFixture(FitnessSource.STRAVA,"s",elapsed=null)
+        val another = s.copy(nativeId="s2",recordedSeconds=10)
+        val result = CanonicalFitness.episodes(listOf(g,s,another),provenanceCutoff)
+        org.junit.Assert.assertEquals(3,result.size)
+        val run = g.copy(sport=FitnessSport.RUN,distanceMeters=10000.0)
+        val bad = s.copy(sport=FitnessSport.RUN,distanceMeters=5000.0)
+        org.junit.Assert.assertEquals(2,CanonicalFitness.episodes(listOf(run,bad),provenanceCutoff).size)
+    }
 }
