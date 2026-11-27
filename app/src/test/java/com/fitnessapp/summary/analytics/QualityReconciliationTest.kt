@@ -109,4 +109,30 @@ class QualityReconciliationTest {
         assertTrue(result.all { it.primary.key !in it.fragmentKeys })
     }
 
+    @Test fun reviewGroupsRetainAllCandidatesAndNeverEnterConfirmedSums() {
+        val a=watch("a",seconds=1800)
+        val b=watch("b",offset=300000,seconds=1800)
+        val j=journal(seconds=90000)
+        val f=fit()
+        val c=watch("next",offset=86400000,seconds=1600)
+        val sessions=listOf(a,b,j,f,c)
+        val observations=sessions.map {
+            ArchiveObservation(it,day+if(it.key==c.key) 1 else 0,
+                it.nativeId,it.recordedSeconds,null,null)
+        }
+        val archive=LocalWorkoutArchive.build(emptyList(),emptyList(),emptyList(),emptyList(),
+            ServerWorkoutProjection(observations,observations.size))
+        val period=WorkoutPeriod(archive.episodes)
+        assertEquals(5,period.accountedObservationCount)
+        assertEquals(1,period.confirmed.size)
+        assertEquals(1600L,period.durationSeconds)
+        assertEquals(1,period.reviewGroupCount)
+        assertEquals(4,period.reviewObservationCount)
+        val group=period.displayGroups.single { it.requiresReview }
+        assertEquals(3,group.members.size)
+        assertEquals(setOf(a.key,b.key,j.key,f.key),group.members.flatMap { it.observations }
+            .map { it.session.key }.toSet())
+        assertEquals(archive.episodes.size,period.displayGroups.sumOf { it.members.size })
+    }
+
 }
