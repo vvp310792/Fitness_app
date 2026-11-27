@@ -336,7 +336,71 @@ object CanonicalFitness {
      * possible links to other groups without being split into duplicate cards.
      * Non-clique or repeated-channel strong components remain separate.
      */
-    fun episodes(input: List<FitnessSession>): List<SessionEpisode> {
+    /**
+     * Owner-approved provenance policy. A Strava recording after the cut-off
+     * is a Garmin export, but an unmatched row is always retained as a fallback.
+     * No elapsed time is inferred from a moving-time value.
+     */
+    private fun garminCopyCompatible(g: FitnessSession, s: FitnessSession): Boolean {
+        if (g.source != FitnessSource.GARMIN || s.source != FitnessSource.STRAVA ||
+            g.sport != s.sport || g.sport in setOf(FitnessSport.UNKNOWN, FitnessSport.OTHER)) return false
+        if (abs(g.startMillis - s.startMillis) > 2_000L) return false
+        val gt = g.recordedSeconds ?: return false
+        val st = s.recordedSeconds ?: return false
+        val ge = g.elapsedSeconds
+        val se = s.elapsedSeconds
+        if (ge != null && se != null && abs(ge - se) > max(120.0, max(ge, se) * 0.15)) return false
+        if (ge != null && st > ge + max(60.0, ge * 0.05)) return false
+        val x = g.distanceMeters?.takeIf { it > 0 }
+        val y = s.distanceMeters?.takeIf { it > 0 }
+        if (x != null && y != null && abs(x - y) > max(20.0, max(x, y) * 0.015)) return false
+        if (g.sport == FitnessSport.STRENGTH) return abs(gt - st) <= max(60.0, max(gt, st) * 0.15)
+        if (x != null && y != null) return ge != null || st <= gt + max(120.0, gt * 0.15)
+        return abs(gt - st) <= 2L
+    }
+
+    private fun garminCopyLinks(input: List<FitnessSession>, cutoff: Long): Map<String, String> {
+        val garmin = input.filter { it.source == FitnessSource.GARMIN && it.startMillis >= cutoff }
+        val strava = input.filter { it.source == FitnessSource.STRAVA && it.startMillis >= cutoff &&
+            it.sport !in setOf(FitnessSport.UNKNOWN, FitnessSport.OTHER) }
+        val candidates = strava.associateWith { s ->
+            garmin.filter { g -> g.sport == s.sport && abs(g.startMillis - s.startMillis) <= 2_000L }
+        }
+        val counts = candidates.values.flatten().groupingBy { it.key }.eachCount()
+        return candidates.mapNotNull { (s, gs) ->
+            val g = gs.singleOrNull() ?: return@mapNotNull null
+            if (counts[g.key] == 1 && garminCopyCompatible(g, s)) s.key to g.key else null
+        }.toMap()
+    }
+
+    fun episodes(input: List<FitnessSession>, garminStravaCutoffMillis: Long? = null): List<SessionEpisode> {
+        require(input.map { it.key }.toSet().size == input.size) { "duplicate source identity" }
+        val cutoff = garminStravaCutoffMillis ?: return episodesCore(input)
+        val links = garminCopyLinks(input, cutoff).toMutableMap()
+        val byKey = input.associateBy { it.key }
+        while (links.isNotEmpty()) {
+            val core = episodesCore(input.filter { it.key !in links })
+            val copies = links.entries.groupBy { it.value }
+            val conflicts = mutableSetOf<String>()
+            val merged = core.map { e ->
+                val added = e.observations.flatMap { copies[it.key].orEmpty() }.map { byKey.getValue(it.key) }
+                if (added.isNotEmpty() && e.observations.any { it.source == FitnessSource.STRAVA }) {
+                    conflicts.addAll(added.map { it.key })
+                }
+                e.copy(observations = (e.observations + added).sortedBy { it.key })
+            }
+            if (conflicts.isNotEmpty()) {
+                conflicts.forEach { links.remove(it) }
+                continue
+            }
+            val accounted = merged.flatMap { it.observations }.map { it.key }
+            require(accounted.size == input.size && accounted.toSet() == byKey.keys) { "provenance membership mismatch" }
+            return merged
+        }
+        return episodesCore(input)
+    }
+
+    private fun episodesCore(input: List<FitnessSession>): List<SessionEpisode> {
         require(input.map { it.key }.toSet().size == input.size) { "duplicate source identity" }
         val rows=input.sortedWith(compareBy<FitnessSession> { it.startMillis }.thenBy { it.key })
         val strong=Array(rows.size) { mutableSetOf<Int>() }
