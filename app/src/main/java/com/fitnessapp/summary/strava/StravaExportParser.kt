@@ -100,7 +100,10 @@ object StravaExportParser {
             val instant = startedAt.toInstant(ZoneOffset.UTC)
             val type = value(COL_TYPE).trim()
             // Moving time is the training number; elapsed only stands in when it is absent.
-            val seconds = number(value(COL_MOVING)).takeIf { it > 0 } ?: number(value(COL_ELAPSED))
+            val moving = number(value(COL_MOVING)).takeIf { it.isFinite() && it in 1.0..604800.0 }?.toInt()
+            val elapsed = number(value(COL_ELAPSED)).takeIf { it.isFinite() && it in 1.0..604800.0 }?.toInt()
+                ?.takeIf { moving == null || it >= moving }
+            val seconds = moving ?: elapsed ?: 0
             val meters = number(value(COL_DISTANCE_M)).takeIf { it > 0 }
                 ?: (number(value(COL_DISTANCE_KM)) * 1000)
 
@@ -115,7 +118,9 @@ object StravaExportParser {
                 calories = number(value(COL_CALORIES)).toInt(),
                 avgHeartRate = number(value(COL_HR_AVG)).toInt(),
                 maxHeartRate = number(value(COL_HR_MAX)).toInt(),
-                elevationGainMeters = number(value(COL_ELEVATION)).toInt()
+                elevationGainMeters = number(value(COL_ELEVATION)).toInt(),
+                elapsedSeconds = elapsed,
+                movingSeconds = moving
             )
             if (type.isNotEmpty()) sports[type] = (sports[type] ?: 0) + 1
         }
