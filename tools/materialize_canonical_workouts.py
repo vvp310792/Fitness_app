@@ -143,7 +143,13 @@ def fit_supports_device(f,w):
     ov=overlap(f,w)
     return ov>=180000 and ov/(min(f.elapsed,w.elapsed)*1000)>=.7
 
-def reconcile(rows,general):
+def reconcile(rows,general,provenance_cutoff=None):
+    if provenance_cutoff is not None and general:
+        from strava_provenance import reconcile_with_provenance
+        return reconcile_with_provenance(rows,general,_reconcile_core,provenance_cutoff)
+    return _reconcile_core(rows,general)
+
+def _reconcile_core(rows,general):
     strong=[set() for _ in rows];related=[set() for _ in rows]
     for i,a in enumerate(rows):
         for j in range(i+1,len(rows)):
