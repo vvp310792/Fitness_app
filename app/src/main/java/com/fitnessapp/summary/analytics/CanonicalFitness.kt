@@ -168,6 +168,36 @@ object CanonicalFitness {
     private val deviceSources=setOf(FitnessSource.GARMIN,FitnessSource.STRAVA)
     private val anchorSources=deviceSources+FitnessSource.GYMUP
 
+    /** Google Fit and a performed GymUp log can share an exact start timestamp.
+     * This is strong corroboration, not proof of an upstream ID or of wall-clock
+     * training time. Require a unique pair with overlapping measured intervals. */
+    private fun journalFitPair(journal:FitnessSession,fit:FitnessSession):Boolean {
+        if(journal.source!=FitnessSource.GYMUP || journal.sport!=FitnessSport.STRENGTH ||
+            fit.sport!=FitnessSport.STRENGTH ||
+            !(fit.source==FitnessSource.GOOGLE_FIT ||
+                (fit.source==FitnessSource.GOOGLE_HEALTH && fit.transportOrigin=="com.google.android.apps.fitness")) ||
+            abs(journal.startMillis-fit.startMillis)>1000L)return false
+        val j=journal.elapsedSeconds ?: return false
+        val f=fit.elapsedSeconds ?: return false
+        val timer=fit.recordedSeconds ?: return false
+        if(min(j,f)<180L || abs(f-timer)>max(120.0,f*0.15))return false
+        val overlap=min(journal.startMillis+j*1000L,fit.startMillis+f*1000L)-
+            max(journal.startMillis,fit.startMillis)
+        return overlap>=180_000L && overlap.toDouble()/(min(j,f)*1000.0)>=0.90
+    }
+
+    private fun fitSupportsDevice(fit:FitnessSession,watch:FitnessSession):Boolean {
+        if(watch.source !in deviceSources || watch.sport!=FitnessSport.STRENGTH ||
+            abs(fit.startMillis-watch.startMillis)>900_000L)return false
+        val f=fit.elapsedSeconds ?: return false
+        val w=watch.elapsedSeconds ?: return false
+        val timer=watch.recordedSeconds ?: return false
+        if(abs(w-timer)>max(120.0,w*0.15))return false
+        val overlap=min(fit.startMillis+f*1000L,watch.startMillis+w*1000L)-
+            max(fit.startMillis,watch.startMillis)
+        return overlap>=180_000L && overlap.toDouble()/(min(f,w)*1000.0)>=0.80
+    }
+
     /** A measured shorter interval or a complementary strength journal can
      * belong to a complete device session. Do not confuse journal wall time
      * with watch timer time. Candidate does not mean confirmed. */
@@ -274,6 +304,16 @@ object CanonicalFitness {
         val fragmentIndices=mutableSetOf<Int>()
         val byGroup=groups.withIndex().flatMap { (g,indices) -> indices.map { it to g } }.toMap()
         val anchors=rows.indices.filter { rows[it].source in anchorSources }
+        val exactJournalFit=mutableMapOf<Int,Int>()
+        val pairs=rows.indices.filter { rows[it].source==FitnessSource.GYMUP }.flatMap { j ->
+            rows.indices.filter { f -> journalFitPair(rows[j],rows[f]) }.map { f -> j to f }
+        }
+        val countsJ=pairs.groupingBy { it.first }.eachCount()
+        val countsF=pairs.groupingBy { it.second }.eachCount()
+        pairs.filter { countsJ[it.first]==1 && countsF[it.second]==1 }.forEach { (j,f) ->
+            exactJournalFit[j]=f; exactJournalFit[f]=j
+            related[j].add(f);related[f].add(j)
+        }
         fun root(g:Int):Int = attached[g] ?: g
         fun candidates(group:Int,children:List<Int>,journal:Boolean):Map<Int,List<Pair<Int,Match>>> {
             val out=mutableMapOf<Int,MutableList<Pair<Int,Match>>>()
@@ -286,8 +326,23 @@ object CanonicalFitness {
                 // as independent evidence to extend a device interval.
                 val full=!journal && byGroup.getValue(j) !in attached &&
                     match(rows[i],rows[j])==Match.CONFIDENT
+                // An exact journal/Fit pair can corroborate a longer Fit
+                // interval, but only when the same measured watch session
+                // independently overlaps it. Do not extend the watch's time.
+                val paired=exactJournalFit[i]
+                val corroborated=when {
+                    paired==null -> false
+                    journal -> fitSupportsDevice(rows[paired],rows[j])
+                    rows[j].source==FitnessSource.GYMUP && j==paired &&
+                        byGroup.getValue(j) in attached ->
+                        groups[target].any { k -> fitSupportsDevice(rows[i],rows[k]) }
+                    rows[j].source in deviceSources && byGroup.getValue(paired) in attached &&
+                        root(byGroup.getValue(paired))==target ->
+                        fitSupportsDevice(rows[i],rows[j])
+                    else -> false
+                }
                 val m=when {
-                    full -> Match.CONFIDENT
+                    full || corroborated -> Match.CONFIDENT
                     byGroup.getValue(j) in attached && n!=Match.NONE -> Match.POSSIBLE
                     else -> n
                 }
@@ -334,6 +389,24 @@ object CanonicalFitness {
                 groups[g].any { i -> strong[i].any { j -> root(byGroup.getValue(j))!=target && byGroup.getValue(j)!=g } })
                 continue
             attach(g,target,false)
+        }
+        // Standalone performed journal and unique exact-time Fit export
+        // represent one event even when the journal was left open for days.
+        // Without a measured watch, do not assert a device-recorded duration.
+        for((j,f) in pairs.filter { countsJ[it.first]==1 && countsF[it.second]==1 }) {
+            if((rows[j].elapsedSeconds ?: 0)<=4*3600L)continue
+            val jg=byGroup.getValue(j);val fg=byGroup.getValue(f)
+            if(jg==fg || jg in attached || fg in attached ||
+                jg in attached.values || fg in attached.values ||
+                groups[jg].size!=1 || groups[fg].size!=1)continue
+            if(anchors.any { k ->
+                rows[k].source in deviceSources &&
+                    (nestedMatch(rows[f],rows[k])!=Match.NONE ||
+                     match(rows[f],rows[k])!=Match.NONE ||
+                     fitSupportsDevice(rows[f],rows[k]))
+            })continue
+            attached[jg]=fg
+            fragmentIndices.add(j)
         }
         val fragmentsByGroup=attached.entries.groupBy({it.value},{it.key})
         val mergedGroups=groups.indices.filter { it !in attached }.map { g ->

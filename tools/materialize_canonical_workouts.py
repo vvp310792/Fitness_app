@@ -65,6 +65,19 @@ def nested(child,anchor):
     if cl<.85 or abs(f-a)>max(120,a*.15):return 1
     if x and y and abs(x-y)>max(10,max(x,y)*.05):return 1
     return 2
+def journal_fit_pair(j,f):
+    if j.source!="GYMUP" or j.sport!="STRENGTH" or f.sport!="STRENGTH":return False
+    if not (f.source=="GOOGLE_FIT" or (f.source=="GOOGLE_HEALTH" and f.origin=="com.google.android.apps.fitness")):return False
+    if abs(j.start-f.start)>1000 or not j.elapsed or not f.elapsed or not f.timer:return False
+    if min(j.elapsed,f.elapsed)<180 or abs(f.elapsed-f.timer)>max(120,f.elapsed*.15):return False
+    ov=overlap(j,f)
+    return ov>=180000 and ov/(min(j.elapsed,f.elapsed)*1000)>=.9
+def fit_supports_device(f,w):
+    if w.source not in DEVICE or w.sport!="STRENGTH" or abs(f.start-w.start)>900000:return False
+    if not f.elapsed or not w.elapsed or not w.timer or abs(w.elapsed-w.timer)>max(120,w.elapsed*.15):return False
+    ov=overlap(f,w)
+    return ov>=180000 and ov/(min(f.elapsed,w.elapsed)*1000)>=.8
+
 def reconcile(rows,general):
     strong=[set() for _ in rows];related=[set() for _ in rows]
     for i,a in enumerate(rows):
@@ -92,6 +105,12 @@ def reconcile(rows,general):
     if general:
         by_group={i:g for g,items in enumerate(groups) for i in items}
         anchors=[j for j,r in enumerate(rows) if r.source in DIRECT]
+        pairs=[(j,f) for j,r in enumerate(rows) if r.source=="GYMUP" for f,x in enumerate(rows) if journal_fit_pair(r,x)]
+        cj=Counter(j for j,f in pairs);cf=Counter(f for j,f in pairs); exact_journal_fit={}
+        for j,f in pairs:
+            if cj[j]==1 and cf[f]==1:
+                exact_journal_fit[j]=f;exact_journal_fit[f]=j
+                related[j].add(f);related[f].add(j)
         def root(g):return attached.get(g,g)
         def candidates(g,children,journal):
             out=defaultdict(list)
@@ -101,7 +120,15 @@ def reconcile(rows,general):
                     if target==g or (journal and rows[j].source not in DEVICE):continue
                     n=nested(rows[i],rows[j])
                     full=not journal and by_group[j] not in attached and match(rows[i],rows[j])==2
-                    m=2 if full else 1 if by_group[j] in attached and n else n
+                    paired=exact_journal_fit.get(i)
+                    corroborated=False
+                    if paired is not None:
+                        if journal:corroborated=fit_supports_device(rows[paired],rows[j])
+                        elif rows[j].source=="GYMUP" and j==paired and by_group[j] in attached:
+                            corroborated=any(fit_supports_device(rows[i],rows[k]) for k in groups[target])
+                        elif rows[j].source in DEVICE and by_group[paired] in attached and root(by_group[paired])==target:
+                            corroborated=fit_supports_device(rows[i],rows[j])
+                    m=2 if full or corroborated else 1 if by_group[j] in attached and n else n
                     if not m:continue
                     related[i].add(j);related[j].add(i)
                     out[target].append((i,m))
@@ -128,6 +155,12 @@ def reconcile(rows,general):
             if not all(any(k==i and m==2 for k,m in e) for i in group):continue
             if any(root(by_group[j])!=target and by_group[j]!=g for i in group for j in strong[i]):continue
             attach(g,target,False)
+        for j,f in pairs:
+            if cj[j]!=1 or cf[f]!=1 or (rows[j].elapsed or 0)<=4*3600:continue
+            jg,fg=by_group[j],by_group[f]
+            if jg==fg or jg in attached or fg in attached or jg in attached.values() or fg in attached.values() or len(groups[jg])!=1 or len(groups[fg])!=1:continue
+            if any(rows[k].source in DEVICE and (nested(rows[f],rows[k]) or match(rows[f],rows[k]) or fit_supports_device(rows[f],rows[k])) for k in anchors):continue
+            attached[jg]=fg;fragments.add(j)
         sub=defaultdict(list)
         for g,target in attached.items():sub[target].extend(groups[g])
         groups=[group+sub[g] for g,group in enumerate(groups) if g not in attached]
@@ -183,7 +216,13 @@ def materialize(rows,groups,stats,baseline):
             for p,items,nested_ids,ext in groups:
                 r=rows[p]
                 full=sorted((rows[i] for i in items if i not in nested_ids),key=lambda r:(RANK.get(r.source,6),r.key))
-                timer=next((v.timer for v in full if v.timer is not None),None)
+                long_journal=any(rows[i].source=="GYMUP" and (rows[i].elapsed or 0)>4*3600 for i in items)
+                def usable_timer(v):
+                    if v.timer is None:return False
+                    if v.source=="GYMUP" and v.timer>4*3600:return False
+                    if long_journal and v.key==r.key and (v.source=="GOOGLE_FIT" or (v.source=="GOOGLE_HEALTH" and v.origin=="com.google.android.apps.fitness")) and v.timer==3600:return False
+                    return True
+                timer=next((v.timer for v in full if usable_timer(v)),None)
                 dist=next((v.distance for v in full if v.distance is not None),None)
                 c.execute("INSERT INTO canonical_workouts VALUES (?,?,?,?,?,?,?,?,?)",(r.key,r.day,r.start,r.sport,r.source,timer,r.elapsed,dist,int(bool(ext))))
                 c.executemany("INSERT INTO workout_members VALUES (?,?,?,?,?,?,?,?,?)",[
@@ -192,7 +231,7 @@ def materialize(rows,groups,stats,baseline):
             for p,items,nested_ids,ext in groups:
                 c.executemany("INSERT INTO possible_matches VALUES (?,?)",[(rows[p].key,key) for key in ext])
             meta={"input_sha256":digest.hexdigest(),"generated_epoch":str(int(time.time())),
-                  "algorithm":"overlap-reconciliation-reference-v2","input_stats":json.dumps(dict(stats)),
+                  "algorithm":"overlap-reconciliation-reference-v4","input_stats":json.dumps(dict(stats)),
                   "baseline":json.dumps(baseline),"result":json.dumps(report(rows,groups))}
             c.executemany("INSERT INTO metadata VALUES (?,?)",meta.items())
         assert c.execute("PRAGMA integrity_check").fetchone()==("ok",)
