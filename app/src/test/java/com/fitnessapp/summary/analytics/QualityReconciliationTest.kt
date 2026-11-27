@@ -15,6 +15,45 @@ class QualityReconciliationTest {
         FitnessSession(FitnessSource.GOOGLE_HEALTH,"fit",FitnessSport.STRENGTH,t+offset,seconds,
             transportOrigin="com.google.android.apps.fitness",recordedSeconds=seconds)
 
+    @Test fun enduranceHistoryRetainsGarminWhenStravaElapsedIsMissing() {
+        val g=FitnessSession(FitnessSource.GARMIN,"g",FitnessSport.CYCLE,t,3600,20000.0,recordedSeconds=3500)
+        val s=FitnessSession(FitnessSource.STRAVA,"s",FitnessSport.CYCLE,t,null,20010.0,recordedSeconds=3490)
+        val result=CanonicalFitness.episodes(listOf(g,s))
+        assertEquals(1,result.size)
+        assertEquals(g.key,result.single().primary.key)
+        assertFalse(result.single().ambiguous)
+        val distinct=s.copy(nativeId="different",distanceMeters=30000.0)
+        assertEquals(2,CanonicalFitness.episodes(listOf(g,distinct)).size)
+    }
+
+    @Test fun unresolvedDistanceGroupDoesNotEraseOrDoubleCountGarminHistory() {
+        val g=FitnessSession(FitnessSource.GARMIN,"g",FitnessSport.RUN,t,1800,5000.0,recordedSeconds=1800)
+        val s=FitnessSession(FitnessSource.STRAVA,"s",FitnessSport.RUN,t+60_000,null,5200.0,recordedSeconds=1700)
+        val items=listOf(ArchiveObservation(g,day,"Garmin",1800,null,null),
+            ArchiveObservation(s,day,"Strava",1700,null,null))
+        val archive=LocalWorkoutArchive.build(emptyList(),emptyList(),emptyList(),emptyList(),
+            ServerWorkoutProjection(observations=items))
+        val period=WorkoutPeriod(archive.episodes)
+        assertEquals(2,period.accountedObservationCount)
+        assertEquals(1,period.distanceReviewGroupCount)
+        assertEquals(0,period.confirmed.size)
+        assertEquals(1,period.sportSessions().size)
+        assertEquals(5000,period.sportSessions().single().meters)
+    }
+
+    @Test fun performedSetMarksCorroborateUniqueWatchWithoutJournalEnd() {
+        val w=watch(seconds=2400)
+        val j=journal(offset=300_000).copy(elapsedSeconds=null,recordedSeconds=null,
+            setMarksMillis=listOf(t+360_000,t+720_000,t+1_200_000))
+        val e=CanonicalFitness.episodes(listOf(w,j)).single()
+        assertEquals(w.key,e.primary.key)
+        assertTrue(j.key in e.fragmentKeys)
+        val unrelated=j.copy(setMarksMillis=listOf(t+360_000,t+720_000,t+4_000_000))
+        assertEquals(2,CanonicalFitness.episodes(listOf(w,unrelated)).size)
+        val competing=watch(id="competing",offset=60_000,seconds=2400)
+        assertEquals(3,CanonicalFitness.episodes(listOf(w,j,competing)).size)
+    }
+
     @Test fun longerFitAndUnclosedJournalAttachToSameWatch() {
         val w=watch()
         val j=journal()

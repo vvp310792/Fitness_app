@@ -75,7 +75,12 @@ def main():
                 cat["future_date"]+=1;issue(src,k,key,day,"future_date")
         if hashlib.sha256(p.encode("utf-8")).hexdigest()!=sha:
             cat["hash_mismatch"]+=1;issue(src,k,key,day,"payload_hash_mismatch")
-        try:r=json.loads(p)
+        try:
+            r=json.loads(p)
+            # Garmin series/history legitimately use arrays. Only object-shaped
+            # source kinds that are inspected below require a JSON object.
+            object_kind=(src=="garmin" and k in {"daily","sleep_summary","sleep_detail","activity","weight","body_composition"}) or (src=="gymup" and k=="training") or src=="google_health" or (src in {"zepp","zepp_archive"} and k=="weight") or (src=="legacy_app" and k in {"scale_measurements","workouts","strength_sets"})
+            if object_kind and not isinstance(r,dict):raise ValueError("non-object payload")
         except (TypeError,ValueError):
             cat["invalid_json"]+=1;issue(src,k,key,day,"invalid_json");continue
         duplicate_payloads[(src,k,sha)]+=1
@@ -151,6 +156,7 @@ def main():
     for src,checked,status,detail in c.execute("select source,checked_at,status,detail from sync_state order by source"):
         # Preserve statuses without credentials/opaque detail.
         states.append(dict(source=src,checked_at=checked,status=status))
+    rows,input_stats=load(c)
     c.close()
     # Intra-stream interval collisions are potential double-counting candidates,
     # not proof of duplicate observations. The report keeps them separate from
@@ -166,7 +172,6 @@ def main():
                 if k in ("steps","distance","active-energy-burned","total-calories"):
                     issue("google_health",k,key,day,"interval_collision_"+("exact" if (a,b)==(x,y) else "overlap"),{"other_key":other,"origin":origin})
             seen.append((a,b,key,day))
-    rows,input_stats=load()
     episodes=reconcile(rows,True)
     owner={i:g for g,(_,members,_,_) in enumerate(episodes) for i in members}
     membership=[i for _,members,_,_ in episodes for i in members]
@@ -277,6 +282,7 @@ def main():
             "hash_mismatches":sum(g["hash_mismatch"] for g in group_summary),
             "invalid_json":sum(g["invalid_json"] for g in group_summary),
             "invalid_date":sum(g["invalid_date"] for g in group_summary),"future_date":sum(g["future_date"] for g in group_summary)},
+        "workout_input_stats":dict(input_stats),
         "source_counts":dict(source_counts),"groups":group_summary,"sync_states":states,
         "coverage_completed_days":windows,"weight_coverage":weight_summary,
         "combined_weight_days":len(allweights),"combined_weight_days_last30":window(allweights,30),

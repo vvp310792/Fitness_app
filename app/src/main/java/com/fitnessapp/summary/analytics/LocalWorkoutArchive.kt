@@ -180,7 +180,8 @@ object LocalWorkoutArchive {
             byKey[key]=local.copy(
                 session=local.session.copy(
                     elapsedSeconds=remote.session.elapsedSeconds ?: local.session.elapsedSeconds,
-                    distanceMeters=local.session.distanceMeters ?: remote.session.distanceMeters
+                    distanceMeters=local.session.distanceMeters ?: remote.session.distanceMeters,
+                    setMarksMillis=remote.session.setMarksMillis.ifEmpty { local.session.setMarksMillis }
                 ),
                 trainingSeconds=local.trainingSeconds ?: remote.trainingSeconds,
                 averageHr=local.averageHr ?: remote.averageHr,

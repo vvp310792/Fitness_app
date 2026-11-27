@@ -25,7 +25,9 @@ data class FitnessSession(
      * is a stream identifier, not proof of upstream workout identity. */
     val transportOrigin: String? = null,
     /** Recorded timer/active time, explicitly separate from elapsed time. */
-    val recordedSeconds: Long? = null
+    val recordedSeconds: Long? = null,
+    /** Verified finish timestamps of performed journal sets; not inferred duration. */
+    val setMarksMillis: List<Long> = emptyList()
 ) {
     init {
         require(nativeId.isNotBlank() && startMillis >= 0)
@@ -116,6 +118,21 @@ object CanonicalFitness {
         return true
     }
 
+    /** Strava CSV stores moving time but no elapsed time. A Garmin export
+     * of the same endurance workout can be identified by start, positive
+     * distance and independently recorded active time. Missing elapsed must
+     * not by itself turn years of known workouts into hidden review groups. */
+    private fun directEnduranceCopy(a:FitnessSession,b:FitnessSession):Boolean {
+        if(setOf(a.source,b.source)!=setOf(FitnessSource.GARMIN,FitnessSource.STRAVA))return false
+        if(a.sport!=b.sport || a.sport !in endurance || abs(a.startMillis-b.startMillis)>2_000L)return false
+        val x=a.distanceMeters?.takeIf { it>0 } ?: return false
+        val y=b.distanceMeters?.takeIf { it>0 } ?: return false
+        if(abs(x-y)>max(20.0,max(x,y)*0.015))return false
+        val at=a.recordedSeconds ?: return false
+        val bt=b.recordedSeconds ?: return false
+        return abs(at-bt)<=max(120.0,max(at,bt)*0.15)
+    }
+
     private fun match(a: FitnessSession, b: FitnessSession): Match {
         val sameUpstream = a.upstreamId != null && a.upstreamId == b.upstreamId
         val distinctOrigins = a.source == FitnessSource.GOOGLE_HEALTH && b.source == a.source &&
@@ -142,7 +159,7 @@ object CanonicalFitness {
             b.sport !in setOf(FitnessSport.OTHER, FitnessSport.UNKNOWN)
         if (knownSport && a.sport != b.sport) return if (sameUpstream) Match.POSSIBLE else Match.NONE
         if (!knownSport && !sameUpstream) return Match.POSSIBLE
-        if (exactTransportMatch(a,b)) return Match.CONFIDENT
+        if (exactTransportMatch(a,b) || directEnduranceCopy(a,b)) return Match.CONFIDENT
         val ad = a.elapsedSeconds
         val bd = b.elapsedSeconds
         if (ad != null && bd != null) {
@@ -207,6 +224,16 @@ object CanonicalFitness {
     /** A measured shorter interval or a complementary strength journal can
      * belong to a complete device session. Do not confuse journal wall time
      * with watch timer time. Candidate does not mean confirmed. */
+    private fun journalMarksSupportDevice(j:FitnessSession,w:FitnessSession):Boolean {
+        if(j.source!=FitnessSource.GYMUP || w.source !in deviceSources || j.sport!=FitnessSport.STRENGTH || w.sport!=FitnessSport.STRENGTH)return false
+        val marks=j.setMarksMillis.distinct().sorted()
+        if(marks.size<3 || marks.last()-marks.first()<300_000L || abs(j.startMillis-w.startMillis)>900_000L)return false
+        val elapsed=w.elapsedSeconds ?: return false
+        val timer=w.recordedSeconds ?: return false
+        if(elapsed<300L || abs(elapsed-timer)>max(120.0,elapsed*0.15))return false
+        return marks.first()>=max(j.startMillis-120_000L,w.startMillis-120_000L) && marks.last()<=w.startMillis+elapsed*1000L+120_000L
+    }
+
     private fun nestedMatch(child:FitnessSession,anchor:FitnessSession):Match {
         val journal=child.source==FitnessSource.GYMUP && anchor.source in deviceSources
         if(!journal && (child.source !in transportSources || anchor.source !in anchorSources))return Match.NONE
@@ -218,6 +245,7 @@ object CanonicalFitness {
         // exercise interval. In particular, its stale tail must not match
         // a later, unrelated workout. Only the opening time and an independently
         // measured device/export can support reconciliation.
+        if(journal && journalMarksSupportDevice(child,anchor))return Match.CONFIDENT
         if(journal && isLongJournal(child)) {
             val delta=abs(child.startMillis-anchor.startMillis)
             if(delta>900_000L)return Match.NONE
