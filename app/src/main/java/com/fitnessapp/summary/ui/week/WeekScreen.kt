@@ -2,7 +2,7 @@ package com.fitnessapp.summary.ui.week
 
 import com.fitnessapp.summary.analytics.ArchiveResult
 import com.fitnessapp.summary.analytics.WorkoutPeriod
-import com.fitnessapp.summary.ui.workouts.ArchiveCard
+import com.fitnessapp.summary.ui.workouts.WorkoutGroupCard
 import com.fitnessapp.summary.ui.workouts.WorkoutTotals
 
 import androidx.compose.foundation.layout.Arrangement
@@ -186,7 +186,7 @@ fun WeekScreen(app: FitnessSummaryApp) {
         } }
         if (archive!=null) {
             item { InfoCard("Тренировки за неделю") { WorkoutTotals(period) } }
-            items(period.episodes,key={it.episode.primary.key}) { row -> ArchiveCard(row,showDate=true) }
+            items(period.displayGroups,key={it.key}) { group -> WorkoutGroupCard(group,showDate=true) }
         }
     }
 }
