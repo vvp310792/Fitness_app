@@ -30,6 +30,17 @@ class UnifiedDataProjectionTest {
         assertEquals(1800L,result.summary.steps)
         assertEquals(garmin,result.metricSources["steps"])
     }
+    @Test fun coverageSelectionDoesNotDropTwoDisjointIntervalsForOneLongerOverlap() {
+        val app="com.garmin.android.apps.connectmobile"
+        val rows=listOf(
+            step("a",app,"2026-11-26T00:00:00Z","2026-11-26T00:40:00Z",400),
+            step("b",app,"2026-11-26T00:20:00Z","2026-11-26T01:10:00Z",500),
+            step("c",app,"2026-11-26T00:40:00Z","2026-11-26T01:20:00Z",400))
+        val result=GoogleHealthProjection.days(rows).single()
+        assertEquals(800L,result.summary.steps)
+        assertEquals(result,GoogleHealthProjection.days(rows.reversed()).single())
+    }
+
     @Test fun realUnitsAndWakeDayArePreserved() {
         val rows=listOf(
             row("distance","d","""{"distance":{"millimeters":"1234500","interval":{"startTime":"2026-11-26T00:00:00Z","endTime":"2026-11-26T01:00:00Z","startUtcOffset":"25200s","endUtcOffset":"25200s"}}}"""),
