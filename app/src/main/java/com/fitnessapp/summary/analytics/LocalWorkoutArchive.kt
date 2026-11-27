@@ -139,10 +139,13 @@ object LocalWorkoutArchive {
                 r.durationSeconds.toLong().duration(),r.avgHeartRate.positive(),r.maxHeartRate.positive(),garmin=r))
         }
         for(r in strava) {
-            val s=session(FitnessSource.STRAVA,r.activityId.toString(),stravaSport(r.typeRaw),r.startTimeMillis,null,r.distanceMeters)
+            val elapsed = r.elapsedSeconds?.toLong()?.duration()
+            // Legacy rows retained their display duration but lack separate provenance.
+            val moving = r.movingSeconds?.toLong()?.duration() ?: if(elapsed == null) r.durationSeconds.toLong().duration() else null
+            val s=session(FitnessSource.STRAVA,r.activityId.toString(),stravaSport(r.typeRaw),r.startTimeMillis,elapsed,r.distanceMeters)
             if(s==null) { rejected++;continue }
             rows.add(ArchiveObservation(s,r.dateEpochDay,r.name.ifBlank { r.typeRaw.ifBlank { "Тренировка" } },
-                r.durationSeconds.toLong().duration(),r.avgHeartRate.positive(),r.maxHeartRate.positive()))
+                moving,r.avgHeartRate.positive(),r.maxHeartRate.positive()))
         }
         for((start,sets) in strength.groupBy { it.startMillis }) {
             val first=sets.first()
