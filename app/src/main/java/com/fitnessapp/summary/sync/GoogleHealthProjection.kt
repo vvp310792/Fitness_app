@@ -6,7 +6,6 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
-import java.util.TreeMap
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
@@ -85,13 +84,41 @@ object GoogleHealthProjection {
             val unique=rows.groupBy { it.start to it.end }.values.mapNotNull { copies ->
                 copies.first().takeIf { copies.all { c -> c.value==it.value } }
             }
-            val kept=TreeMap<Long,Segment>()
-            // Longest spans first; never add overlapping totals within a stream.
-            unique.sortedWith(compareByDescending<Segment> { it.end-it.start }.thenBy { it.start }).forEach { s ->
-                if ((kept.floorEntry(s.start)?.value?.end ?: Long.MIN_VALUE)<=s.start &&
-                    (kept.ceilingKey(s.start) ?: Long.MAX_VALUE)>=s.end) kept[s.start]=s
+            // Weighted interval scheduling maximizes observed, non-overlapping
+            // time. Longest-first can discard two disjoint intervals that
+            // together cover more time. Ties prefer fewer whole intervals
+            // (not the larger value); never prorate or sum overlapping data.
+            val sorted=unique.sortedWith(compareBy<Segment> { it.end }.thenBy { it.start })
+            val coverage=LongArray(sorted.size+1)
+            val counts=IntArray(sorted.size+1)
+            val predecessor=IntArray(sorted.size)
+            val take=BooleanArray(sorted.size+1)
+            for(i in sorted.indices) {
+                val row=sorted[i]
+                var lo=0
+                var hi=i
+                while(lo<hi) {
+                    val mid=(lo+hi)/2
+                    if(sorted[mid].end<=row.start) lo=mid+1 else hi=mid
+                }
+                predecessor[i]=lo
+                val incl=coverage[lo]+row.end-row.start
+                val n=counts[lo]+1
+                if(incl>coverage[i] || (incl==coverage[i] && n<counts[i])) {
+                    coverage[i+1]=incl;counts[i+1]=n;take[i+1]=true
+                } else {
+                    coverage[i+1]=coverage[i];counts[i+1]=counts[i]
+                }
             }
-            if(kept.isEmpty()) null else Choice(kept.values.sumOf { it.value },kept.values.sumOf { it.end-it.start },source)
+            val kept=mutableListOf<Segment>()
+            var k=sorted.size
+            while(k>0) {
+                if(take[k]) {
+                    kept.add(sorted[k-1]);k=predecessor[k-1]
+                } else k--
+            }
+            require(kept.zipWithNext().all { (later,earlier) -> earlier.end<=later.start })
+            if(kept.isEmpty()) null else Choice(kept.sumOf { it.value },coverage.last(),source)
         }
         // Prefer the best recorded coverage, then the known origin priority. Never sum apps.
         return choices.sortedWith(compareByDescending<Choice> { it.coverage }
