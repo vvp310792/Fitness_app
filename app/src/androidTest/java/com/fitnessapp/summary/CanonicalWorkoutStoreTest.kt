@@ -30,7 +30,7 @@ class CanonicalWorkoutStoreTest {
         val input=archive()
         try {
             run {
-                val db=Room.databaseBuilder(context,CanonicalWorkoutDatabase::class.java,name).build()
+                val db=Room.databaseBuilder(context,CanonicalWorkoutDatabase::class.java,name).addMigrations(CanonicalWorkoutDatabase.MIGRATION_1_2).build()
                 try {
                 val result=CanonicalWorkoutStore(db).reconcile("owner-a",input)
                 assertTrue(result.canonicalStored)
@@ -41,7 +41,7 @@ class CanonicalWorkoutStoreTest {
                 } finally { db.close() }
             }
             run {
-                val db=Room.databaseBuilder(context,CanonicalWorkoutDatabase::class.java,name).build()
+                val db=Room.databaseBuilder(context,CanonicalWorkoutDatabase::class.java,name).addMigrations(CanonicalWorkoutDatabase.MIGRATION_1_2).build()
                 try {
                 val dao=db.canonical()
                 assertEquals(1,dao.episodes("owner-a").size)
@@ -59,4 +59,41 @@ class CanonicalWorkoutStoreTest {
             }
         } finally { context.deleteDatabase(name) }
     }
+    @Test fun migrateV1AndPersistFragmentRoleWithoutLosingOriginalRows()=runBlocking(Dispatchers.IO) {
+        val context=ApplicationProvider.getApplicationContext<Context>()
+        val name="canonical-migration-"+UUID.randomUUID()+".db"
+        try {
+            context.openOrCreateDatabase(name,Context.MODE_PRIVATE,null).use { old ->
+                old.execSQL("CREATE TABLE canonical_workouts (ownerKey TEXT NOT NULL, episodeKey TEXT NOT NULL, day INTEGER NOT NULL, startMillis INTEGER NOT NULL, sport TEXT NOT NULL, title TEXT NOT NULL, durationSeconds INTEGER, distanceMeters REAL, averageHr INTEGER, maxHr INTEGER, ambiguous INTEGER NOT NULL, possibleKeysJson TEXT NOT NULL, PRIMARY KEY(ownerKey,episodeKey))")
+                old.execSQL("CREATE INDEX index_canonical_workouts_ownerKey_day ON canonical_workouts(ownerKey,day)")
+                old.execSQL("CREATE TABLE canonical_workout_members (ownerKey TEXT NOT NULL, observationKey TEXT NOT NULL, episodeKey TEXT NOT NULL, PRIMARY KEY(ownerKey,observationKey), FOREIGN KEY(ownerKey,episodeKey) REFERENCES canonical_workouts(ownerKey,episodeKey) ON DELETE CASCADE ON UPDATE NO ACTION)")
+                old.execSQL("CREATE INDEX index_canonical_workout_members_ownerKey_episodeKey ON canonical_workout_members(ownerKey,episodeKey)")
+                old.execSQL("INSERT INTO canonical_workouts VALUES ('other','old',19675,1700000000000,'SWIM','Pool',2400,200,90,NULL,0,'[]')")
+                old.execSQL("INSERT INTO canonical_workout_members VALUES ('other','old','old')")
+                old.version=1
+            }
+            val db=Room.databaseBuilder(context,CanonicalWorkoutDatabase::class.java,name)
+                .addMigrations(CanonicalWorkoutDatabase.MIGRATION_1_2).build()
+            try {
+                assertFalse(db.canonical().members("other").single().isFragment)
+                val start=1700000000000L
+                val a=FitnessSession(FitnessSource.GARMIN,"watch",FitnessSport.STRENGTH,start,1800,recordedSeconds=1800)
+                val f=FitnessSession(FitnessSource.GOOGLE_HEALTH,"fit",FitnessSport.STRENGTH,start+480000,900,
+                    transportOrigin="com.google.android.apps.fitness",recordedSeconds=900)
+                val members=listOf(ArchiveObservation(a,19675L,"Strength",1800,100,null),
+                    ArchiveObservation(f,19675L,"Partial",900,160,null))
+                val e=CanonicalFitness.episodes(listOf(a,f)).single()
+                val result=CanonicalWorkoutStore(db).reconcile("owner",ArchiveResult(listOf(ArchiveEpisode(e,members.first(),members)),0))
+                assertTrue(result.canonicalStored)
+                assertEquals(1,result.episodes.size)
+                assertEquals(listOf(f.key),result.episodes.single().episode.fragmentKeys)
+                assertEquals(1800L,result.episodes.single().durationSeconds)
+                assertEquals(100,result.episodes.single().averageHr)
+                assertEquals(2,db.canonical().members("owner").size)
+                assertEquals(f.key,db.canonical().members("owner").single { it.isFragment }.observationKey)
+                assertEquals(1,db.canonical().members("other").size)
+            } finally { db.close() }
+        } finally { context.deleteDatabase(name) }
+    }
+
 }

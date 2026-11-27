@@ -44,7 +44,9 @@ data class SessionEpisode(
     val primary: FitnessSession,
     val observations: List<FitnessSession>,
     val ambiguous: Boolean,
-    val possibleDuplicateKeys: List<String> = emptyList()
+    val possibleDuplicateKeys: List<String> = emptyList(),
+    /** Transported partial intervals, not independent workouts or full-session metrics. */
+    val fragmentKeys: List<String> = emptyList()
 )
 
 data class DailyObservation(
@@ -162,6 +164,59 @@ object CanonicalFitness {
         return Match.CONFIDENT
     }
 
+    private val transportSources=setOf(FitnessSource.GOOGLE_HEALTH,FitnessSource.HEALTH_CONNECT,FitnessSource.GOOGLE_FIT)
+    private val deviceSources=setOf(FitnessSource.GARMIN,FitnessSource.STRAVA)
+    private val anchorSources=deviceSources+FitnessSource.GYMUP
+
+    /** A measured shorter interval or a complementary strength journal can
+     * belong to a complete device session. Do not confuse journal wall time
+     * with watch timer time. Candidate does not mean confirmed. */
+    private fun nestedMatch(child:FitnessSession,anchor:FitnessSession):Match {
+        val journal=child.source==FitnessSource.GYMUP && anchor.source in deviceSources
+        if(!journal && (child.source !in transportSources || anchor.source !in anchorSources))return Match.NONE
+        if(child.sport!=anchor.sport || child.sport in setOf(FitnessSport.OTHER,FitnessSport.UNKNOWN))return Match.NONE
+        if(journal && child.sport!=FitnessSport.STRENGTH)return Match.NONE
+        val f=child.elapsedSeconds
+        val a=anchor.elapsedSeconds
+        if(f==null || a==null) {
+            // Missing duration does not establish containment.
+            return if(abs(child.startMillis-anchor.startMillis)<=START_WINDOW_MS) Match.POSSIBLE else Match.NONE
+        }
+        val overlap=min(child.startMillis+f*1000L,anchor.startMillis+a*1000L)-
+            max(child.startMillis,anchor.startMillis)
+        val short=min(f,a)
+        val long=max(f,a)
+        if(overlap<180_000L || overlap.toDouble()/(short*1000.0)<0.50)return Match.NONE
+        val coveredShort=overlap.toDouble()/(short*1000.0)
+        val coveredLong=overlap.toDouble()/(long*1000.0)
+        if(coveredShort<0.90 && coveredLong<0.80)return Match.POSSIBLE
+        if(journal) {
+            // Direct watch + strength journal are complementary. Even when
+            // the journal begins before or ends after the watch, its set log
+            // is retained, but its wall-clock duration must not replace timer.
+            return Match.CONFIDENT
+        }
+        val timer=anchor.recordedSeconds ?: return Match.POSSIBLE
+        // Long pauses are not evidence of recorded exercise throughout the interval.
+        if(abs(a-timer)>max(120.0,a*0.15))return Match.POSSIBLE
+        val x=child.distanceMeters?.takeIf { it>0 }
+        val y=anchor.distanceMeters?.takeIf { it>0 }
+        if(f<a-60L) {
+            if(coveredShort<0.90 || child.startMillis<anchor.startMillis-60_000L ||
+                child.startMillis+f*1000L>anchor.startMillis+a*1000L+60_000L ||
+                timer<f-60L)return Match.POSSIBLE
+            if(x!=null && y!=null && x>y+max(10.0,y*0.05))return Match.POSSIBLE
+            return Match.CONFIDENT
+        }
+        // Comparable full endurance intervals need independent distance evidence.
+        // Exact recorded timer matches can already be established by match();
+        // approximate endpoints alone cannot prove a duplicate with missing distance.
+        if(child.sport in endurance && (x==null || y==null))return Match.POSSIBLE
+        if(coveredLong<0.85 || abs(f-a)>max(120.0,a*0.15))return Match.POSSIBLE
+        if(x!=null && y!=null && abs(x-y)>max(10.0,max(x,y)*0.05))return Match.POSSIBLE
+        return Match.CONFIDENT
+    }
+
     private fun sessionRank(s: FitnessSession): Int = when (s.source) {
         FitnessSource.GARMIN -> 0
         FitnessSource.GYMUP -> 1
@@ -187,7 +242,9 @@ object CanonicalFitness {
             val m=match(rows[i],rows[j])
             if(m==Match.NONE)return
             related[i].add(j);related[j].add(i)
-            if(m==Match.CONFIDENT){strong[i].add(j);strong[j].add(i)}
+            val journalDevice=(rows[i].source==FitnessSource.GYMUP && rows[j].source!=FitnessSource.GYMUP) ||
+                (rows[j].source==FitnessSource.GYMUP && rows[i].source!=FitnessSource.GYMUP)
+            if(m==Match.CONFIDENT && !journalDevice){strong[i].add(j);strong[j].add(i)}
         }
         for(i in rows.indices) {
             var j=i+1
@@ -210,15 +267,89 @@ object CanonicalFitness {
                 group.all { a-> group.all { b-> a==b || b in strong[a] } }
             if(safe)groups.add(group) else group.forEach { groups.add(listOf(it)) }
         }
-        // Ambiguous links are between episodes, not between the copies already
-        // proven to be members of one episode. Preserve references for review.
-        val result=groups.map { group->
+        // Attach complementary log/transport groups only to a unique direct
+        // anchor. Work with the original complete-link groups; never create a
+        // chain through a transported fragment. Ambiguous links remain reviewable.
+        val attached=mutableMapOf<Int,Int>()
+        val fragmentIndices=mutableSetOf<Int>()
+        val byGroup=groups.withIndex().flatMap { (g,indices) -> indices.map { it to g } }.toMap()
+        val anchors=rows.indices.filter { rows[it].source in anchorSources }
+        fun root(g:Int):Int = attached[g] ?: g
+        fun candidates(group:Int,children:List<Int>,journal:Boolean):Map<Int,List<Pair<Int,Match>>> {
+            val out=mutableMapOf<Int,MutableList<Pair<Int,Match>>>()
+            for(i in children) for(j in anchors) {
+                val target=root(byGroup.getValue(j))
+                if(target==group || (journal && rows[j].source !in deviceSources))continue
+                val n=nestedMatch(rows[i],rows[j])
+                // A full transported copy of a standalone journal can still
+                // supply its measured heart rate. Never use a nested journal
+                // as independent evidence to extend a device interval.
+                val full=!journal && byGroup.getValue(j) !in attached &&
+                    match(rows[i],rows[j])==Match.CONFIDENT
+                val m=when {
+                    full -> Match.CONFIDENT
+                    byGroup.getValue(j) in attached && n!=Match.NONE -> Match.POSSIBLE
+                    else -> n
+                }
+                if(m==Match.NONE)continue
+                related[i].add(j);related[j].add(i)
+                out.getOrPut(target){mutableListOf()}.add(i to m)
+            }
+            return out
+        }
+        fun attach(group:Int,target:Int,journal:Boolean) {
+            attached[group]=target
+            fragmentIndices.addAll(groups[group].filter { i ->
+                journal || groups[target].none { j ->
+                    rows[j].source in anchorSources && match(rows[i],rows[j])==Match.CONFIDENT
+                }
+            })
+        }
+        // A single performed journal per watch episode may be nested. If two
+        // separate GymUp sessions both point to one watch, retain them for
+        // review rather than counting duplicated exercises as independent sets.
+        val journals=groups.indices.filter { g ->
+            groups[g].any { rows[it].source==FitnessSource.GYMUP } &&
+                groups[g].none { rows[it].source in deviceSources }
+        }
+        val journalChoices=mutableMapOf<Int,Int>()
+        for(g in journals) {
+            val c=candidates(g,groups[g].filter { rows[it].source==FitnessSource.GYMUP },true)
+            if(c.size==1 && c.values.single().all { it.second==Match.CONFIDENT })journalChoices[g]=c.keys.single()
+        }
+        journalChoices.entries.groupBy { it.value }.values.filter { it.size==1 }.forEach { entries ->
+            val (g,target)=entries.single()
+            attach(g,target,true)
+        }
+        for(g in groups.indices) {
+            if(g in attached || groups[g].any { rows[it].source !in transportSources })continue
+            val c=candidates(g,groups[g],false)
+            if(c.size!=1)continue
+            val target=c.keys.single()
+            // Every member must have positive evidence for this same original
+            // workout, and a contradictory confident external link blocks it.
+            val evidence=c.values.single()
+            if(evidence.none { it.second==Match.CONFIDENT } ||
+                groups[g].any { i -> evidence.none { it.first==i && it.second==Match.CONFIDENT } } ||
+                groups[g].any { i -> strong[i].any { j -> root(byGroup.getValue(j))!=target && byGroup.getValue(j)!=g } })
+                continue
+            attach(g,target,false)
+        }
+        val fragmentsByGroup=attached.entries.groupBy({it.value},{it.key})
+        val mergedGroups=groups.indices.filter { it !in attached }.map { g ->
+            groups[g]+fragmentsByGroup[g].orEmpty().flatMap { groups[it] }
+        }
+        // Ambiguous links are between episodes, not between the copies or
+        // partial intervals that are already members of one episode.
+        val result=mergedGroups.map { group->
             val members=group.toSet()
             val observations=group.map { rows[it] }.sortedBy { it.key }
             val external=group.flatMap { related[it] }.filter { it !in members }.distinct()
                 .map { rows[it].key }.sorted()
-            val primary=observations.minWith(compareBy<FitnessSession> { sessionRank(it) }.thenBy { it.key })
-            SessionEpisode(primary,observations,external.isNotEmpty(),external)
+            val fragments=group.filter { it in fragmentIndices }.map { rows[it].key }.sorted()
+            val primary=observations.filterNot { it.key in fragments }
+                .minWith(compareBy<FitnessSession> { sessionRank(it) }.thenBy { it.key })
+            SessionEpisode(primary,observations,external.isNotEmpty(),external,fragments)
         }
         return result.sortedWith(compareBy<SessionEpisode> { it.primary.startMillis }.thenBy { it.primary.key })
     }

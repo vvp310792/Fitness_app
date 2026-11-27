@@ -197,12 +197,21 @@ fun ArchiveCard(row: ArchiveEpisode, showDate: Boolean = false) {
             }
             Text(row.observations.map { it.session.source.label() }.distinct().joinToString(" · "),
                 style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            if(row.episode.fragmentKeys.isNotEmpty()) Text("Вложенные записи: "+row.episode.fragmentKeys.size,
+                style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
             if(row.episode.ambiguous) Text("Возможное совпадение с другой записью",style=MaterialTheme.typography.labelMedium,
                 color=MaterialTheme.colorScheme.error)
             Text(if(expanded) "Свернуть" else "Подробнее",style=MaterialTheme.typography.labelLarge,
                 color=MaterialTheme.colorScheme.primary)
             if(expanded) {
                 row.maxHr?.let { StatRow("Максимальный пульс","$it уд/мин") }
+                if(row.episode.fragmentKeys.isNotEmpty()) {
+                    Text("Вложенные записи не увеличивают время, дистанцию и число занятий.",style=MaterialTheme.typography.bodySmall)
+                    row.observations.filter { it.session.key in row.episode.fragmentKeys }.forEach { fragment ->
+                        StatRow("Вложенная запись · "+fragment.session.source.label(),formatTime(fragment.session.startMillis)+
+                            (fragment.trainingSeconds?.let { " · "+secondsLabel(it) } ?: ""))
+                    }
+                }
                 row.garmin?.let { g ->
                     if(g.activityTrainingLoad>0) StatRow("Нагрузка Garmin",formatDecimal(g.activityTrainingLoad))
                     g.zoneSeconds?.forEachIndexed { i,v -> StatRow("Зона Z${i+1}",secondsLabel(v.toLong())) }
