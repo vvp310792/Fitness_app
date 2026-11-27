@@ -367,7 +367,8 @@ object CanonicalFitness {
                 strong[n].forEach { k->if(!visited[k]){visited[k]=true;pending.add(k)} }
             }
             val safe=group.map { rows[it].channel }.distinct().size==group.size &&
-                group.all { a-> group.all { b-> a==b || b in strong[a] } }
+                (group.all { a-> group.all { b-> a==b || b in strong[a] } } ||
+                    corroboratedDeviceGroup(rows, group) { a, b -> b in strong[a] })
             if(safe)groups.add(group) else group.forEach { groups.add(listOf(it)) }
         }
         // Attach complementary log/transport groups only to a unique direct
@@ -513,6 +514,45 @@ object CanonicalFitness {
                 e.possibleDuplicateKeys.none { k -> e.observations.any { it.key==k } }
         }) { "invalid canonical membership" }
         return result.sortedWith(compareBy<SessionEpisode> { it.primary.startMillis }.thenBy { it.primary.key })
+    }
+
+    /** A measured direct anchor can corroborate a missing-elapsed edge, but
+     * only when each member independently matches that same Garmin recording.
+     * Never join through a transport chain, contradictory measured intervals,
+     * competing source identities, or approximate start/distance alone. */
+    private fun corroboratedDeviceGroup(
+        rows: List<FitnessSession>, group: List<Int>, strong: (Int, Int) -> Boolean
+    ): Boolean {
+        val members = group.map { rows[it] }
+        if (members.size < 3 || members.map { it.channel }.distinct().size != members.size) return false
+        val anchors = group.filter { rows[it].source == FitnessSource.GARMIN &&
+            rows[it].elapsedSeconds != null && rows[it].recordedSeconds != null }
+        if (anchors.size != 1) return false
+        val g = anchors.single()
+        val anchor = rows[g]
+        if (anchor.sport !in endurance || members.count { it.source == FitnessSource.STRAVA } != 1) return false
+        if (members.any { (it.source !in deviceSources && it.source !in transportSources) || it.sport != anchor.sport }) return false
+        if (!directEnduranceCopy(anchor, members.single { it.source == FitnessSource.STRAVA })) return false
+        if (group.any { it != g && !strong(g, it) }) return false
+        for (a in group.indices) for (b in a + 1 until group.size) {
+            val i = group[a]; val j = group[b]
+            if (strong(i, j)) continue
+            val x = rows[i]; val y = rows[j]
+            if (x.elapsedSeconds != null && y.elapsedSeconds != null) return false
+            if (abs(x.startMillis - y.startMillis) > 2_000L) return false
+            val xt = x.recordedSeconds ?: return false
+            val yt = y.recordedSeconds ?: return false
+            val xd = x.distanceMeters?.takeIf { it > 0 }
+            val yd = y.distanceMeters?.takeIf { it > 0 }
+            if (xd != null && yd != null) {
+                if (abs(xd - yd) > max(20.0, max(xd, yd) * 0.015)) return false
+                if (abs(xt - yt) > max(120.0, max(xt, yt) * 0.15)) return false
+            } else {
+                val tolerance = if (x.source == FitnessSource.HEALTH_CONNECT || y.source == FitnessSource.HEALTH_CONNECT) 59L else 2L
+                if (abs(xt - yt) > tolerance) return false
+            }
+        }
+        return true
     }
 
     private fun metricRank(o: DailyObservation): Int {
