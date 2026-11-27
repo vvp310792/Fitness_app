@@ -49,7 +49,9 @@ data class ArchiveResult(
     val serverEmptyGymSessions: Int = 0,
     val serverIdentityConflicts: Int = 0,
     val exactIdentityMatches: Int = 0,
-    val confirmedDuplicateObservations: Int = 0
+    val confirmedDuplicateObservations: Int = 0,
+    /** True only after canonical episode/membership readback from Room. */
+    val canonicalStored: Boolean = false
 )
 
 private fun sourceOrder(s: FitnessSource): Int = when (s) {
@@ -165,15 +167,19 @@ object LocalWorkoutArchive {
                 garmin=local.garmin ?: remote.garmin
             )
         }
-        val episodes=CanonicalFitness.episodes(byKey.values.map { it.session }).flatMap { e ->
+        // Retain both timer and elapsed values; neither substitutes for the other.
+        val enriched=byKey.mapValues { (_,o) ->
+            o.copy(session=o.session.copy(recordedSeconds=o.trainingSeconds))
+        }
+        val episodes=CanonicalFitness.episodes(enriched.values.map { it.session }).flatMap { e ->
             // A contradictory identity must not be treated as a confirmed session,
             // including when a different source otherwise matches it.
             val resolved = if (e.observations.any { it.key in conflictedKeys }) e.observations.map { r ->
-                SessionEpisode(r,listOf(r),true,e.observations.filter { it.key!=r.key }.map { it.key })
+                SessionEpisode(r,listOf(r),true,(e.possibleDuplicateKeys+e.observations.filter { it.key!=r.key }.map { it.key }).distinct())
             } else listOf(e)
-            resolved.map { v -> ArchiveEpisode(v,byKey.getValue(v.primary.key),v.observations.map { byKey.getValue(it.key) }) }
+            resolved.map { v -> ArchiveEpisode(v,enriched.getValue(v.primary.key),v.observations.map { enriched.getValue(it.key) }) }
         }
-        val merged=episodes.filterNot { it.episode.ambiguous }.sumOf { it.observations.size-1 }
+        val merged=episodes.sumOf { it.observations.size-1 }
         return ArchiveResult(episodes.sortedByDescending { it.primary.session.startMillis },rejected,
             server.rawCount,server.observations.size,server.rejected,server.emptyGymSessions,identityConflicts,identityMatches,merged)
     }

@@ -129,6 +129,9 @@ fun WorkoutsScreen(app: FitnessSummaryApp) {
             item {
                 InfoCard("За выбранный период") {
                     WorkoutTotals(totals)
+                    if(archive?.canonicalStored==true) Text("Архив объединён в локальной базе.",style=MaterialTheme.typography.bodySmall,
+                        color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    else Text("Каноническая база не подтверждена; показан резервный архив.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error)
                     val server=archive
                     if (server!=null && server.serverRawCount>0) {
                         StatRow("Записей тренировок с ПК",formatCount(server.serverRawCount))

@@ -2,6 +2,15 @@ package com.fitnessapp.summary.sync
 
 import com.fitnessapp.summary.FitnessSummaryApp
 import com.fitnessapp.summary.analytics.ArchiveResult
+import com.fitnessapp.summary.analytics.CanonicalWorkoutDatabase
+import com.fitnessapp.summary.analytics.CanonicalWorkoutStore
+import com.fitnessapp.summary.debug.AppLog
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.shareIn
 import com.fitnessapp.summary.analytics.LocalWorkoutArchive
 import com.fitnessapp.summary.data.GarminActivity
 import com.fitnessapp.summary.data.GarminDailyExtra
@@ -77,17 +86,52 @@ class UnifiedFitnessRead(private val app: FitnessSummaryApp) {
             .filter { it.day in from..to }
     }.flowOn(Dispatchers.Default)
 
-    fun observeArchive(): Flow<ArchiveResult> {
-        val first=LocalDate.of(1900,1,1).toEpochDay()
-        val last=LocalDate.of(9999,12,31).toEpochDay()
-        return combine(db.workoutDao().observeAll(),
-            db.garminActivityDao().observeRange(Long.MIN_VALUE,Long.MAX_VALUE),
-            db.stravaActivityDao().observeRange(Long.MIN_VALUE,Long.MAX_VALUE),
-            db.strengthSetDao().observeRange(Long.MIN_VALUE,Long.MAX_VALUE),
-            workoutRows(first,last)) { h,g,s,w,server ->
-            LocalWorkoutArchive.build(h,g,s,w,server)
-        }.flowOn(Dispatchers.Default)
+    private data class ScopedArchive(val uid:String?,val archive:ArchiveResult)
+    private val archiveScope=CoroutineScope(SupervisorJob()+Dispatchers.Default)
+    private val canonicalStore by lazy { CanonicalWorkoutStore(CanonicalWorkoutDatabase.get(app)) }
+    private fun currentArchiveOwner():String? =
+        if(FirebaseSetup.isConfigured) app.authManager.currentUser?.uid else null
+
+    /** One materialized canonical index, shared across all archive readers.
+     * No partial server projection is emitted before the active snapshot query completes.
+     * Account changes cancel the old read and every result is scoped to its owner. */
+    private val sharedArchive by lazy {
+        val owner:Flow<String?> = if(FirebaseSetup.isConfigured)
+            app.authManager.authStateFlow().map { it?.uid }.distinctUntilChanged()
+        else flowOf(null)
+        owner.flatMapLatest { uid ->
+            val first="1900-01-01"
+            val last="9999-12-31"
+            val remote:Flow<ServerWorkoutProjection> = if(uid==null) flowOf(ServerWorkoutProjection())
+            else snapshots.observeActiveWorkouts(uid,first,last).map { rows ->
+                ServerFitnessProjection.workouts(rows.map {
+                    VerifiedServerRow(it.source,it.kind,it.nativeId,it.day,it.rowJson)
+                })
+            }
+            combine(db.workoutDao().observeAll(),
+                db.garminActivityDao().observeRange(Long.MIN_VALUE,Long.MAX_VALUE),
+                db.stravaActivityDao().observeRange(Long.MIN_VALUE,Long.MAX_VALUE),
+                db.strengthSetDao().observeRange(Long.MIN_VALUE,Long.MAX_VALUE),
+                remote) { h,g,s,w,server ->
+                LocalWorkoutArchive.build(h,g,s,w,server)
+            }.filter { currentArchiveOwner()==uid }.map { archive ->
+                val stored=try {
+                    canonicalStore.reconcile(uid?.let { "firebase:$it" } ?: "local",archive)
+                } catch(e:CancellationException) {
+                    throw e
+                } catch(e:Exception) {
+                    // The raw archive remains usable; never claim persistence on a failed write.
+                    AppLog.w("CanonicalWorkout","Canonical index failed: "+e.javaClass.simpleName)
+                    archive
+                }
+                ScopedArchive(uid,stored)
+            }.filter { currentArchiveOwner()==uid }
+        }.flowOn(Dispatchers.Default).shareIn(archiveScope,
+            SharingStarted.WhileSubscribed(stopTimeoutMillis=0,replayExpirationMillis=0),replay=1)
     }
+
+    fun observeArchive(): Flow<ArchiveResult> =
+        sharedArchive.filter { it.uid==currentArchiveOwner() }.map { it.archive }
 
     fun observeGarminDays(from: Long,to: Long): Flow<List<GarminDailyExtra>> =
         combine(db.garminDailyExtraDao().observeRange(from,to), rows("garmin",listOf("daily"),from,to)) { local,server ->
