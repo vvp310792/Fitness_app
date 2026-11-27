@@ -122,7 +122,8 @@ object LocalWorkoutArchive {
     /** Use one common projection for archive consumers. Ambiguous groups remain
      * visible and are excluded from confirmed-only sums, never silently erased. */
     fun build(health: List<Workout>,garmin: List<GarminActivity>,strava: List<StravaActivity>,strength: List<StrengthSet>,
-        server: ServerWorkoutProjection = ServerWorkoutProjection()): ArchiveResult {
+        server: ServerWorkoutProjection = ServerWorkoutProjection(),
+        garminStravaCutoffMillis: Long? = null): ArchiveResult {
         val rows = mutableListOf<ArchiveObservation>()
         var rejected = 0
         for (r in health) {
@@ -139,10 +140,13 @@ object LocalWorkoutArchive {
                 r.durationSeconds.toLong().duration(),r.avgHeartRate.positive(),r.maxHeartRate.positive(),garmin=r))
         }
         for(r in strava) {
-            val s=session(FitnessSource.STRAVA,r.activityId.toString(),stravaSport(r.typeRaw),r.startTimeMillis,null,r.distanceMeters)
+            val elapsed = r.elapsedSeconds?.toLong()?.duration()
+            // Legacy rows retained their display duration but lack separate provenance.
+            val moving = r.movingSeconds?.toLong()?.duration() ?: if(elapsed == null) r.durationSeconds.toLong().duration() else null
+            val s=session(FitnessSource.STRAVA,r.activityId.toString(),stravaSport(r.typeRaw),r.startTimeMillis,elapsed,r.distanceMeters)
             if(s==null) { rejected++;continue }
             rows.add(ArchiveObservation(s,r.dateEpochDay,r.name.ifBlank { r.typeRaw.ifBlank { "Тренировка" } },
-                r.durationSeconds.toLong().duration(),r.avgHeartRate.positive(),r.maxHeartRate.positive()))
+                moving,r.avgHeartRate.positive(),r.maxHeartRate.positive()))
         }
         for((start,sets) in strength.groupBy { it.startMillis }) {
             val first=sets.first()
@@ -194,7 +198,8 @@ object LocalWorkoutArchive {
         val enriched=byKey.mapValues { (_,o) ->
             o.copy(session=o.session.copy(recordedSeconds=o.trainingSeconds))
         }
-        val episodes=CanonicalFitness.episodes(enriched.values.map { it.session }).flatMap { e ->
+        // Enable provenance only when the caller explicitly supplies the owner's cutoff.
+        val episodes=CanonicalFitness.episodes(enriched.values.map { it.session }, garminStravaCutoffMillis).flatMap { e ->
             // A contradictory identity must not be treated as a confirmed session,
             // including when a different source otherwise matches it.
             val resolved = if (e.observations.any { it.key in conflictedKeys }) e.observations.map { r ->

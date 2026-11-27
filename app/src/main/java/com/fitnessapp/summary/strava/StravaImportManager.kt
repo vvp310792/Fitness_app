@@ -75,7 +75,13 @@ class StravaImportManager(
             when (val parsed = StravaExportParser.parse(text, ZoneId.systemDefault())) {
                 is StravaExportParser.Result.Failed -> fail(parsed.reason)
                 is StravaExportParser.Result.Ok -> {
-                    val activities = parsed.activities
+                    val previous = database.stravaActivityDao().getAllOnce().associateBy { it.activityId }
+                    val activities = parsed.activities.map { row ->
+                        val old = previous[row.activityId]?.takeIf { it.startTimeMillis == row.startTimeMillis }
+                        val moving = row.movingSeconds ?: old?.movingSeconds?.takeIf { row.elapsedSeconds == null || it <= row.elapsedSeconds }
+                        val elapsed = (row.elapsedSeconds ?: old?.elapsedSeconds)?.takeIf { moving == null || it >= moving }
+                        row.copy(movingSeconds = moving, elapsedSeconds = elapsed, durationSeconds = moving ?: elapsed ?: row.durationSeconds)
+                    }
                     database.stravaActivityDao().upsertAll(activities)
 
                     val first = activities.minOf { it.dateEpochDay }

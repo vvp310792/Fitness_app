@@ -40,7 +40,11 @@ data class StravaActivity(
     val calories: Int = 0,
     val avgHeartRate: Int = 0,
     val maxHeartRate: Int = 0,
-    val elevationGainMeters: Int = 0
+    val elevationGainMeters: Int = 0,
+    /** Measured wall-clock duration from the export; null on pre-v13 imports. */
+    val elapsedSeconds: Int? = null,
+    /** Actual moving time, separately from the legacy display fallback. */
+    val movingSeconds: Int? = null
 ) {
     val durationMinutes: Int get() = durationSeconds / 60
 }

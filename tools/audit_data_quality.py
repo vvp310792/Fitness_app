@@ -14,6 +14,7 @@ from materialize_canonical_workouts import reconcile,report,match,nested,overlap
 
 OUT=DB.parent/"data_quality"
 TODAY=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=7)).date()
+PROVENANCE_CUTOFF=None
 def date(v):
     try:return dt.date.fromisoformat(v)
     except (TypeError,ValueError):return None
@@ -172,8 +173,10 @@ def main():
                 if k in ("steps","distance","active-energy-burned","total-calories"):
                     issue("google_health",k,key,day,"interval_collision_"+("exact" if (a,b)==(x,y) else "overlap"),{"other_key":other,"origin":origin})
             seen.append((a,b,key,day))
-    episodes=reconcile(rows,True)
+    episodes=reconcile(rows,True,PROVENANCE_CUTOFF)
     owner={i:g for g,(_,members,_,_) in enumerate(episodes) for i in members}
+    from strava_provenance import actual_links
+    secondary=set(actual_links(rows,episodes,PROVENANCE_CUTOFF)) if PROVENANCE_CUTOFF is not None else set()
     membership=[i for _,members,_,_ in episodes for i in members]
     assert len(membership)==len(rows) and sorted(membership)==list(range(len(rows))), "canonical membership mismatch"
     assert all(p in members and p not in nested_ids and set(nested_ids)<=set(members)
@@ -201,6 +204,8 @@ def main():
                 reason="canonical_membership"
             elif a.sport in KNOWN and b.sport in KNOWN and a.sport!=b.sport:
                 status="different_sport";reason="different_known_sport"
+            elif i in secondary or j in secondary:
+                status="overlap_only";reason="confirmed_garmin_strava_copy_not_independent"
             elif (long_journal(a) or long_journal(b)) and abs(a.start-b.start)>900000:
                 status="overlap_only";reason="unreliable_journal_wall_clock_tail"
             elif a.sport not in KNOWN or b.sport not in KNOWN:
