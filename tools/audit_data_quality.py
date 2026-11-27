@@ -175,7 +175,7 @@ def main():
             seen.append((a,b,key,day))
     episodes=reconcile(rows,True,PROVENANCE_CUTOFF)
     owner={i:g for g,(_,members,_,_) in enumerate(episodes) for i in members}
-    from strava_provenance import actual_links
+    from strava_provenance import actual_links,distinct_recorded_sports
     secondary=set(actual_links(rows,episodes,PROVENANCE_CUTOFF)) if PROVENANCE_CUTOFF is not None else set()
     membership=[i for _,members,_,_ in episodes for i in members]
     assert len(membership)==len(rows) and sorted(membership)==list(range(len(rows))), "canonical membership mismatch"
@@ -202,7 +202,7 @@ def main():
             if same:
                 status="resolved_nested" if i in fragments or j in fragments else "resolved_full_copy"
                 reason="canonical_membership"
-            elif a.sport in KNOWN and b.sport in KNOWN and a.sport!=b.sport:
+            elif distinct_recorded_sports(a,b) or (a.sport in KNOWN and b.sport in KNOWN and a.sport!=b.sport):
                 status="different_sport";reason="different_known_sport"
             elif i in secondary or j in secondary:
                 status="overlap_only";reason="confirmed_garmin_strava_copy_not_independent"
