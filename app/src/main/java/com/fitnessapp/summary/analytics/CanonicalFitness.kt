@@ -27,7 +27,9 @@ data class FitnessSession(
     /** Recorded timer/active time, explicitly separate from elapsed time. */
     val recordedSeconds: Long? = null,
     /** Verified finish timestamps of performed journal sets; not inferred duration. */
-    val setMarksMillis: List<Long> = emptyList()
+    val setMarksMillis: List<Long> = emptyList(),
+    /** Original source category; used only for explicit, verified export aliases. */
+    val rawSport: String? = null
 ) {
     init {
         require(nativeId.isNotBlank() && startMillis >= 0)
@@ -136,6 +138,7 @@ object CanonicalFitness {
     }
 
     private fun match(a: FitnessSession, b: FitnessSession): Match {
+        if (distinctRecordedSports(a,b)) return Match.NONE
         val sameUpstream = a.upstreamId != null && a.upstreamId == b.upstreamId
         val distinctOrigins = a.source == FitnessSource.GOOGLE_HEALTH && b.source == a.source &&
             a.transportOrigin != null && b.transportOrigin != null && a.transportOrigin != b.transportOrigin
@@ -341,9 +344,40 @@ object CanonicalFitness {
      * is a Garmin export, but an unmatched row is always retained as a fallback.
      * No elapsed time is inferred from a moving-time value.
      */
+    private val garminCopyTypes = mapOf(
+        "indoor_rowing" to "ROW", "rowing" to "ROW", "hiking" to "HIKE",
+        "cross_country_skiing_ws" to "SKI", "cross_country_skiing" to "SKI",
+        "elliptical" to "ELLIPTICAL", "breathwork" to "GENERIC_WORKOUT",
+        "indoor_cardio" to "GENERIC_WORKOUT", "floor_climbing" to "GENERIC_WORKOUT", "other" to "GENERIC_WORKOUT"
+    )
+    private val stravaCopyTypes = mapOf(
+        "гребля" to "ROW", "rowing" to "ROW", "хайкинг" to "HIKE", "поход" to "HIKE",
+        "hike" to "HIKE", "hiking" to "HIKE", "лыжи" to "SKI", "nordicski" to "SKI",
+        "cross country skiing" to "SKI", "эллиптический тренажер" to "ELLIPTICAL",
+        "эллиптический тренажёр" to "ELLIPTICAL", "elliptical" to "ELLIPTICAL",
+        "тренировка" to "GENERIC_WORKOUT", "workout" to "GENERIC_WORKOUT"
+    )
+    private fun copySubtype(r: FitnessSession): String? {
+        if (r.sport != FitnessSport.OTHER) return null
+        val key = r.rawSport?.trim()?.lowercase() ?: return null
+        return when (r.source) {
+            FitnessSource.GARMIN -> garminCopyTypes[key]
+            FitnessSource.STRAVA -> stravaCopyTypes[key]
+            else -> null
+        }
+    }
+    private fun copyKind(g: FitnessSession, s: FitnessSession): String? {
+        if (g.sport == s.sport && g.sport !in setOf(FitnessSport.UNKNOWN,FitnessSport.OTHER)) return g.sport.name
+        val x = copySubtype(g)
+        return x?.takeIf { it == copySubtype(s) }
+    }
+    private fun distinctRecordedSports(a: FitnessSession, b: FitnessSession): Boolean =
+        (copySubtype(a) == "ROW" && b.sport == FitnessSport.STRENGTH) ||
+        (copySubtype(b) == "ROW" && a.sport == FitnessSport.STRENGTH)
+
     private fun garminCopyCompatible(g: FitnessSession, s: FitnessSession): Boolean {
-        if (g.source != FitnessSource.GARMIN || s.source != FitnessSource.STRAVA ||
-            g.sport != s.sport || g.sport in setOf(FitnessSport.UNKNOWN, FitnessSport.OTHER)) return false
+        if (g.source != FitnessSource.GARMIN || s.source != FitnessSource.STRAVA) return false
+        val kind = copyKind(g,s) ?: return false
         if (abs(g.startMillis - s.startMillis) > 2_000L) return false
         val gt = g.recordedSeconds ?: return false
         val st = s.recordedSeconds ?: return false
@@ -354,7 +388,8 @@ object CanonicalFitness {
         val x = g.distanceMeters?.takeIf { it > 0 }
         val y = s.distanceMeters?.takeIf { it > 0 }
         if (x != null && y != null && abs(x - y) > max(20.0, max(x, y) * 0.015)) return false
-        if (g.sport == FitnessSport.STRENGTH) return abs(gt - st) <= max(60.0, max(gt, st) * 0.15)
+        if (kind == "STRENGTH") return abs(gt - st) <= max(60.0, max(gt, st) * 0.15)
+        if (kind == "GENERIC_WORKOUT") return abs(gt - st) <= 2L
         if (x != null && y != null) return ge != null || st <= gt + max(120.0, gt * 0.15)
         return abs(gt - st) <= 2L
     }
@@ -362,9 +397,9 @@ object CanonicalFitness {
     private fun garminCopyLinks(input: List<FitnessSession>, cutoff: Long): Map<String, String> {
         val garmin = input.filter { it.source == FitnessSource.GARMIN && it.startMillis >= cutoff }
         val strava = input.filter { it.source == FitnessSource.STRAVA && it.startMillis >= cutoff &&
-            it.sport !in setOf(FitnessSport.UNKNOWN, FitnessSport.OTHER) }
+            (it.sport !in setOf(FitnessSport.UNKNOWN, FitnessSport.OTHER) || copySubtype(it) != null) }
         val candidates = strava.associateWith { s ->
-            garmin.filter { g -> g.sport == s.sport && abs(g.startMillis - s.startMillis) <= 2_000L }
+            garmin.filter { g -> copyKind(g,s) != null && abs(g.startMillis - s.startMillis) <= 2_000L }
         }
         val counts = candidates.values.flatten().groupingBy { it.key }.eachCount()
         return candidates.mapNotNull { (s, gs) ->
