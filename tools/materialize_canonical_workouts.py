@@ -23,6 +23,38 @@ def exact(a,b):
     if abs(a.timer-b.timer)>(59 if hc else 2):return False
     if hc and "GARMIN" not in (a.source,b.source) and a.elapsed and b.elapsed and abs(a.elapsed-b.elapsed)>60 and abs(a.timer-b.timer)>2:return False
     return True
+def direct_endurance_copy(a,b):
+    if {a.source,b.source}!={"GARMIN","STRAVA"} or a.sport!=b.sport or a.sport not in ENDURANCE:return False
+    if abs(a.start-b.start)>2000 or (a.elapsed is None and b.elapsed is None):return False
+    x,y=a.distance,b.distance
+    if not x or not y or abs(x-y)>max(20,max(x,y)*.015):return False
+    return bool(a.timer and b.timer and abs(a.timer-b.timer)<=max(120,max(a.timer,b.timer)*.15))
+
+def corroborated_device_group(rows,group,strong):
+    # Same measured-anchor rule as Android CanonicalFitness.
+    rs=[rows[i] for i in group]
+    if len(rs)<3 or len({r.channel for r in rs})!=len(rs):return False
+    anchors=[i for i in group if rows[i].source=="GARMIN" and rows[i].elapsed and rows[i].timer]
+    if len(anchors)!=1:return False
+    g=anchors[0];a=rows[g]
+    if a.sport not in ENDURANCE:return False
+    if sum(r.source=="STRAVA" for r in rs)!=1:return False
+    if any(r.source not in {"GARMIN","STRAVA","HEALTH_CONNECT","GOOGLE_HEALTH","GOOGLE_FIT"} or r.sport!=a.sport for r in rs):return False
+    st=next(r for r in rs if r.source=="STRAVA")
+    if not direct_endurance_copy(a,st):return False
+    if any(i!=g and i not in strong[g] for i in group):return False
+    for n,i in enumerate(group):
+        for j in group[n+1:]:
+            x,y=rows[i],rows[j]
+            if j in strong[i]:continue
+            if x.elapsed is not None and y.elapsed is not None:return False
+            if abs(x.start-y.start)>2000 or not x.timer or not y.timer:return False
+            if x.distance and y.distance:
+                if abs(x.distance-y.distance)>max(20,max(x.distance,y.distance)*.015):return False
+                if abs(x.timer-y.timer)>max(120,max(x.timer,y.timer)*.15):return False
+            elif abs(x.timer-y.timer)>(59 if "HEALTH_CONNECT" in (x.source,y.source) else 2):return False
+    return True
+
 def match(a,b):
     if a.source==b.source and a.channel==b.channel:
         if abs(a.start-b.start)>1000 or a.sport!=b.sport or a.sport not in KNOWN:return 0
@@ -33,7 +65,7 @@ def match(a,b):
     if abs(a.start-b.start)>180000:return 0
     if a.sport in KNOWN and b.sport in KNOWN and a.sport!=b.sport:return 0
     if a.sport not in KNOWN or b.sport not in KNOWN:return 1
-    if exact(a,b):return 2
+    if exact(a,b) or direct_endurance_copy(a,b):return 2
     if not a.elapsed or not b.elapsed:return 1
     ov=overlap(a,b)
     if not ov:return 0
@@ -132,7 +164,7 @@ def reconcile(rows,general):
             for j in strong[n]-visited:
                 visited.add(j);stack.append(j)
         group.sort()
-        safe=len({rows[i].channel for i in group})==len(group) and all(b in strong[a] for a,b in combinations(group,2))
+        safe=len({rows[i].channel for i in group})==len(group) and (all(b in strong[a] for a,b in combinations(group,2)) or (general and corroborated_device_group(rows,group,strong)))
         groups.extend([group] if safe else [[i] for i in group])
     fragments=set();attached={}
     if general:
