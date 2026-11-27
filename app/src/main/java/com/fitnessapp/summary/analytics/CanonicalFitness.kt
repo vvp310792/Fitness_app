@@ -236,6 +236,25 @@ object CanonicalFitness {
         return marks.first()>=max(j.startMillis-120_000L,w.startMillis-120_000L) && marks.last()<=w.startMillis+elapsed*1000L+120_000L
     }
 
+    /** A short manual log of performed sets is not a second exercise timer.
+     * All timestamps and the whole brief log must lie within one measured
+     * strength session. The group-level unique-anchor check still applies. */
+    private fun quickJournalSupportsDevice(j:FitnessSession,w:FitnessSession):Boolean {
+        if(j.source!=FitnessSource.GYMUP || w.source !in deviceSources ||
+            j.sport!=FitnessSport.STRENGTH || w.sport!=FitnessSport.STRENGTH)return false
+        val elapsed=j.elapsedSeconds ?: return false
+        val we=w.elapsedSeconds ?: return false
+        val timer=w.recordedSeconds ?: return false
+        if(elapsed !in 1L..180L || we<300L || abs(we-timer)>max(120.0,we*0.15))return false
+        val marks=j.setMarksMillis.distinct().sorted()
+        if(marks.size<2 || abs(j.startMillis-w.startMillis)>900_000L)return false
+        val end=j.startMillis+elapsed*1000L
+        val watchEnd=w.startMillis+we*1000L
+        return w.startMillis<=j.startMillis && end<=watchEnd &&
+            marks.first()>=j.startMillis-2_000L && marks.last()<=end+2_000L &&
+            marks.first()>=w.startMillis && marks.last()<=watchEnd
+    }
+
     private fun nestedMatch(child:FitnessSession,anchor:FitnessSession):Match {
         val journal=child.source==FitnessSource.GYMUP && anchor.source in deviceSources
         if(!journal && (child.source !in transportSources || anchor.source !in anchorSources))return Match.NONE
@@ -248,6 +267,7 @@ object CanonicalFitness {
         // a later, unrelated workout. Only the opening time and an independently
         // measured device/export can support reconciliation.
         if(journal && journalMarksSupportDevice(child,anchor))return Match.CONFIDENT
+        if(journal && quickJournalSupportsDevice(child,anchor))return Match.CONFIDENT
         if(journal && isLongJournal(child)) {
             val delta=abs(child.startMillis-anchor.startMillis)
             if(delta>900_000L)return Match.NONE

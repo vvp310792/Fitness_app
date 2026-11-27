@@ -15,6 +15,19 @@ class QualityReconciliationTest {
         FitnessSession(FitnessSource.GOOGLE_HEALTH,"fit",FitnessSport.STRENGTH,t+offset,seconds,
             transportOrigin="com.google.android.apps.fitness",recordedSeconds=seconds)
 
+    @Test fun shortPerformedJournalIsNotASeparateExerciseTimer() {
+        val w=watch(seconds=2400)
+        val j=journal(offset=300_000,seconds=10).copy(
+            setMarksMillis=listOf(t+301_000,t+308_000))
+        val e=CanonicalFitness.episodes(listOf(w,j)).single()
+        assertEquals(w.key,e.primary.key)
+        assertTrue(j.key in e.fragmentKeys)
+        assertEquals(2,CanonicalFitness.episodes(listOf(w,j.copy(
+            setMarksMillis=listOf(t+301_000,t+4_000_000)))).size)
+        val competing=watch(id="competing",offset=60_000,seconds=2400)
+        assertEquals(3,CanonicalFitness.episodes(listOf(w,competing,j)).size)
+    }
+
     @Test fun enduranceHistoryRetainsGarminWhenStravaElapsedIsMissing() {
         val g=FitnessSession(FitnessSource.GARMIN,"g",FitnessSport.CYCLE,t,3600,20000.0,recordedSeconds=3500)
         val s=FitnessSession(FitnessSource.STRAVA,"s",FitnessSport.CYCLE,t,null,20010.0,recordedSeconds=3490)

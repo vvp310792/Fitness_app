@@ -38,6 +38,16 @@ class QualityAuditTest(unittest.TestCase):
             with contextlib.closing(sqlite3.connect(root/"quality"/"quality_cases.db")) as q:
                 self.assertEqual(q.execute("select count(*) from quality_issues where issue='invalid_json'").fetchone()[0],2)
 
+    def test_quick_entry_journal_is_not_second_timer(self):
+        from dataclasses import replace
+        from materialize_canonical_workouts import quick_journal_supports_device
+        watch=Session("GARMIN","GARMIN:a","STRENGTH",T,2400,2400,None,None,"2023-11-14")
+        journal=Session("GYMUP","GYMUP:a","STRENGTH",T+300000,10,10,None,None,"2023-11-14",(T+301000,T+308000))
+        self.assertTrue(quick_journal_supports_device(journal,watch))
+        self.assertEqual(len(reconcile([watch,journal],True)),1)
+        self.assertEqual(len(reconcile([watch,replace(journal,set_marks=(T+301000,T+4000000))],True)),2)
+        self.assertEqual(len(reconcile([watch,replace(watch,key="GARMIN:b",start=T+60000),journal],True)),3)
+
     def test_set_evidence_and_competing_watch(self):
         watch=Session("GARMIN","GARMIN:a","STRENGTH",T,2400,2400,None,None,"2023-11-14")
         journal=Session("GYMUP","GYMUP:a","STRENGTH",T+300000,None,None,None,None,"2023-11-14",(T+360000,T+720000,T+1200000))
