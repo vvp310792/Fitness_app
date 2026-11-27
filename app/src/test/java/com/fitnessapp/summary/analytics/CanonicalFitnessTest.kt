@@ -230,4 +230,36 @@ class CanonicalFitnessTest {
         val bad = s.copy(sport=FitnessSport.RUN,distanceMeters=5000.0)
         org.junit.Assert.assertEquals(2,CanonicalFitness.episodes(listOf(run,bad),provenanceCutoff).size)
     }
+
+    private fun typedCopy(source:FitnessSource,id:String,raw:String,timer:Long=1800,distance:Double?=null,elapsed:Long?=1900) =
+        FitnessSession(source,id,FitnessSport.OTHER,provenanceCutoff+1000,elapsed,distance,recordedSeconds=timer,rawSport=raw)
+    @Test fun knownRowingAliasesMatch() {
+        val g=typedCopy(FitnessSource.GARMIN,"g","indoor_rowing")
+        val s=typedCopy(FitnessSource.STRAVA,"s","Гребля",elapsed=null)
+        org.junit.Assert.assertEquals(1,CanonicalFitness.episodes(listOf(g,s),provenanceCutoff).size)
+    }
+    @Test fun knownHikingAliasesMatchWithDifferentMovingTime() {
+        val g=typedCopy(FitnessSource.GARMIN,"g","hiking",distance=7000.0)
+        val s=typedCopy(FitnessSource.STRAVA,"s","Хайкинг",timer=1200,distance=7010.0,elapsed=null)
+        org.junit.Assert.assertEquals(1,CanonicalFitness.episodes(listOf(g,s),provenanceCutoff).size)
+    }
+    @Test fun genericExportRequiresExactTimer() {
+        val g=typedCopy(FitnessSource.GARMIN,"g","breathwork")
+        val s=typedCopy(FitnessSource.STRAVA,"s","Тренировка",timer=1200,elapsed=null)
+        org.junit.Assert.assertEquals(2,CanonicalFitness.episodes(listOf(g,s),provenanceCutoff).size)
+    }
+    @Test fun rowingAndStrengthAreDistinct() {
+        val g=typedCopy(FitnessSource.GARMIN,"g","indoor_rowing")
+        val j=typedCopy(FitnessSource.GYMUP,"j","strength").copy(sport=FitnessSport.STRENGTH)
+        val result=CanonicalFitness.episodes(listOf(g,j),provenanceCutoff)
+        org.junit.Assert.assertEquals(2,result.size)
+        org.junit.Assert.assertTrue(result.none { it.ambiguous })
+        val h=typedCopy(FitnessSource.STRAVA,"h","Хайкинг",elapsed=null)
+        org.junit.Assert.assertEquals(2,CanonicalFitness.episodes(listOf(g,h),provenanceCutoff).size)
+    }
+    @Test fun unmappedOtherCategoriesRemainSeparate() {
+        val g=typedCopy(FitnessSource.GARMIN,"g","unmapped")
+        val s=typedCopy(FitnessSource.STRAVA,"s","unknown",elapsed=null)
+        org.junit.Assert.assertEquals(2,CanonicalFitness.episodes(listOf(g,s),provenanceCutoff).size)
+    }
 }
