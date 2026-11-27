@@ -56,6 +56,8 @@ def corroborated_device_group(rows,group,strong):
     return True
 
 def match(a,b):
+    from strava_provenance import distinct_recorded_sports
+    if distinct_recorded_sports(a,b):return 0
     if a.source==b.source and a.channel==b.channel:
         if abs(a.start-b.start)>1000 or a.sport!=b.sport or a.sport not in KNOWN:return 0
         if not a.elapsed or not b.elapsed or abs(a.elapsed-b.elapsed)>2:return 0

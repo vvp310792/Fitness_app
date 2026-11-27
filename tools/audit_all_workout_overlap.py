@@ -23,6 +23,7 @@ class Session:
     origin:str|None
     day:str
     set_marks:tuple[int,...]=()
+    raw_sport:str|None=None
     @property
     def channel(self):
         return self.source+(":"+self.origin if self.source=="GOOGLE_HEALTH" and self.origin else "")
