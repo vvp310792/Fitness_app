@@ -156,6 +156,7 @@ object ServerFitnessProjection {
         val names = mutableMapOf<Long, String?>()
         val workouts = mutableListOf<GymUpBackupParser.WorkoutRow>()
         val sets = mutableListOf<GymUpBackupParser.SetRow>()
+        val setMarks = mutableListOf<Long>()
         for (w in blocks) {
             val wid = w.long("_id")
             val eid = w.long("th_exercise_id")
@@ -165,8 +166,10 @@ object ServerFitnessProjection {
             for (set in w.optJSONArray("sets").objects()) {
                 val reps = set.int("reps")
                 val weight = set.number("weight")?.toFloat()?.takeIf { it.isFinite() }
-                if (reps > 0 && weight != null)
+                if (reps > 0 && weight != null && weight >= 0f) {
                     sets.add(GymUpBackupParser.SetRow(set.long("_id"),wid,weight,reps))
+                    setMarks.add(set.long("finishDateTime"))
+                }
             }
         }
         if (sets.isEmpty()) return null
@@ -175,7 +178,8 @@ object ServerFitnessProjection {
         ) as? GymUpBackupParser.Result.Ok ?: return null
         val duration = interval(start,t.long("finishDateTime"))
         return ArchiveObservation(
-            FitnessSession(FitnessSource.GYMUP,start.toString(),FitnessSport.STRENGTH,start,duration),
+            FitnessSession(FitnessSource.GYMUP,start.toString(),FitnessSport.STRENGTH,start,duration,
+                setMarksMillis=if(setMarks.all { it>=100000000000L }) setMarks.distinct().sorted() else emptyList()),
             day,"Силовая тренировка",duration,null,null,sets=parsed.sets.map { it.copy(dateEpochDay=day, updatedAtMillis=0) }
         )
     }

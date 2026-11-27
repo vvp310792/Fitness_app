@@ -44,11 +44,22 @@ def match(a,b):
     return 2
 def long_journal(s):
     return s.source=="GYMUP" and (s.elapsed or 0)>4*3600
+def journal_marks_support_device(j,w):
+    # Three distinct performed sets spread across at least five minutes;
+    # every mark must be inside the measured watch interval (2-min tolerance).
+    # Group attachment still requires a unique, non-competing device and journal.
+    marks=j.set_marks
+    if j.source!="GYMUP" or w.source not in DEVICE or j.sport!="STRENGTH" or w.sport!="STRENGTH":return False
+    if len(marks)<3 or marks[-1]-marks[0]<300000 or abs(j.start-w.start)>900000:return False
+    if not w.elapsed or not w.timer or w.elapsed<300 or abs(w.elapsed-w.timer)>max(120,w.elapsed*.15):return False
+    return marks[0]>=max(j.start-120000,w.start-120000) and marks[-1]<=w.start+w.elapsed*1000+120000
+
 def nested(child,anchor):
     journal=child.source=="GYMUP" and anchor.source in DEVICE
     if not journal and (child.source not in TRANSPORT or anchor.source not in DIRECT):return 0
     if child.sport!=anchor.sport or child.sport not in KNOWN or (journal and child.sport!="STRENGTH"):return 0
     f,a=child.elapsed,anchor.elapsed
+    if journal and journal_marks_support_device(child,anchor):return 2
     if journal and long_journal(child):
         delta=abs(child.start-anchor.start)
         if delta>900000:return 0
@@ -243,7 +254,7 @@ def materialize(rows,groups,stats,baseline):
             for p,items,nested_ids,ext in groups:
                 c.executemany("INSERT INTO possible_matches VALUES (?,?)",[(rows[p].key,key) for key in ext])
             meta={"input_sha256":digest.hexdigest(),"generated_epoch":str(int(time.time())),
-                  "algorithm":"overlap-reconciliation-reference-v5","input_stats":json.dumps(dict(stats)),
+                  "algorithm":"overlap-reconciliation-reference-v6","input_stats":json.dumps(dict(stats)),
                   "baseline":json.dumps(baseline),"result":json.dumps(report(rows,groups))}
             c.executemany("INSERT INTO metadata VALUES (?,?)",meta.items())
         assert c.execute("PRAGMA integrity_check").fetchone()==("ok",)

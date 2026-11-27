@@ -253,7 +253,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
             // All three of these have their own sources - Health Connect workouts and an
             // imported gym log - so no Garmin data is no reason to hide any of them.
             intensitySection(intensity, suggestedHrMax, intensitySessions.size, palette)
-            sportDistanceSection(sportWeeks, unclassifiedSports, fromEpoch, toEpoch, smoothWindow, palette.distance)
+            sportDistanceSection(sportWeeks, unclassifiedSports, fromEpoch, toEpoch, smoothWindow, palette.distance, period.distanceReviewGroupCount)
             strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
             return@LazyColumn
         }
@@ -388,7 +388,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         if (weightPoints.isNotEmpty()) trendCard("Вес, кг", weightPoints, fromEpoch, toEpoch, palette.weight, smoothWindow) { formatDecimal(it) }
 
         intensitySection(intensity, suggestedHrMax, intensitySessions.size, palette)
-        sportDistanceSection(sportWeeks, unclassifiedSports, fromEpoch, toEpoch, smoothWindow, palette.distance)
+        sportDistanceSection(sportWeeks, unclassifiedSports, fromEpoch, toEpoch, smoothWindow, palette.distance, period.distanceReviewGroupCount)
         strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
 
         item {
@@ -713,9 +713,20 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sportDistanceSection(
     fromEpoch: Long,
     toEpoch: Long,
     smoothWindowDays: Int,
-    accent: Color
+    accent: Color,
+    reviewCount: Int
 ) {
     if (sportWeeks.isEmpty()) return
+
+    if(reviewCount>0) {
+        item(key="sport-distance-review") {
+            Text(
+                text="В группах возможных дублей (" + reviewCount + ") дистанция учитывается один раз по приоритетному источнику; часть истории ещё требует проверки.",
+                style=MaterialTheme.typography.labelMedium,
+                color=MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
 
     item { SectionHeader("Объём по неделям") }
     item {

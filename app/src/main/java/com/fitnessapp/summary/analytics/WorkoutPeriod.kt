@@ -59,16 +59,42 @@ data class WorkoutPeriod(
     val durationSeconds = confirmed.sumOf { it.durationSeconds ?: 0L }
     val distanceMeters = confirmed.sumOf { it.distanceMeters ?: 0.0 }
     val garminActivities = confirmed.mapNotNull { it.garmin }
-    fun sportSessions():List<SportSession> = confirmed.mapNotNull { row ->
+    /** A pending duplicate is not evidence that no workout took place.
+     * For distance charts retain one positively measured representative
+     * per sport in each unresolved group, preferring the direct source.
+     * Never add all competing distances or change canonical membership.
+     * Review groups remain visible and their distance is explicitly provisional. */
+    val distanceReviewGroupCount:Int get() = displayGroups.count { g ->
+        g.requiresReview && g.members.any { distanceSession(it)!=null }
+    }
+    private fun distanceSession(row:ArchiveEpisode):SportSession? {
         val sport=when(row.primary.session.sport) {
             FitnessSport.RUN -> DistanceSport.RUN
             FitnessSport.CYCLE -> DistanceSport.BIKE
             FitnessSport.SWIM -> DistanceSport.SWIM
             else -> null
-        } ?: return@mapNotNull null
-        val meters=row.distanceMeters?.takeIf { it>0 && it<=Int.MAX_VALUE }?.roundToInt() ?: return@mapNotNull null
-        SportSession(sport,row.primary.day,row.primary.session.startMillis,meters)
+        } ?: return null
+        val meters=row.distanceMeters?.takeIf { it>0 && it<=Int.MAX_VALUE }?.roundToInt() ?: return null
+        return SportSession(sport,row.primary.day,row.primary.session.startMillis,meters)
     }
+    private fun distanceRank(source:FitnessSource):Int = when(source) {
+        FitnessSource.GARMIN -> 0
+        FitnessSource.STRAVA -> 1
+        FitnessSource.HEALTH_CONNECT -> 2
+        FitnessSource.GOOGLE_HEALTH -> 3
+        FitnessSource.GOOGLE_FIT -> 4
+        else -> 5
+    }
+    fun sportSessions():List<SportSession> = displayGroups.flatMap { group ->
+        val measured=group.members.mapNotNull { row ->
+            distanceSession(row)?.let { row to it }
+        }
+        measured.groupBy { it.second.sport }.values.map { candidates ->
+            candidates.minWith(compareBy<Pair<ArchiveEpisode,SportSession>> {
+                distanceRank(it.first.primary.session.source)
+            }.thenBy { it.first.primary.session.startMillis }.thenBy { it.first.episode.primary.key }).second
+        }
+    }.sortedBy { it.startTimeMillis }
     fun intensitySessions():List<IntensitySession> = confirmed.mapNotNull { row ->
         val seconds=row.durationSeconds ?: return@mapNotNull null
         val minutes=(seconds/60).toInt()
