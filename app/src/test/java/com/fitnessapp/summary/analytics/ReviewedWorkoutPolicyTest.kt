@@ -67,6 +67,17 @@ class ReviewedWorkoutPolicyTest {
         assertEquals(1,period.accountedObservationCount);assertEquals(0L,period.durationSeconds)
         assertEquals(1,period.displayGroups.size);assertTrue(period.sportSessions().isEmpty())
     }
+    @Test fun shortCopiesMayBeGroupedButNeverCounted() {
+        val g=observation(FitnessSource.GARMIN,"short-g",elapsed=8,timer=8,distance=null)
+        val h=observation(FitnessSource.HEALTH_CONNECT,"short-h",elapsed=7,timer=7,distance=null)
+        val obs=listOf(g,h)
+        val p=plan(obs,listOf(entry(g,obs,false,"insufficient_training_evidence")))
+        val r=apply(p,obs)
+        assertEquals(1,r.applied)
+        val e=ArchiveEpisode(r.episodes.single(),g,obs,r.resolutions[g.session.key])
+        assertEquals(0,WorkoutPeriod(listOf(e)).confirmed.size)
+        assertEquals(2,e.observations.size)
+    }
     @Test fun compositeTimerUsesMeasuredNonOverlappingSegments() {
         val a=observation(FitnessSource.GARMIN,"first",elapsed=178,timer=178,distance=null)
         val b=observation(FitnessSource.GARMIN,"second",start=t+186000,elapsed=1966,timer=1967,distance=null)
