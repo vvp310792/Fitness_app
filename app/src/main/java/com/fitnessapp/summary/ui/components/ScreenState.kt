@@ -115,9 +115,9 @@ fun ExpandableSection(title:String,summary:String,initiallyOpen:Boolean=false,co
 }
 
 @Composable
-fun ConfirmAction(label:String,title:String,message:String,confirmLabel:String="Удалить",onConfirm:()->Unit) {
+fun ConfirmAction(label:String,title:String,message:String,confirmLabel:String="Удалить",enabled:Boolean=true,onConfirm:()->Unit) {
     var opened by rememberSaveable {mutableStateOf(false)}
-    TextButton(onClick={opened=true}){Text(label,color=MaterialTheme.colorScheme.error)}
+    TextButton(onClick={opened=true},enabled=enabled){Text(label,color=if(enabled)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)}
     if(opened)AlertDialog(onDismissRequest={opened=false},title={Text(title)},text={Text(message)},
         confirmButton={TextButton(onClick={opened=false;onConfirm()}){Text(confirmLabel,color=MaterialTheme.colorScheme.error)}},
         dismissButton={TextButton(onClick={opened=false}){Text("Отмена")}})

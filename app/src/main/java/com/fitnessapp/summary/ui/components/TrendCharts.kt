@@ -104,7 +104,8 @@ fun TrendChart(
     floorAtZero: Boolean = false,
     smoothWindowDays: Int = 0,
     secondary: List<TrendPoint> = emptyList(),
-    maxGapDays:Long=1L
+    maxGapDays:Long=1L,
+    secondaryLabel:String="Вторая серия"
 ) {
     val sorted = points.filter { it.epochDay in fromEpochDay..toEpochDay }.sortedBy { it.epochDay }
     val sortedSecondary = secondary.filter { it.epochDay in fromEpochDay..toEpochDay }.sortedBy { it.epochDay }
@@ -250,7 +251,7 @@ fun TrendChart(
                 series.forEachIndexed { index, p ->
                     val px = x(p.epochDay)
                     val py = y(p.value)
-                    if(index==0 || p.epochDay-series[index-1].epochDay>maxGapDays)path.moveTo(px,py) else path.lineTo(px,py)
+                    if(index==0 || trendHasGap(series[index-1].epochDay,p.epochDay,maxGapDays))path.moveTo(px,py) else path.lineTo(px,py)
                 }
                 drawPath(
                     path = path,
@@ -272,7 +273,7 @@ fun TrendChart(
                 sortedSecondary.forEachIndexed { index, p ->
                     val px = x(p.epochDay)
                     val py = y(p.value)
-                    if(index==0 || p.epochDay-sortedSecondary[index-1].epochDay>maxGapDays)path.moveTo(px,py) else path.lineTo(px,py)
+                    if(index==0 || trendHasGap(sortedSecondary[index-1].epochDay,p.epochDay,maxGapDays))path.moveTo(px,py) else path.lineTo(px,py)
                 }
                 drawPath(
                     path = path,
@@ -313,8 +314,12 @@ fun TrendChart(
         }
         Text((if(selectedDay==null)"Последнее: " else "Выбрано: ")+LocalDate.ofEpochDay(selected.epochDay)+" · "+formatValue(selected.value),
             style=MaterialTheme.typography.bodyMedium,fontWeight=FontWeight.Bold)
-        selectedSecondary?.let{Text("Вторая серия: "+formatValue(it.value),style=MaterialTheme.typography.bodySmall)}
-        Text("Нажмите на график для значения. Длительные пропуски не соединяются.",style=MaterialTheme.typography.bodySmall,color=ink)
+        selectedSecondary?.let{Text(secondaryLabel+": "+formatValue(it.value),style=MaterialTheme.typography.bodySmall)}
+        if(hasSmooth || sortedSecondary.isNotEmpty())Text(buildString {
+            if(hasSmooth)append("Точки — измерения, яркая линия — среднее. ")
+            if(sortedSecondary.isNotEmpty())append("Пунктир — "+secondaryLabel.lowercase()+".")
+        },style=MaterialTheme.typography.bodySmall,color=ink)
+        Text("Нажмите на график для значения. Интервалы более $maxGapDays дн. не соединяются.",style=MaterialTheme.typography.bodySmall,color=ink)
     }
 }
 
@@ -376,3 +381,6 @@ fun ProgressBar(
         )
     }
 }
+
+/** A display-only rule; never fills missing observations or changes a trend value. */
+internal fun trendHasGap(previous:Long,next:Long,maxGapDays:Long):Boolean = next-previous>maxGapDays.coerceAtLeast(1L)

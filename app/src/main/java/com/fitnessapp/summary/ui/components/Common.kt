@@ -1,5 +1,6 @@
 package com.fitnessapp.summary.ui.components
 
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -177,7 +178,15 @@ fun Chip(text: String, color: Color, modifier: Modifier = Modifier) {
         Text(
             text = text,
             style = MaterialTheme.typography.labelMedium,
-            color = color
+            // Metric hues are for graphics; body text needs a higher contrast.
+            color = MaterialTheme.colorScheme.onSurface
         )
     }
 }
+
+@Composable
+fun positiveTextColor():Color=if(MaterialTheme.colorScheme.surface.luminance()>0.5f)
+    Color(0xFF166534) else Color(0xFF86EFAC)
+@Composable
+fun warningTextColor():Color=if(MaterialTheme.colorScheme.surface.luminance()>0.5f)
+    Color(0xFF92400E) else Color(0xFFFCD34D)

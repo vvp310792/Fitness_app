@@ -133,17 +133,17 @@ fun TrendsScreen(app:FitnessSummaryApp,onSettings:()->Unit={}) {
 
     val smoothWindow = LifestyleAnalytics.smoothWindowDaysFor(windowDays)
 
-    val summariesRead=readScreen(remember(windowDays) { app.unifiedRead.observeGarminDays(fromEpoch, toEpoch) },retry)
+    val summariesRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.unifiedRead.observeGarminDays(fromEpoch, toEpoch) },retry)
     val summaries=summariesRead.value.orEmpty()
-    val sleepsRead=readScreen(remember(windowDays) { app.unifiedRead.observeGarminSleeps(fromEpoch, toEpoch) },retry)
+    val sleepsRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.unifiedRead.observeGarminSleeps(fromEpoch, toEpoch) },retry)
     val sleeps=sleepsRead.value.orEmpty()
-    val hrvsRead=readScreen(remember(windowDays) { app.database.garminHrvDao().observeRange(fromEpoch, toEpoch) },retry)
+    val hrvsRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.database.garminHrvDao().observeRange(fromEpoch, toEpoch) },retry)
     val hrvs=hrvsRead.value.orEmpty()
-    val readinessRead=readScreen(remember(windowDays) { app.database.garminReadinessDao().observeRange(fromEpoch, toEpoch) },retry)
+    val readinessRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.database.garminReadinessDao().observeRange(fromEpoch, toEpoch) },retry)
     val readiness=readinessRead.value.orEmpty()
-    val trainingRead=readScreen(remember(windowDays) { app.database.garminTrainingDao().observeRange(fromEpoch, toEpoch) },retry)
+    val trainingRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.database.garminTrainingDao().observeRange(fromEpoch, toEpoch) },retry)
     val training=trainingRead.value.orEmpty()
-    val bodyDaysRead=readScreen(remember(windowDays) { app.unifiedRead.observeBodyDays(fromEpoch,toEpoch) },retry)
+    val bodyDaysRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.unifiedRead.observeBodyDays(fromEpoch,toEpoch) },retry)
     val bodyDays=bodyDaysRead.value.orEmpty()
     val weights=remember(bodyDays) { bodyDays.mapNotNull { it.garmin } }
     val scaleWeights=remember(bodyDays) { bodyDays.mapNotNull { it.scale } }
@@ -151,12 +151,12 @@ fun TrendsScreen(app:FitnessSummaryApp,onSettings:()->Unit={}) {
     val archive=archiveRead.value
     val period=remember(archive,fromEpoch,toEpoch) { WorkoutPeriod.between(archive,fromEpoch,toEpoch) }
     val activities=period.garminActivities
-    val healthRowsRead=readScreen(remember(windowDays) { app.unifiedRead.observeHealthDays(fromEpoch,toEpoch) },retry)
+    val healthRowsRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.unifiedRead.observeHealthDays(fromEpoch,toEpoch) },retry)
     val healthRows=healthRowsRead.value.orEmpty()
     val healthDays=remember(healthRows) { healthRows.map { it.summary } }
-    val strengthSetsRead=readScreen(remember(windowDays) { app.unifiedRead.observeStrengthSets(fromEpoch, toEpoch) },retry)
+    val strengthSetsRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.unifiedRead.observeStrengthSets(fromEpoch, toEpoch) },retry)
     val strengthSets=strengthSetsRead.value.orEmpty()
-    val fitDaysRead=readScreen(remember(windowDays) { app.database.fitDayDao().observeRange(fromEpoch, toEpoch) },retry)
+    val fitDaysRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.database.fitDayDao().observeRange(fromEpoch, toEpoch) },retry)
     val fitDays=fitDaysRead.value.orEmpty()
 
     // Google Fit sits beneath Health Connect, which sits beneath Garmin - see
@@ -170,8 +170,8 @@ fun TrendsScreen(app:FitnessSummaryApp,onSettings:()->Unit={}) {
     // counting, and how far the phone's count sits below it. Computed over everything and
     // deliberately not keyed to the chips - an estimate that moves when the axis moves is not
     // an estimate, which is the same reason HRmax is sampled over a fixed year.
-    val allGarminDays by remember { app.unifiedRead.observeGarminDays(0, toEpoch) }.collectAsState(initial = emptyList())
-    val allFitDays by remember { app.database.fitDayDao().observeRange(0, toEpoch) }.collectAsState(initial = emptyList())
+    val allGarminDays by remember(toEpoch) { app.unifiedRead.observeGarminDays(0, toEpoch) }.collectAsState(initial = emptyList())
+    val allFitDays by remember(toEpoch) { app.database.fitDayDao().observeRange(0, toEpoch) }.collectAsState(initial = emptyList())
     val stepGap = remember(allFitDays, allGarminDays) {
         LifestyleAnalytics.phoneStepGap(allFitDays, allGarminDays)
     }
@@ -204,7 +204,7 @@ fun TrendsScreen(app:FitnessSummaryApp,onSettings:()->Unit={}) {
     // The fallback estimate is computed over a FIXED year, not over the selected period.
     // Reading it off the chip window made every boundary move when the period changed, and
     // made this screen and the Я tab disagree about the same number.
-    val sampleFrom = remember { today.minusDays((IntensityAnalytics.HR_MAX_SAMPLE_DAYS - 1).toLong()) }
+    val sampleFrom = remember(today) { today.minusDays((IntensityAnalytics.HR_MAX_SAMPLE_DAYS - 1).toLong()) }
     val samplePeriod=remember(archive,sampleFrom,toEpoch) { WorkoutPeriod.between(archive,sampleFrom.toEpochDay(),toEpoch) }
     val suggestedHrMax=remember(samplePeriod) { IntensityAnalytics.suggestHrMax(samplePeriod.intensitySessions()) }
 
@@ -254,6 +254,18 @@ fun TrendsScreen(app:FitnessSummaryApp,onSettings:()->Unit={}) {
             }
         }
         if(reads.any{!it.loaded || it.failed})item { ReadStatus(reads,{retry++},onSettings) }
+        if(reads.all{it.loaded && !it.failed}) {
+            val absent=when(category) {
+                "body"->bodyDays.isEmpty()
+                "strength"->liftSessions.isEmpty()
+                "endurance"->sportWeeks.isEmpty() && intensitySessions.isEmpty() && training.isEmpty()
+                else->false
+            }
+            if(absent)item { InfoCard("Нет измерений в этой категории") {
+                Text("Выберите другой период или проверьте подключённые источники.")
+                TextButton(onClick=onSettings){Text("Источники данных")}
+            } }
+        }
 
         if(archive!=null && show("activity")) item { InfoCard("Тренировки за период") { WorkoutTotals(period,detailed=false) } }
         if (nothingFromGarmin) {
@@ -330,6 +342,7 @@ fun TrendsScreen(app:FitnessSummaryApp,onSettings:()->Unit={}) {
                 if (nothingVerified) rhrNoNight else rhrNights,
                 fromEpoch, toEpoch, palette.heart, smoothWindow,
                 secondary = if (nothingVerified) emptyList() else rhrNoNight,
+                secondaryLabel="Без ночной записи",
                 footnote = when {
                     nothingVerified ->
                         "За этот период часы не измерили ни одной ночи, поэтому весь график — " +
@@ -375,6 +388,7 @@ fun TrendsScreen(app:FitnessSummaryApp,onSettings:()->Unit={}) {
                 fromEpoch, toEpoch, palette.calories, smoothWindow,
                 floorAtZero = true,
                 secondary = if (totalCalories.isEmpty()) emptyList() else activeCalories,
+                secondaryLabel="Активные калории",
                 footnote = if (totalCalories.isNotEmpty() && activeCalories.isNotEmpty()) {
                     "Сплошная линия — всего за день, пунктир — активные. Расстояние между ними — расход в покое."
                 } else null
@@ -409,12 +423,12 @@ fun TrendsScreen(app:FitnessSummaryApp,onSettings:()->Unit={}) {
         val weightPoints = bodyDays.map { TrendPoint(it.day,it.weightGrams/1000f) }
         for(source in listOf(BodyProjection.Z,BodyProjection.G,BodyProjection.H,BodyProjection.GH)) {
             val values=bodyDays.filter { it.source==source }
-            trendCard("Жир, % · $source",values.filter { it.fatPercent>0 }.map { TrendPoint(it.day,it.fatPercent) },fromEpoch,toEpoch,palette.weight,smoothWindow) { formatDecimal(it) }
-            trendCard("Вода, % · $source",values.filter { it.waterPercent>0 }.map { TrendPoint(it.day,it.waterPercent) },fromEpoch,toEpoch,palette.weight,smoothWindow) { formatDecimal(it) }
+            trendCard("Жир, % · $source",values.filter { it.fatPercent>0 }.map { TrendPoint(it.day,it.fatPercent) },fromEpoch,toEpoch,palette.weight,smoothWindow,maxGapDays=30) { formatDecimal(it) }
+            trendCard("Вода, % · $source",values.filter { it.waterPercent>0 }.map { TrendPoint(it.day,it.waterPercent) },fromEpoch,toEpoch,palette.weight,smoothWindow,maxGapDays=30) { formatDecimal(it) }
             val muscleTitle=if(source==BodyProjection.G) "Скелетная мышечная масса Garmin, кг" else "Мышечная масса, кг · $source"
-            trendCard(muscleTitle,values.filter { it.muscleGrams>0 }.map { TrendPoint(it.day,it.muscleGrams/1000f) },fromEpoch,toEpoch,palette.weight,smoothWindow) { formatDecimal(it) }
+            trendCard(muscleTitle,values.filter { it.muscleGrams>0 }.map { TrendPoint(it.day,it.muscleGrams/1000f) },fromEpoch,toEpoch,palette.weight,smoothWindow,maxGapDays=30) { formatDecimal(it) }
         }
-        if (weightPoints.isNotEmpty()) trendCard("Вес, кг", weightPoints, fromEpoch, toEpoch, palette.weight, smoothWindow) { formatDecimal(it) }
+        if (weightPoints.isNotEmpty()) trendCard("Вес, кг", weightPoints, fromEpoch, toEpoch, palette.weight, smoothWindow,maxGapDays=30) { formatDecimal(it) }
 
         }
         if(show("endurance")) {
@@ -446,6 +460,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trendCard(
     band: ClosedFloatingPointRange<Float>? = null,
     secondary: List<TrendPoint> = emptyList(),
     footnote: String? = null,
+    maxGapDays:Long=1L,
+    secondaryLabel:String="Вторая серия",
     formatValue: (Float) -> String
 ) {
     if(points.none{it.epochDay in fromEpoch..toEpoch} && secondary.none{it.epochDay in fromEpoch..toEpoch})return
@@ -462,6 +478,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trendCard(
                 goal = goal,
                 band = band,
                 secondary = secondary,
+                maxGapDays=maxGapDays,
+                secondaryLabel=secondaryLabel,
                 modifier = Modifier.padding(top = 4.dp)
             )
             if (footnote != null && points.isNotEmpty()) {
@@ -882,6 +900,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.strengthSection(
                 }
                 TrendChart(
                         maxGapDays=21,
+                        secondaryLabel="Рабочий вес",
                     points = StrengthAnalytics.oneRmTrend(inWindow),
                     fromEpochDay = fromEpoch,
                     toEpochDay = toEpoch,
