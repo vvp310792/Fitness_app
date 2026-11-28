@@ -27,6 +27,28 @@ def compatible(g,s):
     if kind=="GENERIC_WORKOUT":return abs(g.timer-s.timer)<=2
     if x and y:return bool(g.elapsed or s.timer<=g.timer+max(120,g.timer*.15))
     return abs(g.timer-s.timer)<=2
+def corroborated_copy(g,s):
+    """Strava exports may report elapsed instead of active timer.
+    Require measured Garmin elapsed plus independent physiological/route evidence.
+    Do not infer a missing elapsed interval or override a conflicting measured interval.
+    """
+    kind=copy_kind(g,s)
+    delta=abs(g.start-s.start)
+    ge,st,gt=g.elapsed,s.timer,g.timer
+    if not (ge and ge>=60 and st and st>=60 and st<=ge+10):return False
+    if s.elapsed and abs(ge-s.elapsed)>max(120,max(ge,s.elapsed)*.15):return False
+    if g.distance and s.distance and abs(g.distance-s.distance)>max(20,max(g.distance,s.distance)*.015):return False
+    def near(a,b,t):return a is not None and b is not None and a>0 and b>0 and abs(a-b)<=t
+    if not near(g.copy_calories,s.copy_calories,.01):return False
+    if delta<=2000 and kind in ("STRENGTH","ROW","CYCLE","ELLIPTICAL") and near(ge,st,4) and near(g.copy_max_hr,s.copy_max_hr,1):
+        return True
+    if delta<=10000 and kind=="SWIM" and g.distance and g.distance>=100 and near(g.distance,s.distance,1) and near(gt,st,10):
+        return True
+    generic=kind=="GENERIC_WORKOUT" or ((g.raw_sport or "").strip().lower()=="trail_running" and subtype(s)=="GENERIC_WORKOUT")
+    return bool(delta<=2000 and generic and g.distance and g.distance>=1000 and near(g.distance,s.distance,3)
+                and near(g.copy_max_hr,s.copy_max_hr,2) and near(g.copy_avg_hr,s.copy_avg_hr,3)
+                and gt and near(gt,st,max(60,gt*.15)))
+
 def link_copies(rows,cutoff=CUTOFF):
     gi=sorted((r.start,i) for i,r in enumerate(rows) if r.source=="GARMIN" and r.start>=cutoff)
     times=[t for t,_ in gi];by_s=defaultdict(list);by_g=defaultdict(list)
@@ -35,7 +57,22 @@ def link_copies(rows,cutoff=CUTOFF):
         for _,j in gi[bisect_left(times,s.start-2000):bisect_right(times,s.start+2000)]:
             if copy_kind(rows[j],s) is None:continue
             by_s[i].append(j);by_g[j].append(i)
-    return {i:js[0] for i,js in by_s.items() if len(js)==1 and len(by_g[js[0]])==1 and compatible(rows[js[0]],rows[i])}
+    links={i:js[0] for i,js in by_s.items() if len(js)==1 and len(by_g[js[0]])==1 and compatible(rows[js[0]],rows[i])}
+    # Additional evidence is opt-in with the same cutoff. A competing native ID
+    # of ANY sport within ten seconds blocks these new, more permissive links.
+    si=sorted((r.start,i) for i,r in enumerate(rows) if r.source=="STRAVA" and r.start>=cutoff)
+    stimes=[t for t,_ in si]
+    used=set(links.values())
+    for t,i in si:
+        if i in links:continue
+        near=gi[bisect_left(times,t-10000):bisect_right(times,t+10000)]
+        if len(near)!=1:continue
+        u,j=near[0]
+        if j in used:continue
+        if len(si[bisect_left(stimes,u-10000):bisect_right(stimes,u+10000)])!=1:continue
+        if corroborated_copy(rows[j],rows[i]):
+            links[i]=j;used.add(j)
+    return links
 def reconcile_with_provenance(rows,general,core,cutoff=CUTOFF):
     links=link_copies(rows,cutoff) if general else {}
     while links:

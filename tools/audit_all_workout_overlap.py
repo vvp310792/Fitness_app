@@ -24,6 +24,9 @@ class Session:
     day:str
     set_marks:tuple[int,...]=()
     raw_sport:str|None=None
+    copy_calories:float|None=None
+    copy_avg_hr:float|None=None
+    copy_max_hr:float|None=None
     @property
     def channel(self):
         return self.source+(":"+self.origin if self.source=="GOOGLE_HEALTH" and self.origin else "")
@@ -92,6 +95,9 @@ def load(connection=None):
     for key,day,p in read("garmin","activity"):
         r=p
         add("GARMIN",key,garmin_sport((r.get("activityType") or {}).get("typeKey") or ""),ts(r.get("startTimeGMT")) or r.get("beginTimestamp"),r.get("elapsedDuration"),r.get("duration"),r.get("distance"),None,day)
+        native_key="GARMIN:"+str(key)
+        if native_key in rows:
+            rows[native_key]=replace(rows[native_key],copy_calories=num(r.get("calories")),copy_avg_hr=num(r.get("averageHR")),copy_max_hr=num(r.get("maxHR")))
     for key,day,p in read("gymup","training"):
         r=p;t=r.get("training") or {};a=t.get("startDateTime");b=t.get("finishDateTime")
         performed=[x for w in (r.get("workouts") or []) for x in (w.get("sets") or []) if (x.get("reps") or 0)>0 and isinstance(x.get("weight"),(float,int)) and x["weight"]>=0]
