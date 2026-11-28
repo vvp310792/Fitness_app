@@ -30,7 +30,7 @@ class CanonicalWorkoutStoreTest {
         val input=archive()
         try {
             run {
-                val db=Room.databaseBuilder(context,CanonicalWorkoutDatabase::class.java,name).addMigrations(CanonicalWorkoutDatabase.MIGRATION_1_2).build()
+                val db=Room.databaseBuilder(context,CanonicalWorkoutDatabase::class.java,name).addMigrations(CanonicalWorkoutDatabase.MIGRATION_1_2,CanonicalWorkoutDatabase.MIGRATION_2_3).build()
                 try {
                 val result=CanonicalWorkoutStore(db).reconcile("owner-a",input)
                 assertTrue(result.canonicalStored)
@@ -41,7 +41,7 @@ class CanonicalWorkoutStoreTest {
                 } finally { db.close() }
             }
             run {
-                val db=Room.databaseBuilder(context,CanonicalWorkoutDatabase::class.java,name).addMigrations(CanonicalWorkoutDatabase.MIGRATION_1_2).build()
+                val db=Room.databaseBuilder(context,CanonicalWorkoutDatabase::class.java,name).addMigrations(CanonicalWorkoutDatabase.MIGRATION_1_2,CanonicalWorkoutDatabase.MIGRATION_2_3).build()
                 try {
                 val dao=db.canonical()
                 assertEquals(1,dao.episodes("owner-a").size)
@@ -59,6 +59,20 @@ class CanonicalWorkoutStoreTest {
             }
         } finally { context.deleteDatabase(name) }
     }
+    @Test fun reviewedResolutionSurvivesCanonicalReadback()=runBlocking(Dispatchers.IO) {
+        val context=ApplicationProvider.getApplicationContext<Context>()
+        val db=Room.inMemoryDatabaseBuilder(context,CanonicalWorkoutDatabase::class.java).build()
+        try {
+            val original=archive()
+            val episode=original.episodes.single().copy(resolution=ReviewedResolution("synthetic","probable_same_event",true))
+            val reviewed=original.copy(episodes=listOf(episode),reviewedPolicyAvailable=true,reviewedPolicyApplied=1)
+            val stored=CanonicalWorkoutStore(db).reconcile("owner",reviewed)
+            assertTrue(stored.canonicalStored)
+            assertTrue(stored.episodes.single().probable)
+            assertEquals(episode.resolution?.persistedJson(),db.canonical().episodes("owner").single().resolutionJson)
+            assertEquals(3,db.canonical().members("owner").size)
+        } finally { db.close() }
+    }
     @Test fun migrateV1AndPersistFragmentRoleWithoutLosingOriginalRows()=runBlocking(Dispatchers.IO) {
         val context=ApplicationProvider.getApplicationContext<Context>()
         val name="canonical-migration-"+UUID.randomUUID()+".db"
@@ -73,9 +87,10 @@ class CanonicalWorkoutStoreTest {
                 old.version=1
             }
             val db=Room.databaseBuilder(context,CanonicalWorkoutDatabase::class.java,name)
-                .addMigrations(CanonicalWorkoutDatabase.MIGRATION_1_2).build()
+                .addMigrations(CanonicalWorkoutDatabase.MIGRATION_1_2,CanonicalWorkoutDatabase.MIGRATION_2_3).build()
             try {
                 assertFalse(db.canonical().members("other").single().isFragment)
+                assertEquals("",db.canonical().episodes("other").single().resolutionJson)
                 val start=1700000000000L
                 val a=FitnessSession(FitnessSource.GARMIN,"watch",FitnessSport.STRENGTH,start,1800,recordedSeconds=1800)
                 val f=FitnessSession(FitnessSource.GOOGLE_HEALTH,"fit",FitnessSport.STRENGTH,start+480000,900,
