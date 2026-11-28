@@ -11,6 +11,12 @@ enum class TrendSmoothing(val label:String,val description:String) {
 }
 val LocalTrendSmoothing=staticCompositionLocalOf{TrendSmoothing.MEDIAN}
 
+/** Weekly distance is an additive volume, not a typical individual reading.
+ * Zero-volume weeks are retained in its mean. A global median preference must
+ * not make a seasonal sport disappear from the volume chart. */
+internal fun effectiveTrendSmoothing(preference:TrendSmoothing,weeklyVolume:Boolean):TrendSmoothing =
+    if(weeklyVolume)TrendSmoothing.MEAN else preference
+
 /** Centred calendar-day window; no zero-fill, no synthetic dates. At least
  * minPoints actual observations are needed, and even samples use the midpoint
  * of the two middle values. Maintain a sorted sliding window for long histories. */

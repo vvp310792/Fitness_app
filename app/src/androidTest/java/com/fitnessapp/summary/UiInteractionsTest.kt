@@ -65,6 +65,32 @@ class UiInteractionsTest {
         shot("mean_12y_dark.png")
     }
 
+    @Test fun weeklyCyclingVolumeShowsMeanEvenInMedianMode() {
+        val weeks=(0 until 599).map { i ->
+            TrendPoint(16000L+7L*i,if(i%4==0 || i in 200..202) 50f+(i%7)*10f else 0f)
+        }
+        compose.setContent {
+            FitnessSummaryTheme(darkTheme=true) {
+                androidx.compose.material3.Surface(color=MaterialTheme.colorScheme.surface) {
+                    CompositionLocalProvider(LocalTrendSmoothing provides TrendSmoothing.MEDIAN) {
+                        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                            Text("Велосипед")
+                            TrendChart(weeks,16000L,20186L,Color(0xFF34D399),{v->v.toInt().toString()+" км"},
+                                smoothWindowDays=180,floorAtZero=true,maxGapDays=7,weeklyVolume=true)
+                        }
+                    }
+                }
+            }
+        }
+        compose.onNodeWithText("Столбцы — километры за неделю.",substring=true).assertIsDisplayed()
+        compose.onNodeWithText("скользящее среднее",substring=true).assertIsDisplayed()
+        compose.onNodeWithText("скользящая медиана",substring=true).assertDoesNotExist()
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val dir=File(context.getExternalFilesDir(null),"trend-regression").apply{mkdirs()}
+        val bitmap=compose.onRoot().captureToImage().asAndroidBitmap()
+        File(dir,"weekly_cycling_12y_dark.png").outputStream().use{bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)}
+    }
+
     @Test fun destructiveActionNeedsExplicitConfirmation() {
         val actions=AtomicInteger()
         compose.setContent {

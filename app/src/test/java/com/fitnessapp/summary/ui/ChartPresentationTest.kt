@@ -1,6 +1,7 @@
 package com.fitnessapp.summary.ui
 
 import com.fitnessapp.summary.ui.components.TrendSmoothing
+import com.fitnessapp.summary.ui.components.effectiveTrendSmoothing
 import com.fitnessapp.summary.ui.components.TrendEdge
 import com.fitnessapp.summary.ui.components.rollingMedian
 import com.fitnessapp.summary.ui.components.trendSmoothing
@@ -17,6 +18,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ChartPresentationTest {
+    @Test fun seasonalWeeklyVolumeRemainsVisibleWithMedianPreference() {
+        // 599 calendar weeks, only 153 active: a median can be zero in a
+        // season even though its nonzero weekly distances are significant.
+        val weeks=(0 until 599).map { i ->
+            TrendPoint(7L*i,if(i%4==0 || i in 200..202) 50f else 0f)
+        }
+        assertEquals(153,weeks.count{it.value>0f})
+        val median=trendSmoothing(weeks,180,TrendSmoothing.MEDIAN)
+        assertTrue(median.all{it.value==0f})
+        val mode=effectiveTrendSmoothing(TrendSmoothing.MEDIAN,true)
+        assertEquals(TrendSmoothing.MEAN,mode)
+        val mean=trendSmoothing(weeks,180,mode)
+        assertTrue(mean.all{it.value>0f})
+        assertEquals(LifestyleAnalytics.smoothTrend(weeks,180),mean)
+        assertEquals(TrendSmoothing.MEDIAN,effectiveTrendSmoothing(TrendSmoothing.MEDIAN,false))
+        assertEquals(153,weeks.count{it.value>0f})
+    }
     @Test fun medianResistsOutlierAndMeanRemainsAvailable() {
         val input=listOf(2f,3f,100f,4f,5f).mapIndexed{i,v->TrendPoint(100L+i,v)}
         val median=trendSmoothing(input,8,TrendSmoothing.MEDIAN)

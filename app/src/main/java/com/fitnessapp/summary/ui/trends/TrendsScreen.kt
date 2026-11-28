@@ -314,7 +314,7 @@ fun TrendsScreen(app:FitnessSummaryApp,onSettings:()->Unit={}) {
         item { SectionHeader("Тренды за ${WINDOWS[windowIndex].second}") }
         item {
             Text(
-                text = "Точки — измерения. Яркая линия — "+smoothing.description+" за "+formatDays(smoothWindow)+". Графики без измерений за период скрыты.",
+                text = "Точки — измерения. Яркая линия — "+smoothing.description+" за "+formatDays(smoothWindow)+". Для недельного километража всегда используется среднее, включая нулевые недели. Графики без измерений за период скрыты.",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -832,6 +832,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sportDistanceSection(
                 StatRow("Недель с тренировкой", "${active.size} из ${weeks.size}")
                 TrendChart(
                     points = SportDistanceAnalytics.trend(weeks),
+                    weeklyVolume=true,
                     maxGapDays=7,
                     fromEpochDay = fromEpoch,
                     toEpochDay = toEpoch,

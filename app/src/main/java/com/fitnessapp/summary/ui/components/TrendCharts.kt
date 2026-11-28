@@ -107,11 +107,12 @@ fun TrendChart(
     smoothWindowDays: Int = 0,
     secondary: List<TrendPoint> = emptyList(),
     maxGapDays:Long=1L,
-    secondaryLabel:String="Вторая серия"
+    secondaryLabel:String="Вторая серия",
+    weeklyVolume:Boolean=false
 ) {
     val sorted = points.filter { it.epochDay in fromEpochDay..toEpochDay }.sortedBy { it.epochDay }
     val sortedSecondary = secondary.filter { it.epochDay in fromEpochDay..toEpochDay }.sortedBy { it.epochDay }
-    val smoothing=LocalTrendSmoothing.current
+    val smoothing=effectiveTrendSmoothing(LocalTrendSmoothing.current,weeklyVolume)
     val smoothed=remember(sorted,smoothWindowDays,smoothing) {
         if(smoothWindowDays>=2)trendSmoothing(sorted,smoothWindowDays,smoothing) else emptyList()
     }
@@ -149,7 +150,7 @@ fun TrendChart(
     var selectedDay by remember(sorted,sortedSecondary,fromEpochDay,toEpochDay){mutableStateOf<Long?>(null)}
     val selected=sorted.firstOrNull{it.epochDay==selectedDay} ?: latest
     val selectedSecondary=sortedSecondary.firstOrNull{it.epochDay==selected.epochDay}
-    val spoken="График. Минимум "+formatValue(values.min())+", максимум "+formatValue(values.max())+
+    val spoken=(if(weeklyVolume)"Недельный объём. " else "График. ")+"Минимум "+formatValue(values.min())+", максимум "+formatValue(values.max())+
         ", последнее измерение "+LocalDate.ofEpochDay(latest.epochDay)+": "+formatValue(latest.value)
 
     // Round values inside the visible range, not the padded edges themselves: an axis
@@ -275,10 +276,21 @@ fun TrendChart(
                     pathEffect=PathEffect.dashPathEffect(floatArrayOf(2.dp.toPx(),5.dp.toPx()))))
             }
 
-            drawSeries(sorted,accent.copy(alpha=if(hasSmooth)0.16f else 0.7f),if(hasSmooth)0.8f else 2f,maxGapDays)
-            sorted.forEach{p->
-                drawCircle(color=accent.copy(alpha=dots.opacity),radius=dots.radiusDp.dp.toPx(),
-                    center=Offset(x(p.epochDay),y(p.value)))
+            if(weeklyVolume) {
+                // One stem per positive weekly total. Never interpolate the raw
+                // weekly totals or hide isolated large training weeks as faint dots.
+                val width=(plotWidth/sorted.size.coerceAtLeast(1)*0.65f).coerceIn(0.8.dp.toPx(),7.dp.toPx())
+                sorted.filter{it.value>0f}.forEach{p->
+                    val px=x(p.epochDay)
+                    drawLine(color=accent.copy(alpha=0.65f),start=Offset(px,y(0f)),end=Offset(px,y(p.value)),strokeWidth=width,cap=StrokeCap.Butt)
+                    drawCircle(color=accent.copy(alpha=0.85f),radius=(width/2f).coerceAtLeast(0.8.dp.toPx()),center=Offset(px,y(p.value)))
+                }
+            } else {
+                drawSeries(sorted,accent.copy(alpha=if(hasSmooth)0.16f else 0.7f),if(hasSmooth)0.8f else 2f,maxGapDays)
+                sorted.forEach{p->
+                    drawCircle(color=accent.copy(alpha=dots.opacity),radius=dots.radiusDp.dp.toPx(),
+                        center=Offset(x(p.epochDay),y(p.value)))
+                }
             }
             if (sortedSecondary.size >= 2) {
                 val path = Path()
@@ -332,12 +344,15 @@ fun TrendChart(
         Text((if(selectedDay==null)"Последнее: " else "Выбрано: ")+LocalDate.ofEpochDay(selected.epochDay)+" · "+formatValue(selected.value),
             style=MaterialTheme.typography.bodyMedium,fontWeight=FontWeight.Bold)
         selectedSecondary?.let{Text(secondaryLabel+": "+formatValue(it.value),style=MaterialTheme.typography.bodySmall)}
-        if(hasSmooth || sortedSecondary.isNotEmpty())Text(buildString {
-            if(hasSmooth)append("Точки — измерения, яркая линия — "+smoothing.description+" ("+smoothWindowDays+" дн.). ")
+        if(weeklyVolume || hasSmooth || sortedSecondary.isNotEmpty())Text(buildString {
+            if(weeklyVolume) {
+                append("Столбцы — километры за неделю. ")
+                if(hasSmooth)append("Яркая линия — скользящее среднее ("+smoothWindowDays+" дн.), включая недели без тренировок. ")
+            } else if(hasSmooth)append("Точки — измерения, яркая линия — "+smoothing.description+" ("+smoothWindowDays+" дн.). ")
             if(hasTrendBridges)append("Точечный мост — разрыв истории, не измерение. ")
             if(sortedSecondary.isNotEmpty())append("Тонкий пунктир — "+secondaryLabel.lowercase()+".")
         },style=MaterialTheme.typography.bodySmall,color=ink)
-        Text(if(hasSmooth)"Нажмите на график для исходного измерения." else "Нажмите на график для значения. Пропуски исходных измерений не заполняются.",
+        Text(if(weeklyVolume)"Нажмите на график для километража выбранной недели." else if(hasSmooth)"Нажмите на график для исходного измерения." else "Нажмите на график для значения. Пропуски исходных измерений не заполняются.",
             style=MaterialTheme.typography.bodySmall,color=ink)
     }
 }
