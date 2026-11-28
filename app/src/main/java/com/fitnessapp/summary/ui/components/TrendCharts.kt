@@ -69,7 +69,9 @@ import kotlin.math.pow
  * the data. With no smoothing possible - too few points to average honestly - the raw
  * line steps back up to full weight rather than leaving a nearly invisible chart.
  *
- * Long gaps are not connected. Sparse series declare their expected cadence.
+ * Raw measurements are interrupted at gaps; the independently smoothed trend
+ * uses its own calendar window and dotted bridges over longer gaps. Raw points
+ * become smaller and fainter on dense histories instead of hiding the trend.
  *
  * **The Y axis is labelled.** Three or four gridlines at round values, drawn in the ink
  * token with the card's own [formatValue], so the numbers on them are in the same units
@@ -105,16 +107,20 @@ fun TrendChart(
     smoothWindowDays: Int = 0,
     secondary: List<TrendPoint> = emptyList(),
     maxGapDays:Long=1L,
-    secondaryLabel:String="Вторая серия"
+    secondaryLabel:String="Вторая серия",
+    weeklyVolume:Boolean=false
 ) {
     val sorted = points.filter { it.epochDay in fromEpochDay..toEpochDay }.sortedBy { it.epochDay }
     val sortedSecondary = secondary.filter { it.epochDay in fromEpochDay..toEpochDay }.sortedBy { it.epochDay }
-    val smoothed = remember(sorted, smoothWindowDays) {
-        if (smoothWindowDays >= 2) LifestyleAnalytics.smoothTrend(sorted, smoothWindowDays) else emptyList()
+    val smoothing=effectiveTrendSmoothing(LocalTrendSmoothing.current,weeklyVolume)
+    val smoothed=remember(sorted,smoothWindowDays,smoothing) {
+        if(smoothWindowDays>=2)trendSmoothing(sorted,smoothWindowDays,smoothing) else emptyList()
     }
+    val trendGap=smoothingGapDays(maxGapDays,smoothWindowDays)
     val hasSmooth = smoothed.size >= 2
     val ink = MaterialTheme.colorScheme.onSurfaceVariant
     val baseline = ink.copy(alpha = 0.25f)
+    val surface=MaterialTheme.colorScheme.surface
 
     if (sorted.isEmpty()) {
         Text(
@@ -144,7 +150,7 @@ fun TrendChart(
     var selectedDay by remember(sorted,sortedSecondary,fromEpochDay,toEpochDay){mutableStateOf<Long?>(null)}
     val selected=sorted.firstOrNull{it.epochDay==selectedDay} ?: latest
     val selectedSecondary=sortedSecondary.firstOrNull{it.epochDay==selected.epochDay}
-    val spoken="График. Минимум "+formatValue(values.min())+", максимум "+formatValue(values.max())+
+    val spoken=(if(weeklyVolume)"Недельный объём. " else "График. ")+"Минимум "+formatValue(values.min())+", максимум "+formatValue(values.max())+
         ", последнее измерение "+LocalDate.ofEpochDay(latest.epochDay)+": "+formatValue(latest.value)
 
     // Round values inside the visible range, not the padded edges themselves: an axis
@@ -156,8 +162,9 @@ fun TrendChart(
     // labels are formatted by the caller and can be "9" or "7 ч 10 мин".
     val gutterPx = ticks.maxOfOrNull { measurer.measure(formatValue(it), tickStyle).size.width }?.plus(10) ?: 0
 
-    // 3dp dots need ~6dp of room each; past that they merge into a bar and stop being dots.
-    val showDots = !hasSmooth || sorted.size <= 100
+    // Long histories keep individual observations as a faint texture.
+    val dots=trendDotStyle(sorted.size,hasSmooth)
+    val hasTrendBridges=hasSmooth && smoothed.zipWithNext().any{(a,b)->trendEdge(a.epochDay,b.epochDay,trendGap,true)==TrendEdge.BRIDGE}
     // Only worth marking year boundaries once a span actually crosses more than one.
     val yearMarks = if (spanDays > 400) {
         val first = LocalDate.ofEpochDay(fromEpochDay).year + 1
@@ -244,28 +251,45 @@ fun TrendChart(
             }
             drawLine(color = baseline, start = Offset(gutter, y(yMin)), end = Offset(w, y(yMin)), strokeWidth = 1.dp.toPx())
 
-            /** One series, drawn as one unbroken line - see the note on continuity above. */
-            fun drawSeries(series: List<TrendPoint>, color: Color, widthDp: Float) {
-                if (series.size < 2) return
-                val path = Path()
-                series.forEachIndexed { index, p ->
-                    val px = x(p.epochDay)
-                    val py = y(p.value)
-                    if(index==0 || trendHasGap(series[index-1].epochDay,p.epochDay,maxGapDays))path.moveTo(px,py) else path.lineTo(px,py)
+            /** Keep raw and smoothed continuity independent; a bridge is a
+             * visual connection between computed values, never a new value. */
+            fun drawSeries(series:List<TrendPoint>,color:Color,widthDp:Float,gap:Long,bridge:Boolean=false) {
+                if(series.size<2)return
+                val solid=Path()
+                val gaps=Path()
+                val first=series.first()
+                solid.moveTo(x(first.epochDay),y(first.value))
+                series.zipWithNext().forEach{(previous,p)->
+                    val px=x(p.epochDay);val py=y(p.value)
+                    when(trendEdge(previous.epochDay,p.epochDay,gap,bridge)) {
+                        TrendEdge.SOLID->solid.lineTo(px,py)
+                        TrendEdge.BREAK->solid.moveTo(px,py)
+                        TrendEdge.BRIDGE->{
+                            solid.moveTo(px,py)
+                            gaps.moveTo(x(previous.epochDay),y(previous.value))
+                            gaps.lineTo(px,py)
+                        }
+                    }
                 }
-                drawPath(
-                    path = path,
-                    color = color,
-                    style = Stroke(width = widthDp.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
-                )
+                drawPath(solid,color,style=Stroke(width=widthDp.dp.toPx(),cap=StrokeCap.Round,join=StrokeJoin.Round))
+                if(bridge)drawPath(gaps,color,style=Stroke(width=widthDp.dp.toPx(),cap=StrokeCap.Round,
+                    pathEffect=PathEffect.dashPathEffect(floatArrayOf(2.dp.toPx(),5.dp.toPx()))))
             }
 
-            drawSeries(sorted, accent.copy(alpha = if (hasSmooth) 0.3f else 0.7f), if (hasSmooth) 1.5f else 2f)
-            if(showDots || sorted.zipWithNext().any{(a,b)->b.epochDay-a.epochDay>maxGapDays}) {
-                val dotColor = if (hasSmooth) accent.copy(alpha = 0.55f) else accent
-                val dotRadius = if (hasSmooth) 2.5f else 3f
-                sorted.forEach { p ->
-                    drawCircle(color = dotColor, radius = dotRadius.dp.toPx(), center = Offset(x(p.epochDay), y(p.value)))
+            if(weeklyVolume) {
+                // One stem per positive weekly total. Never interpolate the raw
+                // weekly totals or hide isolated large training weeks as faint dots.
+                val width=(plotWidth/sorted.size.coerceAtLeast(1)*0.65f).coerceIn(0.8.dp.toPx(),7.dp.toPx())
+                sorted.filter{it.value>0f}.forEach{p->
+                    val px=x(p.epochDay)
+                    drawLine(color=accent.copy(alpha=0.65f),start=Offset(px,y(0f)),end=Offset(px,y(p.value)),strokeWidth=width,cap=StrokeCap.Butt)
+                    drawCircle(color=accent.copy(alpha=0.85f),radius=(width/2f).coerceAtLeast(0.8.dp.toPx()),center=Offset(px,y(p.value)))
+                }
+            } else {
+                drawSeries(sorted,accent.copy(alpha=if(hasSmooth)0.16f else 0.7f),if(hasSmooth)0.8f else 2f,maxGapDays)
+                sorted.forEach{p->
+                    drawCircle(color=accent.copy(alpha=dots.opacity),radius=dots.radiusDp.dp.toPx(),
+                        center=Offset(x(p.epochDay),y(p.value)))
                 }
             }
             if (sortedSecondary.size >= 2) {
@@ -286,7 +310,12 @@ fun TrendChart(
                     )
                 )
             }
-            drawSeries(smoothed, accent, 2.5f)
+            if(hasSmooth) {
+                // Draw the trend LAST, with a thin background halo, so the
+                // median/mean remains visible above thousands of raw points.
+                drawSeries(smoothed,surface,5.0f,trendGap,true)
+                drawSeries(smoothed,accent,3.0f,trendGap,true)
+            }
             drawCircle(color=accent,radius=5.dp.toPx(),center=Offset(x(latest.epochDay),y(latest.value)))
             if(selectedDay!=null) {
                 val sx=x(selected.epochDay)
@@ -315,11 +344,16 @@ fun TrendChart(
         Text((if(selectedDay==null)"Последнее: " else "Выбрано: ")+LocalDate.ofEpochDay(selected.epochDay)+" · "+formatValue(selected.value),
             style=MaterialTheme.typography.bodyMedium,fontWeight=FontWeight.Bold)
         selectedSecondary?.let{Text(secondaryLabel+": "+formatValue(it.value),style=MaterialTheme.typography.bodySmall)}
-        if(hasSmooth || sortedSecondary.isNotEmpty())Text(buildString {
-            if(hasSmooth)append("Точки — измерения, яркая линия — среднее. ")
-            if(sortedSecondary.isNotEmpty())append("Пунктир — "+secondaryLabel.lowercase()+".")
+        if(weeklyVolume || hasSmooth || sortedSecondary.isNotEmpty())Text(buildString {
+            if(weeklyVolume) {
+                append("Столбцы — километры за неделю. ")
+                if(hasSmooth)append("Яркая линия — скользящее среднее ("+smoothWindowDays+" дн.), включая недели без тренировок. ")
+            } else if(hasSmooth)append("Точки — измерения, яркая линия — "+smoothing.description+" ("+smoothWindowDays+" дн.). ")
+            if(hasTrendBridges)append("Точечный мост — разрыв истории, не измерение. ")
+            if(sortedSecondary.isNotEmpty())append("Тонкий пунктир — "+secondaryLabel.lowercase()+".")
         },style=MaterialTheme.typography.bodySmall,color=ink)
-        Text("Нажмите на график для значения. Интервалы более $maxGapDays дн. не соединяются.",style=MaterialTheme.typography.bodySmall,color=ink)
+        Text(if(weeklyVolume)"Нажмите на график для километража выбранной недели." else if(hasSmooth)"Нажмите на график для исходного измерения." else "Нажмите на график для значения. Пропуски исходных измерений не заполняются.",
+            style=MaterialTheme.typography.bodySmall,color=ink)
     }
 }
 

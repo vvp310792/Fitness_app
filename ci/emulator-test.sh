@@ -23,6 +23,7 @@ adb shell am instrument -w -r \
   | tee "$OUT/instrument.txt"
 
 adb pull /sdcard/Android/data/com.fitnessapp.summary/files/shots "$OUT/" || true
+adb pull /sdcard/Android/data/com.fitnessapp.summary/files/trend-regression "$OUT/" || true
 
 # Снимки прокрутки, побайтно равные базовому, значат «свайп ушёл мимо» (так было с жестом
 # по onRoot — он попадал в нижнюю навигацию). Прогон не валим: экраны всё равно отрисованы,
