@@ -26,12 +26,18 @@ data class ArchiveObservation(
 data class ArchiveEpisode(
     val episode: SessionEpisode,
     val primary: ArchiveObservation,
-    val observations: List<ArchiveObservation>
+    val observations: List<ArchiveObservation>,
+    val resolution: ReviewedResolution? = null
 ) {
+    val countable get()=resolution?.countable ?: true
+    val startMillis get()=resolution?.composite?.startMillis ?: primary.session.startMillis
+    val elapsedSeconds get()=resolution?.composite?.elapsedSeconds ?: primary.session.elapsedSeconds
+    val probable get()=resolution?.probable == true
     // Partial Google Fit records can add provenance, but their metrics describe
     // only a sub-interval and must never substitute for whole-session metrics.
     private val wholeObservations get() = observations.filterNot { it.session.key in episode.fragmentKeys }
     val durationSeconds: Long? get() {
+        resolution?.composite?.timerSeconds?.let { return it }
         val longJournal=observations.any {
             it.session.source==FitnessSource.GYMUP && (it.session.elapsedSeconds ?: 0)>4*3600L
         }
@@ -51,7 +57,8 @@ data class ArchiveEpisode(
             }
         }
     }
-    val distanceMeters: Double? get() = wholeObservations.sortedBy { sourceOrder(it.session.source) }
+    val distanceMeters: Double? get() = resolution?.distanceOverride ?: wholeObservations
+        .sortedWith(compareBy<ArchiveObservation>{ sourceOrder(it.session.source) }.thenBy{it.session.key!=primary.session.key})
         .firstNotNullOfOrNull { it.session.distanceMeters }
     val averageHr: Int? get() = wholeObservations.sortedBy { sourceOrder(it.session.source) }
         .firstNotNullOfOrNull { it.averageHr }
@@ -73,7 +80,10 @@ data class ArchiveResult(
     val exactIdentityMatches: Int = 0,
     val confirmedDuplicateObservations: Int = 0,
     /** True only after canonical episode/membership readback from Room. */
-    val canonicalStored: Boolean = false
+    val canonicalStored: Boolean = false,
+    val reviewedPolicyAvailable:Boolean = false,
+    val reviewedPolicyApplied:Int = 0,
+    val reviewedPolicySkipped:Int = 0
 )
 
 private fun sourceOrder(s: FitnessSource): Int = when (s) {
@@ -123,7 +133,7 @@ object LocalWorkoutArchive {
      * visible and are excluded from confirmed-only sums, never silently erased. */
     fun build(health: List<Workout>,garmin: List<GarminActivity>,strava: List<StravaActivity>,strength: List<StrengthSet>,
         server: ServerWorkoutProjection = ServerWorkoutProjection(),
-        garminStravaCutoffMillis: Long? = null): ArchiveResult {
+        garminStravaCutoffMillis: Long? = null,reviewedPlan:ReviewedWorkoutPlan?=null): ArchiveResult {
         val rows = mutableListOf<ArchiveObservation>()
         var rejected = 0
         for (r in health) {
@@ -204,16 +214,23 @@ object LocalWorkoutArchive {
             o.copy(session=o.session.copy(recordedSeconds=o.trainingSeconds))
         }
         // Enable provenance only when the caller explicitly supplies the owner's cutoff.
-        val episodes=CanonicalFitness.episodes(enriched.values.map { it.session }, garminStravaCutoffMillis).flatMap { e ->
+        val baseline=CanonicalFitness.episodes(enriched.values.map { it.session }, garminStravaCutoffMillis).flatMap { e ->
             // A contradictory identity must not be treated as a confirmed session,
             // including when a different source otherwise matches it.
             val resolved = if (e.observations.any { it.key in conflictedKeys }) e.observations.map { r ->
                 SessionEpisode(r,listOf(r),true,(e.possibleDuplicateKeys+e.observations.filter { it.key!=r.key }.map { it.key }).distinct())
             } else listOf(e)
-            resolved.map { v -> ArchiveEpisode(v,enriched.getValue(v.primary.key),v.observations.map { enriched.getValue(it.key) }) }
+            resolved
+        }
+        val reviewed=reviewedPlan?.apply(baseline,enriched,conflictedKeys)
+        val episodes=(reviewed?.episodes ?: baseline).map { v ->
+            ArchiveEpisode(v,enriched.getValue(v.primary.key),v.observations.map { enriched.getValue(it.key) },
+                reviewed?.resolutions?.get(v.primary.key))
         }
         val merged=episodes.sumOf { it.observations.size-1 }
-        return ArchiveResult(episodes.sortedByDescending { it.primary.session.startMillis },rejected,
-            server.rawCount,server.observations.size,server.rejected,server.emptyGymSessions,identityConflicts,identityMatches,merged)
+        return ArchiveResult(episodes.sortedByDescending { it.startMillis },rejected,
+            server.rawCount,server.observations.size,server.rejected,server.emptyGymSessions,identityConflicts,identityMatches,merged,
+            reviewedPolicyAvailable=reviewedPlan!=null,reviewedPolicyApplied=reviewed?.applied?:0,
+            reviewedPolicySkipped=reviewed?.skipped?:0)
     }
 }

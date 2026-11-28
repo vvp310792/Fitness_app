@@ -36,7 +36,8 @@ data class CanonicalWorkoutRow(
     val averageHr:Int?,
     val maxHr:Int?,
     val ambiguous:Boolean,
-    val possibleKeysJson:String
+    val possibleKeysJson:String,
+    @ColumnInfo(defaultValue="''") val resolutionJson:String=""
 )
 
 @Entity(tableName="canonical_workout_members",primaryKeys=["ownerKey","observationKey"],
@@ -65,7 +66,7 @@ interface CanonicalWorkoutDao {
     suspend fun insertMembers(rows:List<CanonicalWorkoutMember>)
 }
 
-@Database(entities=[CanonicalWorkoutRow::class,CanonicalWorkoutMember::class],version=2,exportSchema=false)
+@Database(entities=[CanonicalWorkoutRow::class,CanonicalWorkoutMember::class],version=3,exportSchema=false)
 abstract class CanonicalWorkoutDatabase:RoomDatabase() {
     abstract fun canonical():CanonicalWorkoutDao
     companion object {
@@ -75,10 +76,15 @@ abstract class CanonicalWorkoutDatabase:RoomDatabase() {
                 db.execSQL("ALTER TABLE canonical_workout_members ADD COLUMN isFragment INTEGER NOT NULL DEFAULT 0")
             }
         }
+        val MIGRATION_2_3=object:Migration(2,3) {
+            override fun migrate(db:SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE canonical_workouts ADD COLUMN resolutionJson TEXT NOT NULL DEFAULT ''")
+            }
+        }
         @Volatile private var instance:CanonicalWorkoutDatabase?=null
         fun get(context:Context):CanonicalWorkoutDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext,CanonicalWorkoutDatabase::class.java,NAME)
-                .addMigrations(MIGRATION_1_2).build().also { instance=it }
+                .addMigrations(MIGRATION_1_2,MIGRATION_2_3).build().also { instance=it }
         }
     }
 }
@@ -95,13 +101,15 @@ class CanonicalWorkoutStore(private val db:CanonicalWorkoutDatabase) {
     suspend fun reconcile(ownerKey:String,archive:ArchiveResult):ArchiveResult=db.withTransaction {
         require(ownerKey.isNotBlank())
         val episodes=archive.episodes
+        val resolutionByKey=episodes.associate{it.episode.primary.key to it.resolution}
         val observations=episodes.flatMap { it.observations }
         val byKey=observations.associateBy { it.session.key }
         require(byKey.size==observations.size) { "multiple canonical memberships" }
         val rows=episodes.map { e ->
-            CanonicalWorkoutRow(ownerKey,e.episode.primary.key,e.primary.day,e.primary.session.startMillis,
+            CanonicalWorkoutRow(ownerKey,e.episode.primary.key,e.primary.day,e.startMillis,
                 e.primary.session.sport.name,e.primary.title,e.durationSeconds,e.distanceMeters,e.averageHr,e.maxHr,
-                e.episode.ambiguous,JSONArray(e.episode.possibleDuplicateKeys.sorted()).toString())
+                e.episode.ambiguous,JSONArray(e.episode.possibleDuplicateKeys.sorted()).toString(),
+                e.resolution?.persistedJson().orEmpty())
         }.sortedWith(compareByDescending<CanonicalWorkoutRow> { it.startMillis }.thenBy { it.episodeKey })
         val members=episodes.flatMap { e ->
             require(e.episode.primary.key !in e.episode.fragmentKeys)
@@ -127,7 +135,9 @@ class CanonicalWorkoutStore(private val db:CanonicalWorkoutDatabase) {
             require(items.any { it.session.key==primary.session.key })
             val related=JSONArray(row.possibleKeysJson).let { a -> (0 until a.length()).map { a.getString(it) } }
             val fragments=grouped.getValue(row.episodeKey).filter { it.isFragment }.map { it.observationKey }.sorted()
-            ArchiveEpisode(SessionEpisode(primary.session,items.map { it.session },row.ambiguous,related,fragments),primary,items)
+            val resolution=resolutionByKey[row.episodeKey]
+            require(row.resolutionJson==resolution?.persistedJson().orEmpty())
+            ArchiveEpisode(SessionEpisode(primary.session,items.map { it.session },row.ambiguous,related,fragments),primary,items,resolution)
         }
         require(result.sumOf { it.observations.size }==byKey.size)
         archive.copy(episodes=result,canonicalStored=true)

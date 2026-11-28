@@ -6,7 +6,7 @@ import kotlin.math.roundToInt
  * a merged workout: every underlying canonical episode remains accessible. */
 data class WorkoutDisplayGroup(val members: List<ArchiveEpisode>, val requiresReview: Boolean) {
     init { require(members.isNotEmpty()) }
-    val latest = members.maxWith(compareBy<ArchiveEpisode> { it.primary.session.startMillis }.thenBy { it.episode.primary.key })
+    val latest = members.maxWith(compareBy<ArchiveEpisode> { it.startMillis }.thenBy { it.episode.primary.key })
     val day get() = latest.primary.day
     val key get() = (if(requiresReview) "review:" else "workout:") + members.minOf { it.episode.primary.key }
     val observationCount get() = members.sumOf { it.observations.size }
@@ -17,13 +17,16 @@ data class WorkoutDisplayGroup(val members: List<ArchiveEpisode>, val requiresRe
 data class WorkoutPeriod(
     val episodes: List<ArchiveEpisode>
 ) {
-    val confirmed = episodes.filterNot { it.episode.ambiguous }
-    val ambiguousCount = episodes.size-confirmed.size
+    val countable = episodes.filter { it.countable }
+    val confirmed = countable.filterNot { it.episode.ambiguous }
+    val probableCount = confirmed.count { it.probable }
+    val shortRecordCount = episodes.size-countable.size
+    val ambiguousCount = countable.size-confirmed.size
     // Group only unresolved candidates present in the selected view. Possible
     // links never merge source records or alter confirmed totals. A link to a
     // different period/filter remains visible in the episode details.
     val displayGroups:List<WorkoutDisplayGroup> by lazy {
-        val pending=episodes.filter { it.episode.ambiguous }
+        val pending=countable.filter { it.episode.ambiguous }
         val index=mutableMapOf<String,Int>()
         pending.forEachIndexed { i,e -> e.observations.forEach { index[it.session.key]=i } }
         val adj=Array(pending.size) { mutableSetOf<Int>() }
@@ -43,13 +46,14 @@ data class WorkoutPeriod(
                 adj[j].forEach { k -> if(!visited[k]){visited[k]=true;todo.add(k)} }
             }
             groups.add(WorkoutDisplayGroup(members.sortedWith(compareByDescending<ArchiveEpisode> {
-                it.primary.session.startMillis
+                it.startMillis
             }.thenBy { it.episode.primary.key }),true))
         }
         groups.addAll(confirmed.map { WorkoutDisplayGroup(listOf(it),false) })
+        groups.addAll(episodes.filterNot { it.countable }.map { WorkoutDisplayGroup(listOf(it),false) })
         val accounted=groups.flatMap { it.members }.map { it.episode.primary.key }
         require(accounted.size==episodes.size && accounted.toSet()==episodes.map { it.episode.primary.key }.toSet())
-        groups.sortedWith(compareByDescending<WorkoutDisplayGroup> { it.latest.primary.session.startMillis }.thenBy { it.key })
+        groups.sortedWith(compareByDescending<WorkoutDisplayGroup> { it.latest.startMillis }.thenBy { it.key })
     }
     val reviewGroupCount get() = displayGroups.count { it.requiresReview }
     val reviewObservationCount get() = displayGroups.filter { it.requiresReview }.sumOf { it.observationCount }
@@ -68,6 +72,7 @@ data class WorkoutPeriod(
         g.requiresReview && g.members.any { distanceSession(it)!=null }
     }
     private fun distanceSession(row:ArchiveEpisode):SportSession? {
+        if(!row.countable)return null
         val sport=when(row.primary.session.sport) {
             FitnessSport.RUN -> DistanceSport.RUN
             FitnessSport.CYCLE -> DistanceSport.BIKE
@@ -75,7 +80,7 @@ data class WorkoutPeriod(
             else -> null
         } ?: return null
         val meters=row.distanceMeters?.takeIf { it>0 && it<=Int.MAX_VALUE }?.roundToInt() ?: return null
-        return SportSession(sport,row.primary.day,row.primary.session.startMillis,meters)
+        return SportSession(sport,row.primary.day,row.startMillis,meters)
     }
     private fun distanceRank(source:FitnessSource):Int = when(source) {
         FitnessSource.GARMIN -> 0
@@ -92,7 +97,7 @@ data class WorkoutPeriod(
         measured.groupBy { it.second.sport }.values.map { candidates ->
             candidates.minWith(compareBy<Pair<ArchiveEpisode,SportSession>> {
                 distanceRank(it.first.primary.session.source)
-            }.thenBy { it.first.primary.session.startMillis }.thenBy { it.first.episode.primary.key }).second
+            }.thenBy { it.first.startMillis }.thenBy { it.first.episode.primary.key }).second
         }
     }.sortedBy { it.startTimeMillis }
     fun intensitySessions():List<IntensitySession> = confirmed.mapNotNull { row ->
@@ -108,7 +113,7 @@ data class WorkoutPeriod(
             else->"other"
         }
         fun hr(v:Int?)=v?.takeIf { it in 20..250 } ?: 0
-        IntensitySession(row.primary.day,row.primary.session.startMillis,sport,minutes,hr(row.averageHr),hr(row.maxHr),row.garmin?.zoneSeconds)
+        IntensitySession(row.primary.day,row.startMillis,sport,minutes,hr(row.averageHr),hr(row.maxHr),row.garmin?.zoneSeconds)
     }
     companion object {
         fun between(archive:ArchiveResult?,from:Long,through:Long):WorkoutPeriod =
