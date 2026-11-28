@@ -108,13 +108,15 @@ class UnifiedFitnessRead(private val app: FitnessSummaryApp) {
                     VerifiedServerRow(it.source,it.kind,it.nativeId,it.day,it.rowJson)
                 })
             }
+            val remoteWithReview=combine(remote,ReviewedWorkoutPolicyGateway.observe(uid)){server,review->server to review}
             combine(db.workoutDao().observeAll(),
                 db.garminActivityDao().observeRange(Long.MIN_VALUE,Long.MAX_VALUE),
                 db.stravaActivityDao().observeRange(Long.MIN_VALUE,Long.MAX_VALUE),
                 db.strengthSetDao().observeRange(Long.MIN_VALUE,Long.MAX_VALUE),
-                remote) { h,g,s,w,server ->
+                remoteWithReview) { h,g,s,w,remoteData ->
+                val (server,review)=remoteData
                 // Owner confirmed post-2021-10-27 Strava is a Garmin export. Keep unmatched fallback.
-                LocalWorkoutArchive.build(h,g,s,w,server,garminStravaCutoffMillis=1635267600000L)
+                LocalWorkoutArchive.build(h,g,s,w,server,garminStravaCutoffMillis=1635267600000L,reviewedPlan=review)
             }.filter { currentArchiveOwner()==uid }.map { archive ->
                 val stored=try {
                     canonicalStore.reconcile(uid?.let { "firebase:$it" } ?: "local",archive)

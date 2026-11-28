@@ -139,7 +139,11 @@ fun WorkoutsScreen(app: FitnessSummaryApp) {
                         StatRow("Распознано с ПК",formatCount(server.serverMappedCount))
                         Text("Сверка всего архива",style=MaterialTheme.typography.titleSmall)
                         StatRow("Совпадений ID",formatCount(server.exactIdentityMatches))
-                        StatRow("Объединено копий между источниками",formatCount(server.confirmedDuplicateObservations))
+                        StatRow("Объединено исходных наблюдений",formatCount(server.confirmedDuplicateObservations))
+                        if(server.reviewedPolicyAvailable) {
+                            StatRow("Решений сверки с ПК применено",formatCount(server.reviewedPolicyApplied))
+                            if(server.reviewedPolicySkipped>0) Text("Не применено: ${server.reviewedPolicySkipped}. Исходные данные отличаются или ещё не загружены.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error)
+                        }
                         if(server.serverEmptyGymSessions>0) Text("Пустые планы GymUp: ${server.serverEmptyGymSessions}. Не считаются тренировками.",style=MaterialTheme.typography.bodySmall)
                         if(server.serverRejected>0 || server.serverIdentityConflicts>0) Text(
                             "Не распознано: ${server.serverRejected}; конфликтов ID: ${server.serverIdentityConflicts}. Исходники сохранены.",
@@ -168,7 +172,9 @@ fun WorkoutsScreen(app: FitnessSummaryApp) {
 /** Same confirmed totals for Day, Week, Trends and Workouts. */
 @Composable
 fun WorkoutTotals(period:WorkoutPeriod) {
-    StatRow("Однозначных занятий",formatCount(period.confirmed.size))
+    StatRow("Учтено занятий",formatCount(period.confirmed.size))
+    if(period.probableCount>0) StatRow("Из них вероятные объединения",formatCount(period.probableCount))
+    if(period.shortRecordCount>0) StatRow("Коротких записей вне статистики",formatCount(period.shortRecordCount))
     StatRow("Учтено исходных наблюдений",formatCount(period.accountedObservationCount))
     if(period.ambiguousCount>0) {
         StatRow("Групп для сверки",formatCount(period.reviewGroupCount))
@@ -176,12 +182,12 @@ fun WorkoutTotals(period:WorkoutPeriod) {
         StatRow("Наблюдений в этих группах",formatCount(period.reviewObservationCount))
     }
     StatRow("Записанное время",if(period.knownDurationCount==0) "Нет данных" else secondsLabel(period.durationSeconds))
-    Text("Длительность известна для ${period.knownDurationCount} из ${period.confirmed.size} однозначных занятий.",
+    Text("Длительность известна для ${period.knownDurationCount} из ${period.confirmed.size} учтённых занятий.",
         style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
     StatRow("Дистанция",if(period.knownDistanceCount==0) "Нет данных" else "${formatDecimal((period.distanceMeters/1000).toFloat())} км")
-    Text("Дистанция известна для ${period.knownDistanceCount} из ${period.confirmed.size} однозначных занятий.",
+    Text("Дистанция известна для ${period.knownDistanceCount} из ${period.confirmed.size} учтённых занятий.",
         style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-    if(period.ambiguousCount>0) Text("Подтверждённые суммы не включают группы с неопределённым числом занятий. Все кандидаты и их показатели доступны для сверки; их время и дистанция не складываются.",
+    if(period.ambiguousCount>0) Text("Суммы не включают группы с неопределённым числом занятий. Все кандидаты и их показатели доступны для сверки; их время и дистанция не складываются.",
         style=MaterialTheme.typography.bodySmall)
 }
 
@@ -200,7 +206,7 @@ fun WorkoutGroupCard(group: WorkoutDisplayGroup, showDate: Boolean = false) {
             Text("${group.members.size} эпизодов-кандидатов · ${group.observationCount} наблюдений",
                 style=MaterialTheme.typography.bodySmall)
             Text(group.members.joinToString(" · ") {
-                formatDayMonth(LocalDate.ofEpochDay(it.primary.day))+" "+formatTime(it.primary.session.startMillis)
+                formatDayMonth(LocalDate.ofEpochDay(it.primary.day))+" "+formatTime(it.startMillis)
             },style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             Text("Не подтверждено, что это одно занятие. Исходные показатели сохранены.",
                 color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall)
@@ -221,7 +227,7 @@ fun ArchiveCard(row: ArchiveEpisode, showDate: Boolean = false) {
         Column(Modifier.padding(14.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
             Text(row.primary.title,style=MaterialTheme.typography.titleMedium)
             Text((if(showDate) formatDayMonth(LocalDate.ofEpochDay(row.primary.day))+" · " else "")+
-                formatTime(row.primary.session.startMillis)+" · "+row.primary.session.sport.label(),
+                formatTime(row.startMillis)+" · "+row.primary.session.sport.label(),
                 style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
             FlowRow(horizontalArrangement=Arrangement.spacedBy(12.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
                 row.durationSeconds?.let { Text(secondsLabel(it)) }
@@ -233,7 +239,10 @@ fun ArchiveCard(row: ArchiveEpisode, showDate: Boolean = false) {
                 style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
             if(row.episode.fragmentKeys.isNotEmpty()) Text("Вложенные записи: "+row.episode.fragmentKeys.size,
                 style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
-            if(row.episode.ambiguous) Text("Возможное совпадение с другой записью",style=MaterialTheme.typography.labelMedium,
+            if(!row.countable) Text("Короткая запись · не входит в статистику тренировок",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            else if(row.probable) Text("Вероятное объединение · решение сверки ПК",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.primary)
+            else if(row.resolution?.composite!=null) Text("Составное занятие · последовательные измеренные интервалы",style=MaterialTheme.typography.labelMedium)
+            if(row.countable && row.episode.ambiguous) Text("Возможное совпадение с другой записью",style=MaterialTheme.typography.labelMedium,
                 color=MaterialTheme.colorScheme.error)
             Text(if(expanded) "Свернуть" else "Подробнее",style=MaterialTheme.typography.labelLarge,
                 color=MaterialTheme.colorScheme.primary)
@@ -257,7 +266,7 @@ fun ArchiveCard(row: ArchiveEpisode, showDate: Boolean = false) {
                             style=MaterialTheme.typography.bodyMedium)
                     }
                 }
-                if(row.episode.ambiguous) Text("Совпадений для проверки: ${row.episode.possibleDuplicateKeys.size}. Записи не объединены.",
+                if(row.countable && row.episode.ambiguous) Text("Совпадений для проверки: ${row.episode.possibleDuplicateKeys.size}. Записи не объединены.",
                     style=MaterialTheme.typography.bodySmall)
                 if(row.durationSeconds==null) Text("Длительность не записана",style=MaterialTheme.typography.bodySmall)
             }
