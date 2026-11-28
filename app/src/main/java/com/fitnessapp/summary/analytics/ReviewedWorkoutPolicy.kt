@@ -129,7 +129,7 @@ class ReviewedWorkoutPlan private constructor(private val days:Map<Long,List<Obs
             if(parts.flatMap{it.observations}.map{it.key}.toSet()!=e.members)continue
             val current=e.members.map{observations.getValue(it).session}
             val resolution=e.resolution
-            if(!resolution.countable && (parts.size!=1 || current.any { s ->
+            if(!resolution.countable && (current.any { s ->
                     s.source==FitnessSource.GYMUP || (s.elapsedSeconds?:0)>20 || (s.recordedSeconds?:0)>20 ||
                     (s.distanceMeters?:0.0)>5.0 || (s.copyCalories?:0.0)>1.0 }))continue
             val composite=resolution.composite
