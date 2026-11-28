@@ -1,5 +1,8 @@
 package com.fitnessapp.summary.ui.trends
 
+import androidx.compose.runtime.CompositionLocalProvider
+import com.fitnessapp.summary.ui.components.TrendSmoothing
+import com.fitnessapp.summary.ui.components.LocalTrendSmoothing
 import com.fitnessapp.summary.ui.components.readScreen
 import com.fitnessapp.summary.ui.components.ReadStatus
 import com.fitnessapp.summary.ui.components.rememberCurrentDate
@@ -123,6 +126,8 @@ fun TrendsScreen(app:FitnessSummaryApp,onSettings:()->Unit={}) {
     val today=rememberCurrentDate()
     var windowIndex by rememberSaveable{mutableIntStateOf(0)}
     var category by rememberSaveable{mutableStateOf("all")}
+    var smoothingName by rememberSaveable{mutableStateOf(TrendSmoothing.MEDIAN.name)}
+    val smoothing=TrendSmoothing.entries.firstOrNull{it.name==smoothingName} ?: TrendSmoothing.MEDIAN
     var periodMenu by remember{mutableStateOf(false)}
     var retry by remember{mutableIntStateOf(0)}
     fun show(name:String)=category=="all" || category==name
@@ -233,6 +238,7 @@ fun TrendsScreen(app:FitnessSummaryApp,onSettings:()->Unit={}) {
     val nothingFromGarmin=mergedDays.isEmpty() && readiness.isEmpty() && hrvs.isEmpty() && bodyDays.isEmpty() && healthRows.isEmpty() && training.isEmpty()
     val reads=listOf(summariesRead,sleepsRead,hrvsRead,readinessRead,trainingRead,bodyDaysRead,archiveRead,healthRowsRead,strengthSetsRead,fitDaysRead)
 
+    CompositionLocalProvider(LocalTrendSmoothing provides smoothing) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -244,6 +250,12 @@ fun TrendsScreen(app:FitnessSummaryApp,onSettings:()->Unit={}) {
                 OutlinedButton(onClick={periodMenu=true},modifier=Modifier.fillMaxWidth()){Text("Период: "+WINDOWS[windowIndex].second+" ▾")}
                 DropdownMenu(expanded=periodMenu,onDismissRequest={periodMenu=false}) {
                     WINDOWS.forEachIndexed { i,(_,label)->DropdownMenuItem(text={Text(label)},onClick={windowIndex=i;periodMenu=false}) }
+                }
+            }
+            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                TrendSmoothing.entries.forEach{mode->
+                    FilterChip(selected=smoothing==mode,onClick={smoothingName=mode.name},
+                        label={Text(mode.label)},modifier=Modifier.weight(1f).heightIn(min=48.dp))
                 }
             }
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)) {
@@ -302,7 +314,7 @@ fun TrendsScreen(app:FitnessSummaryApp,onSettings:()->Unit={}) {
         item { SectionHeader("Тренды за ${WINDOWS[windowIndex].second}") }
         item {
             Text(
-                text = "Точки — измерения. Линия — среднее за ${formatDays(smoothWindow)}. Графики без измерений за период скрыты.",
+                text = "Точки — измерения. Яркая линия — "+smoothing.description+" за "+formatDays(smoothWindow)+". Графики без измерений за период скрыты.",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -445,6 +457,7 @@ fun TrendsScreen(app:FitnessSummaryApp,onSettings:()->Unit={}) {
                 modifier = Modifier.padding(top = 8.dp)
             )
         }
+    }
     }
 }
 
