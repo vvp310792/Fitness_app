@@ -1,5 +1,7 @@
 package com.fitnessapp.summary.ui.settings
 
+import com.fitnessapp.summary.ui.components.ExpandableSection
+import com.fitnessapp.summary.ui.components.ConfirmAction
 import android.content.ActivityNotFoundException
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -91,20 +93,20 @@ fun SettingsScreen(app: FitnessSummaryApp) {
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item { ServerSnapshotPanel(app) }
+        item { Text("Я",style=MaterialTheme.typography.headlineMedium) }
         item { AccountSection(app) }
-        item { UpdateSection() }
-        item { HealthConnectSection(app) }
-        item { SyncSection(app) }
-        item { GarminSection(app) }
-        item { ScaleSection(app) }
-        item { HeartRateZoneSection(app) }
-        item { StrengthSection(app) }
-        item { StravaSection(app) }
-        item { GoogleFitSection(app) }
-        item { LogsSection() }
-        item { ExportSection(app) }
-        item { AboutSection() }
+        item { ServerSnapshotPanel(app) }
+        item(key="connections") { ExpandableSection("Источники данных","Health Connect, Garmin, весы и синхронизация") {
+            HealthConnectSection(app);SyncSection(app);GarminSection(app);ScaleSection(app)
+        } }
+        item(key="history") { ExpandableSection("Импорт истории","GymUp, Strava и Google Fit") {
+            StrengthSection(app);StravaSection(app);GoogleFitSection(app)
+        } }
+        item(key="zones") { ExpandableSection("Пульсовые зоны","Настройки интенсивности тренировок") { HeartRateZoneSection(app) } }
+        item(key="updates") { ExpandableSection("Обновления","Версия приложения и установка") { UpdateSection() } }
+        item(key="diagnostics") { ExpandableSection("Диагностика и экспорт","Логи, экспорт и сведения о приложении") {
+            LogsSection();ExportSection(app);AboutSection()
+        } }
     }
 }
 
@@ -744,13 +746,9 @@ private fun LogsSection() {
             ) {
                 Text("Сохранить в Загрузки")
             }
-            TextButton(
-                onClick = {
-                    AppLog.clear()
-                    refreshKey++
-                }
-            ) {
-                Text("Очистить")
+            ConfirmAction("Очистить логи","Очистить журнал диагностики?",
+                "Записи диагностики будут удалены. Тренировки и измерения останутся.","Очистить") {
+                AppLog.clear();refreshKey++
             }
         }
     }
@@ -1005,14 +1003,14 @@ private fun AboutSection() {
     InfoCard(title = "О приложении") {
         Column {
             Text(
-                text = "Данные берутся из Health Connect, куда их пишет Garmin Connect. " +
-                    "Приложение не связано с Garmin и не использует Garmin Connect API.",
+                text = "Приложение объединяет локальные данные Health Connect, Garmin, Strava, GymUp, Google Fit и проверенную копию с ПК. " +
+                    "При совпадении исходные записи сохраняются, а тренировка учитывается один раз.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
-                text = "Фирменные метрики Garmin — Body Battery, Stress, Training Load — " +
-                    "в Health Connect не передаются, поэтому их здесь нет.",
+                text = "Оценка сна, Body Battery, стресс, готовность и нагрузка доступны при наличии соответствующих данных Garmin. " +
+                    "Прямое подключение Garmin неофициальное. Без сети используется последняя доступная локальная копия.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp)
@@ -1413,8 +1411,9 @@ private fun StravaSection(app: FitnessSummaryApp) {
         }
 
         if (count > 0) {
-            TextButton(onClick = { app.launchPersistent { app.stravaImport.forget() } }) {
-                Text("Удалить импорт Strava")
+            ConfirmAction("Удалить импорт Strava","Удалить историю Strava?",
+                "Будут удалены импортированные записи Strava ($count). Для восстановления может понадобиться повторный импорт файла.") {
+                app.launchPersistent { app.stravaImport.forget() }
             }
         }
     }
@@ -1606,8 +1605,9 @@ private fun GoogleFitSection(app: FitnessSummaryApp) {
         }
 
         if (count > 0) {
-            TextButton(onClick = { app.launchPersistent { app.fitImport.forget() } }) {
-                Text("Удалить импорт Google Fit")
+            ConfirmAction("Удалить импорт Google Fit","Удалить историю Google Fit?",
+                "Будут удалены импортированные дневные данные Google Fit ($count дней). Для восстановления может понадобиться исходный архив.") {
+                app.launchPersistent { app.fitImport.forget() }
             }
         }
     }

@@ -1,5 +1,7 @@
 package com.fitnessapp.summary.ui.settings
 
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -91,6 +93,7 @@ private fun OwnerSnapshotPanel(app: FitnessSummaryApp,uid: String) {
     val syncing = refresh?.running == true
     val scope=rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
+    var showDetails by rememberSaveable { mutableStateOf(false) }
     var remote by remember { mutableStateOf<ServerSnapshotOverview?>(null) }
     var note by remember { mutableStateOf("Автоматическая проверка при открытии и примерно раз в час при наличии сети.") }
     val workerRemote = refresh?.status?.let { s -> ServerSnapshotOverview(s.schemaVersion,s.manifestSetSha256,
@@ -98,6 +101,27 @@ private fun OwnerSnapshotPanel(app: FitnessSummaryApp,uid: String) {
     val displayedRemote = listOfNotNull(remote,workerRemote).maxWithOrNull(
         compareBy<ServerSnapshotOverview> { it.publishedSeconds ?: 0L }.thenBy { it.publishedNanos ?: 0 })
     Column(verticalArrangement=Arrangement.spacedBy(6.dp)) {
+        val local=head
+        Text(when {
+            syncing->"Обновляем данные"
+            refresh?.error!=null->"Обновление не завершено"
+            local==null->"Копия с ПК ещё не загружена"
+            displayedRemote?.manifestSetSha256==local.manifestSetSha256 &&
+                displayedRemote?.records==local.records && displayedRemote?.groups==local.groups->"Проверенная копия актуальна"
+            else->"Проверенная копия сохранена"
+        },style=MaterialTheme.typography.titleSmall)
+        local?.let{StatRow("Снимок ПК",snapshotTime(it.publishedSeconds))}
+        when {
+            syncing->Text(refresh?.progress?.let(::progressLabel) ?: "Начинаем обновление…",style=MaterialTheme.typography.bodySmall)
+            refresh?.error!=null->Text(if(local==null)"Не удалось загрузить данные." else "Не удалось обновить. Последняя копия сохранена.",
+                style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error)
+        }
+        Button(enabled=!busy && !syncing,modifier=Modifier.fillMaxWidth(),onClick={
+            note="Проверка запрошена. При отсутствии сети она будет отложена."
+            app.snapshotSync.enqueueNow()
+        }) { Text(if(local==null) "Загрузить данные с ПК" else "Обновить данные с ПК") }
+        TextButton(onClick={showDetails=!showDetails}){Text(if(showDetails)"Скрыть диагностику" else "Подробнее о синхронизации")}
+        if(showDetails) {
         Text("На ПК",style=MaterialTheme.typography.titleSmall)
         displayedRemote?.let { r ->
             StatRow("Публикация",r.publishedSeconds?.let(::snapshotTime) ?: "Неизвестно")
@@ -112,7 +136,6 @@ private fun OwnerSnapshotPanel(app: FitnessSummaryApp,uid: String) {
                 style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Text("На телефоне",style=MaterialTheme.typography.titleSmall)
-        val local=head
         if(local==null) {
             Text("Проверенная серверная копия ещё не загружена.",
                 style=MaterialTheme.typography.bodyMedium)
@@ -146,9 +169,6 @@ private fun OwnerSnapshotPanel(app: FitnessSummaryApp,uid: String) {
                 } finally { busy=false }
             }
         }) { Text("Проверить сервер") }
-        OutlinedButton(enabled=!busy && !syncing,modifier=Modifier.fillMaxWidth(),onClick={
-            note="Проверка запрошена. При отсутствии сети она будет отложена."
-            app.snapshotSync.enqueueNow()
-        }) { Text(if(head==null) "Загрузить проверенную копию" else "Обновить сейчас") }
+        }
     }
 }

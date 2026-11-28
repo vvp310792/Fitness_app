@@ -1,5 +1,7 @@
 package com.fitnessapp.summary.ui.components
 
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,12 +24,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
-/** One column of a [WeekBarChart]. */
-data class BarDatum(
-    val label: String,
-    val value: Long,
-    val highlighted: Boolean = false
-)
+/** Missing and future values are not measurements of zero. */
+enum class BarState { MEASURED,MISSING,FUTURE }
+fun barState(future:Boolean,hasMeasurement:Boolean):BarState=when {
+    future->BarState.FUTURE
+    hasMeasurement->BarState.MEASURED
+    else->BarState.MISSING
+}
+data class BarDatum(val label:String,val value:Long,val highlighted:Boolean=false,val state:BarState=BarState.MEASURED)
 
 /**
  * Seven days of one measure.
@@ -49,8 +53,8 @@ fun WeekBarChart(
     barAreaHeight: Int = 120,
     onBarClick: ((Int) -> Unit)? = null
 ) {
-    val maxValue = data.maxOfOrNull { it.value } ?: 0L
-    val maxIndex = data.indexOfFirst { it.value == maxValue && maxValue > 0 }
+    val maxValue=data.filter{it.state==BarState.MEASURED}.maxOfOrNull{it.value} ?: 0L
+    val maxIndex=data.indexOfFirst{it.state==BarState.MEASURED && it.value==maxValue && maxValue>0}
 
     Column(modifier = modifier.fillMaxWidth()) {
         Row(
@@ -61,18 +65,24 @@ fun WeekBarChart(
             verticalAlignment = Alignment.Bottom
         ) {
             data.forEachIndexed { index, datum ->
-                val fraction = if (maxValue <= 0L) 0f else (datum.value.toFloat() / maxValue)
+                val fraction=if(maxValue<=0L)0f else (datum.value.toFloat()/maxValue).coerceIn(0f,1f)
+                val spoken=datum.label+", "+when(datum.state) {
+                    BarState.MEASURED->formatValue(datum.value)
+                    BarState.MISSING->"нет измерения"
+                    BarState.FUTURE->"день ещё не наступил"
+                }
                 Column(
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxHeight()
-                        .then(
-                            if (onBarClick != null) Modifier.clickable { onBarClick(index) } else Modifier
-                        ),
+                        .fillMaxHeight().semantics { contentDescription=spoken }
+                        .then(if(onBarClick!=null && datum.state!=BarState.FUTURE)Modifier.clickable{onBarClick(index)} else Modifier),
                     verticalArrangement = Arrangement.Bottom,
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    if (index == maxIndex) {
+                    if(datum.state!=BarState.MEASURED || datum.value==0L) {
+                        Text(when(datum.state){BarState.MISSING->"—";BarState.FUTURE->"·";BarState.MEASURED->"0"},
+                            style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else if(index==maxIndex) {
                         Text(
                             text = formatValue(datum.value),
                             style = MaterialTheme.typography.labelMedium,
@@ -82,17 +92,10 @@ fun WeekBarChart(
                             maxLines = 1
                         )
                     }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            // A zero-height bar is invisible and reads as a rendering
-                            // bug; a 3dp stub reads as "this day was empty".
-                            .fillMaxHeight(fraction.coerceAtLeast(0.02f))
-                            .background(
-                                color = if (datum.highlighted) accent else accent.copy(alpha = 0.55f),
-                                shape = RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp)
-                            )
-                    )
+                    if(datum.state==BarState.MEASURED && datum.value>0)Box(
+                        Modifier.fillMaxWidth().fillMaxHeight(fraction.coerceAtLeast(0.02f))
+                            .background(if(datum.highlighted)accent else accent.copy(alpha=0.75f),
+                                RoundedCornerShape(topStart=4.dp,topEnd=4.dp)))
                 }
             }
         }
@@ -127,6 +130,10 @@ fun WeekBarChart(
                 )
             }
         }
+        if(data.any{it.state!=BarState.MEASURED})Text("— нет измерения   · будущий день",
+            style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=6.dp))
+        if(onBarClick!=null)Text("Нажмите на день, чтобы открыть его.",style=MaterialTheme.typography.bodySmall,
+            color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=4.dp))
     }
 }
 
@@ -169,11 +176,11 @@ fun StageBars(
                     text = stage.label,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.width(76.dp)
+                    modifier = Modifier.weight(1f)
                 )
                 Box(
                     modifier = Modifier
-                        .weight(1f)
+                        .weight(1.1f)
                         .height(10.dp)
                         .background(
                             MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.10f),
@@ -194,7 +201,7 @@ fun StageBars(
                     color = MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.End,
                     modifier = Modifier
-                        .width(84.dp)
+                        .weight(1f)
                         .padding(start = 8.dp)
                 )
             }

@@ -96,19 +96,13 @@ fun StatRow(
         modifier = modifier
             .fillMaxWidth()
             .padding(vertical = 5.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyLarge,
-            color = valueColor
-        )
+        Text(text=label,style=MaterialTheme.typography.bodyMedium,
+            color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f))
+        Text(text=value,style=MaterialTheme.typography.bodyLarge,color=valueColor,
+            textAlign=TextAlign.End,modifier=Modifier.weight(0.85f))
     }
 }
 

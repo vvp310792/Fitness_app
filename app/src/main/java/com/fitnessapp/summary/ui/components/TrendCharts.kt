@@ -1,5 +1,15 @@
 package com.fitnessapp.summary.ui.components
 
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import kotlin.math.abs
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -59,15 +69,7 @@ import kotlin.math.pow
  * the data. With no smoothing possible - too few points to average honestly - the raw
  * line steps back up to full weight rather than leaving a nearly invisible chart.
  *
- * **The line is continuous.** It used to break wherever two readings sat more than a week
- * (or a smoothing window) apart, on the theory that a long straight segment across a month
- * without the watch looks like a measurement that never happened. In practice that read as
- * a broken chart rather than as an honest one - on the longer windows the smoothed curve
- * fragmented into disconnected pieces and the shape of the trend, which is the whole point
- * of the screen, stopped being visible. So gaps are simply spanned, and the dots carry the
- * honesty instead: they mark where the actual readings are, so a long segment with nothing
- * on it is visibly a bridge, not data. Dots are drawn only while they can still be told
- * apart; past that the daily values are the texture of the line itself.
+ * Long gaps are not connected. Sparse series declare their expected cadence.
  *
  * **The Y axis is labelled.** Three or four gridlines at round values, drawn in the ink
  * token with the card's own [formatValue], so the numbers on them are in the same units
@@ -87,6 +89,7 @@ import kotlin.math.pow
  * lines is the thing worth seeing. It is not a licence for a second axis; anything that
  * would need one does not belong on this chart.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TrendChart(
     points: List<TrendPoint>,
@@ -95,12 +98,13 @@ fun TrendChart(
     accent: Color,
     formatValue: (Float) -> String,
     modifier: Modifier = Modifier,
-    height: Int = 96,
+    height: Int = 144,
     band: ClosedFloatingPointRange<Float>? = null,
     goal: Float? = null,
     floorAtZero: Boolean = false,
     smoothWindowDays: Int = 0,
-    secondary: List<TrendPoint> = emptyList()
+    secondary: List<TrendPoint> = emptyList(),
+    maxGapDays:Long=1L
 ) {
     val sorted = points.filter { it.epochDay in fromEpochDay..toEpochDay }.sortedBy { it.epochDay }
     val sortedSecondary = secondary.filter { it.epochDay in fromEpochDay..toEpochDay }.sortedBy { it.epochDay }
@@ -135,7 +139,12 @@ fun TrendChart(
 
     val spanDays = (toEpochDay - fromEpochDay).coerceAtLeast(1L)
     val span = spanDays.toFloat()
-    val latest = sorted.last()
+    val latest=sorted.last()
+    var selectedDay by remember(sorted,sortedSecondary,fromEpochDay,toEpochDay){mutableStateOf<Long?>(null)}
+    val selected=sorted.firstOrNull{it.epochDay==selectedDay} ?: latest
+    val selectedSecondary=sortedSecondary.firstOrNull{it.epochDay==selected.epochDay}
+    val spoken="График. Минимум "+formatValue(values.min())+", максимум "+formatValue(values.max())+
+        ", последнее измерение "+LocalDate.ofEpochDay(latest.epochDay)+": "+formatValue(latest.value)
 
     // Round values inside the visible range, not the padded edges themselves: an axis
     // labelled "62,4 / 68,1 / 73,8" is arithmetically right and useless to read against.
@@ -163,7 +172,14 @@ fun TrendChart(
         Canvas(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(height.dp)
+                .height(height.dp).semantics { contentDescription=spoken }
+                .pointerInput(sorted,fromEpochDay,toEpochDay,gutterPx) {
+                    detectTapGestures { touch ->
+                        val width=(size.width-gutterPx-5.dp.toPx()).coerceAtLeast(1f)
+                        val day=fromEpochDay.toDouble()+((touch.x-gutterPx)/width).coerceIn(0f,1f)*span
+                        selectedDay=sorted.minByOrNull{abs(it.epochDay.toDouble()-day)}?.epochDay
+                    }
+                }
         ) {
             val gutter = gutterPx.toFloat()
             val w = size.width
@@ -194,7 +210,7 @@ fun TrendChart(
                         x = (gutter - 10 - label.size.width).coerceAtLeast(0f),
                         // Nudged so the text sits centred on its line, and never clipped
                         // off the top or bottom edge of the canvas.
-                        y = (ty - label.size.height / 2f).coerceIn(0f, h - label.size.height)
+                        y = (ty - label.size.height / 2f).coerceIn(0f, (h-label.size.height).coerceAtLeast(0f))
                     )
                 )
             }
@@ -234,7 +250,7 @@ fun TrendChart(
                 series.forEachIndexed { index, p ->
                     val px = x(p.epochDay)
                     val py = y(p.value)
-                    if (index == 0) path.moveTo(px, py) else path.lineTo(px, py)
+                    if(index==0 || p.epochDay-series[index-1].epochDay>maxGapDays)path.moveTo(px,py) else path.lineTo(px,py)
                 }
                 drawPath(
                     path = path,
@@ -244,7 +260,7 @@ fun TrendChart(
             }
 
             drawSeries(sorted, accent.copy(alpha = if (hasSmooth) 0.3f else 0.7f), if (hasSmooth) 1.5f else 2f)
-            if (showDots) {
+            if(showDots || sorted.zipWithNext().any{(a,b)->b.epochDay-a.epochDay>maxGapDays}) {
                 val dotColor = if (hasSmooth) accent.copy(alpha = 0.55f) else accent
                 val dotRadius = if (hasSmooth) 2.5f else 3f
                 sorted.forEach { p ->
@@ -256,7 +272,7 @@ fun TrendChart(
                 sortedSecondary.forEachIndexed { index, p ->
                     val px = x(p.epochDay)
                     val py = y(p.value)
-                    if (index == 0) path.moveTo(px, py) else path.lineTo(px, py)
+                    if(index==0 || p.epochDay-sortedSecondary[index-1].epochDay>maxGapDays)path.moveTo(px,py) else path.lineTo(px,py)
                 }
                 drawPath(
                     path = path,
@@ -270,7 +286,13 @@ fun TrendChart(
                 )
             }
             drawSeries(smoothed, accent, 2.5f)
-            drawCircle(color = accent, radius = 5.dp.toPx(), center = Offset(x(latest.epochDay), y(latest.value)))
+            drawCircle(color=accent,radius=5.dp.toPx(),center=Offset(x(latest.epochDay),y(latest.value)))
+            if(selectedDay!=null) {
+                val sx=x(selected.epochDay)
+                drawLine(color=ink.copy(alpha=0.65f),start=Offset(sx,0f),end=Offset(sx,h),strokeWidth=1.dp.toPx())
+                drawCircle(color=accent,radius=5.dp.toPx(),center=Offset(sx,y(selected.value)))
+                selectedSecondary?.let{drawCircle(color=accent.copy(alpha=0.65f),radius=4.dp.toPx(),center=Offset(sx,y(it.value)))}
+            }
         }
 
         Row(
@@ -284,21 +306,15 @@ fun TrendChart(
             Text(labelStart, style = MaterialTheme.typography.labelMedium, color = ink)
             Text(labelEnd, style = MaterialTheme.typography.labelMedium, color = ink)
         }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Text("мин ${formatValue(values.min())}", style = MaterialTheme.typography.labelMedium, color = ink)
-            Text("макс ${formatValue(values.max())}", style = MaterialTheme.typography.labelMedium, color = ink)
-            Text(
-                text = "сейчас ${formatValue(latest.value)}",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontWeight = FontWeight.Bold
-            )
+        FlowRow(modifier=Modifier.fillMaxWidth().padding(top=6.dp),horizontalArrangement=Arrangement.spacedBy(12.dp),
+            verticalArrangement=Arrangement.spacedBy(4.dp)) {
+            Text("Мин. "+formatValue(values.min()),style=MaterialTheme.typography.labelMedium,color=ink)
+            Text("Макс. "+formatValue(values.max()),style=MaterialTheme.typography.labelMedium,color=ink)
         }
+        Text((if(selectedDay==null)"Последнее: " else "Выбрано: ")+LocalDate.ofEpochDay(selected.epochDay)+" · "+formatValue(selected.value),
+            style=MaterialTheme.typography.bodyMedium,fontWeight=FontWeight.Bold)
+        selectedSecondary?.let{Text("Вторая серия: "+formatValue(it.value),style=MaterialTheme.typography.bodySmall)}
+        Text("Нажмите на график для значения. Длительные пропуски не соединяются.",style=MaterialTheme.typography.bodySmall,color=ink)
     }
 }
 
