@@ -22,7 +22,7 @@ class ChartPresentationTest {
         // 599 calendar weeks, only 153 active: a median can be zero in a
         // season even though its nonzero weekly distances are significant.
         val weeks=(0 until 599).map { i ->
-            TrendPoint(7L*i,if(i%4==0 || i in 200..202) 50f else 0f)
+            TrendPoint(7L*i,if(i%4==0 || i in 200..203) 50f else 0f)
         }
         assertEquals(153,weeks.count{it.value>0f})
         val median=trendSmoothing(weeks,180,TrendSmoothing.MEDIAN)

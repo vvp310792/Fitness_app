@@ -67,7 +67,7 @@ class UiInteractionsTest {
 
     @Test fun weeklyCyclingVolumeShowsMeanEvenInMedianMode() {
         val weeks=(0 until 599).map { i ->
-            TrendPoint(16000L+7L*i,if(i%4==0 || i in 200..202) 50f+(i%7)*10f else 0f)
+            TrendPoint(16000L+7L*i,if(i%4==0 || i in 200..203) 50f+(i%7)*10f else 0f)
         }
         compose.setContent {
             FitnessSummaryTheme(darkTheme=true) {
