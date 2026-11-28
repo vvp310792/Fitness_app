@@ -63,7 +63,7 @@ class SmokeScreensTest {
         ActivityScenario.launch(MainActivity::class.java).use {
             compose.waitForIdle()
             shot("01_day")
-            for ((i, label) in listOf("Неделя", "Тренды", "Тренировки", "Я").withIndex()) {
+            for ((i, label) in listOf("Неделя", "Тренды", "Занятия", "Я").withIndex()) {
                 tab(label).performClick()
                 compose.waitForIdle()
                 // Trends computes its series off the main thread; give it a beat so the
