@@ -1,5 +1,13 @@
 package com.fitnessapp.summary.ui.day
 
+import com.fitnessapp.summary.ui.components.readScreen
+import com.fitnessapp.summary.ui.components.ReadStatus
+import com.fitnessapp.summary.ui.components.rememberCurrentDate
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material3.TextButton
+import com.fitnessapp.summary.ui.components.LocalDateSaver
+import com.fitnessapp.summary.ui.components.DateNavigator
+import androidx.compose.runtime.LaunchedEffect
 import com.fitnessapp.summary.analytics.ArchiveResult
 import com.fitnessapp.summary.analytics.WorkoutPeriod
 import com.fitnessapp.summary.sync.BodyDay
@@ -94,28 +102,42 @@ import java.time.LocalDate
  * so an install without the login sees exactly the screen it always did.
  */
 @Composable
-fun DayScreen(app: FitnessSummaryApp) {
-    val today = remember { LocalDate.now() }
-    var selectedDate by remember { mutableStateOf(today) }
+fun DayScreen(app:FitnessSummaryApp,requestedDay:Long?=null,onDateConsumed:()->Unit={},onSettings:()->Unit={}) {
+    val today=rememberCurrentDate()
+    var selectedDate by rememberSaveable(stateSaver=LocalDateSaver){mutableStateOf(today)}
+    var retry by remember { mutableStateOf(0) }
+    LaunchedEffect(requestedDay) {
+        requestedDay?.let { selectedDate=LocalDate.ofEpochDay(it).coerceAtMost(today);onDateConsumed() }
+    }
     val epochDay = selectedDate.toEpochDay()
 
     // Keyed on the date so switching days resubscribes to the right row instead of
     // holding the Flow built for the day the screen first opened with.
-    val healthRows by remember(selectedDate) { app.unifiedRead.observeHealthDays(epochDay,epochDay) }.collectAsState(initial = emptyList())
+    val healthRowsRead=readScreen(remember(selectedDate) { app.unifiedRead.observeHealthDays(epochDay,epochDay) },retry)
+    val healthRows=healthRowsRead.value.orEmpty()
     val health=healthRows.firstOrNull()
     val summary=health?.summary
-    val archive: ArchiveResult? by remember(app) { app.unifiedRead.observeArchive() }.collectAsState(initial=null)
+    val archiveRead=readScreen(remember(app) { app.unifiedRead.observeArchive() },retry)
+    val archive=archiveRead.value
     val period=remember(archive,epochDay) { WorkoutPeriod.between(archive,epochDay,epochDay) }
 
-    val garmin by remember(selectedDate) { app.unifiedRead.observeGarminDay(epochDay) }.collectAsState(initial = null)
-    val garminSleep by remember(selectedDate) { app.unifiedRead.observeGarminSleep(epochDay) }.collectAsState(initial = null)
-    val hrv by remember(selectedDate) { app.database.garminHrvDao().observeDay(epochDay) }.collectAsState(initial = null)
-    val readiness by remember(selectedDate) { app.database.garminReadinessDao().observeDay(epochDay) }.collectAsState(initial = null)
-    val training by remember(selectedDate) { app.database.garminTrainingDao().observeDay(epochDay) }.collectAsState(initial = null)
-    val bodyRows by remember(selectedDate) { app.unifiedRead.observeBodyDays(LocalDate.of(1900,1,1).toEpochDay(),epochDay) }.collectAsState(initial = emptyList())
+    val garminRead=readScreen(remember(selectedDate) { app.unifiedRead.observeGarminDay(epochDay) },retry)
+    val garmin=garminRead.value
+    val garminSleepRead=readScreen(remember(selectedDate) { app.unifiedRead.observeGarminSleep(epochDay) },retry)
+    val garminSleep=garminSleepRead.value
+    val hrvRead=readScreen(remember(selectedDate) { app.database.garminHrvDao().observeDay(epochDay) },retry)
+    val hrv=hrvRead.value
+    val readinessRead=readScreen(remember(selectedDate) { app.database.garminReadinessDao().observeDay(epochDay) },retry)
+    val readiness=readinessRead.value
+    val trainingRead=readScreen(remember(selectedDate) { app.database.garminTrainingDao().observeDay(epochDay) },retry)
+    val training=trainingRead.value
+    val bodyRowsRead=readScreen(remember(selectedDate) { app.unifiedRead.observeBodyDays(LocalDate.of(1900,1,1).toEpochDay(),epochDay) },retry)
+    val bodyRows=bodyRowsRead.value.orEmpty()
     val body=bodyRows.lastOrNull()
-    val height by remember(selectedDate) { app.unifiedRead.observeHeightUpTo(epochDay) }.collectAsState(initial=null)
-    val fitDay by remember(selectedDate) { app.database.fitDayDao().observeDay(epochDay) }.collectAsState(initial = null)
+    val heightRead=readScreen(remember(selectedDate) { app.unifiedRead.observeHeightUpTo(epochDay) },retry)
+    val height=heightRead.value
+    val fitDayRead=readScreen(remember(selectedDate) { app.database.fitDayDao().observeDay(epochDay) },retry)
+    val fitDay=fitDayRead.value
 
     val palette = metricPalette()
 
@@ -124,6 +146,10 @@ fun DayScreen(app: FitnessSummaryApp) {
     val displayDay = DayView.merge(summary, garmin, garminSleep, fitDay)
     val extra = garmin?.takeUnless { it.isEmpty }
     val sleep = garminSleep?.takeUnless { it.isEmpty }
+    val reads=listOf(healthRowsRead,archiveRead,garminRead,garminSleepRead,hrvRead,readinessRead,trainingRead,bodyRowsRead,heightRead,fitDayRead)
+    val hasDay=displayDay!=null || sleep!=null || extra!=null || hrv?.isEmpty==false ||
+        readiness?.isEmpty==false || training?.isEmpty==false || period.episodes.isNotEmpty() ||
+        health?.floors!=null || body?.day==epochDay || height?.day==epochDay
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -131,29 +157,15 @@ fun DayScreen(app: FitnessSummaryApp) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = { selectedDate = selectedDate.minusDays(1) }) {
-                    Icon(Icons.Filled.ChevronLeft, contentDescription = "Предыдущий день")
-                }
-                Text(
-                    text = formatDayHeader(selectedDate, today),
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                IconButton(
-                    onClick = { selectedDate = selectedDate.plusDays(1) },
-                    enabled = selectedDate.isBefore(today)
-                ) {
-                    Icon(Icons.Filled.ChevronRight, contentDescription = "Следующий день")
-                }
-            }
+            DateNavigator(formatDayHeader(selectedDate,today),canGoForward=selectedDate.isBefore(today),
+                previousLabel="Предыдущий день",nextLabel="Следующий день",currentLabel="Сегодня",
+                selected=selectedDate,today=today,onPrevious={selectedDate=selectedDate.minusDays(1)},
+                onNext={selectedDate=selectedDate.plusDays(1)},onPick={selectedDate=it},onCurrent={selectedDate=today},
+                atCurrent=selectedDate==today)
         }
+        if(reads.any{!it.loaded || it.failed})item { ReadStatus(reads,{retry++},onSettings) }
 
-        if (displayDay == null && sleep == null && readiness == null) {
+        if (!hasDay && reads.all { it.loaded && !it.failed }) {
             item {
                 EmptyState(
                     emoji = "⌚",
@@ -164,17 +176,17 @@ fun DayScreen(app: FitnessSummaryApp) {
                         else -> "Откройте вкладку «Я» и разрешите чтение Health Connect, чтобы начать."
                     }
                 )
+                TextButton(onClick=onSettings){Text("Открыть источники данных")}
             }
-        } else {
+        } else if(hasDay) {
             // Garmin's morning report comes first when there is one: it's the summary of
             // the summaries, the four numbers Garmin itself leads with.
-            if (readiness != null || sleep?.score ?: 0 > 0 || extra?.hasBodyBattery == true || hrv != null) {
-                item { MorningReport(readiness, sleep, extra, hrv, palette) }
+            displayDay?.let { day -> item { SectionHeader("Активность");DayMetrics(day,extra,palette,health?.floors) } }
+            if(archive!=null && period.episodes.isNotEmpty())item { InfoCard("Тренировки за день") { WorkoutTotals(period,detailed=false) } }
+            if (readiness?.isEmpty==false || (sleep?.score ?: 0)>0 || extra?.hasBodyBattery == true || hrv?.isEmpty==false) {
+                item { SectionHeader("Восстановление");MorningReport(readiness,sleep,extra,hrv,palette) }
             }
-            displayDay?.let { day ->
-                item { DayMetrics(day, extra, palette, health?.floors) }
-            }
-            item { SleepCard(displayDay, sleep, palette) }
+            if(sleep!=null || (displayDay?.sleepTotalMinutes ?: 0)>0)item { SleepCard(displayDay,sleep,palette) }
             extra?.let { if (it.hasStress || it.hasBodyBattery) item { StressBatteryCard(it, palette) } }
             hrv?.takeUnless { it.isEmpty }?.let { item { HrvCard(it) } }
             readiness?.takeUnless { it.isEmpty }?.let { item { ReadinessCard(it, palette) } }
@@ -196,8 +208,8 @@ fun DayScreen(app: FitnessSummaryApp) {
                 Text("Другие измерения за этот день отсутствуют.",style=MaterialTheme.typography.bodySmall)
             }
         }
-        if (archive!=null) {
-            item { InfoCard("Тренировки за день") { WorkoutTotals(period) } }
+        if (archive!=null && period.episodes.isNotEmpty()) {
+            item { SectionHeader("Записи тренировок") }
             items(period.displayGroups,key={it.key}) { group -> WorkoutGroupCard(group) }
         }
     }
@@ -212,43 +224,29 @@ private fun MorningReport(
     hrv: GarminHrv?,
     palette: MetricPalette
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            MetricCard(
-                emoji = "🟢",
-                label = "Готовность",
-                value = readiness?.score?.takeIf { it > 0 }?.toString() ?: "-",
-                accent = palette.readiness,
-                modifier = Modifier.weight(1f),
-                caption = readiness?.let { readinessLevelLabel(it.level).ifBlank { null } }
-            )
-            MetricCard(
-                emoji = "🌙",
-                label = "Sleep Score",
-                value = sleep?.score?.takeIf { it > 0 }?.toString() ?: "-",
-                accent = palette.sleep,
-                modifier = Modifier.weight(1f),
-                caption = sleep?.let { qualifierLabel(it.scoreQualifier).ifBlank { null } }
-            )
+    data class MorningMetric(val icon:String,val label:String,val value:String,val accent:androidx.compose.ui.graphics.Color,val caption:String?)
+    val metrics=buildList {
+        readiness?.takeUnless{it.isEmpty}?.score?.takeIf{it>0}?.let {
+            add(MorningMetric("🟢","Готовность",it.toString(),palette.readiness,readinessLevelLabel(requireNotNull(readiness).level).ifBlank{null}))
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            MetricCard(
-                emoji = "🔋",
-                label = "Body Battery утром",
-                value = extra?.bodyBatteryAtWake?.takeIf { it > 0 }?.toString() ?: "-",
-                accent = palette.bodyBattery,
-                modifier = Modifier.weight(1f),
-                caption = extra?.let { bodyBatteryLabel(it.bodyBatteryAtWake).ifBlank { null } }
-            )
-            MetricCard(
-                emoji = "💓",
-                label = "ВСР за ночь",
-                value = hrv?.lastNightAvg?.takeIf { it > 0 }?.let { "$it мс" } ?: "-",
-                accent = palette.hrv,
-                modifier = Modifier.weight(1f),
-                caption = hrv?.let { hrvStatusLabel(it.status) }
-            )
+        sleep?.score?.takeIf{it>0}?.let {
+            add(MorningMetric("🌙","Оценка сна",it.toString(),palette.sleep,qualifierLabel(requireNotNull(sleep).scoreQualifier).ifBlank{null}))
         }
+        extra?.bodyBatteryAtWake?.takeIf{it>0}?.let {
+            add(MorningMetric("🔋","Энергия утром",it.toString(),palette.bodyBattery,bodyBatteryLabel(it).ifBlank{null}))
+        }
+        hrv?.lastNightAvg?.takeIf{it>0}?.let {
+            add(MorningMetric("💓","ВСР за ночь","$it мс",palette.hrv,hrvStatusLabel(requireNotNull(hrv).status)))
+        }
+    }
+    Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
+        metrics.chunked(2).forEach { pair ->
+            Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                pair.forEach { m -> MetricCard(m.icon,m.label,m.value,m.accent,Modifier.weight(1f),m.caption) }
+            }
+        }
+        if(metrics.size<4)Text("Доступно показателей восстановления: ${metrics.size} из 4.",
+            style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -277,14 +275,14 @@ private fun DayMetrics(day: DailySummary, extra: GarminDailyExtra?, palette: Met
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             MetricCard(
                 emoji = "🔥",
-                label = "Калории",
+                label = "Расход энергии",
                 // The total leads, the split explains it. Only the active number used to
                 // be shown large, which is the smaller half of the day and not what
                 // "калории" means to a reader glancing at a tile.
                 value = if (day.totalCaloriesKcal > 0) {
-                    formatCount(day.totalCaloriesKcal)
+                    formatCount(day.totalCaloriesKcal)+" ккал"
                 } else if (day.activeCaloriesKcal > 0) {
-                    formatCount(day.activeCaloriesKcal)
+                    formatCount(day.activeCaloriesKcal)+" ккал"
                 } else "-",
                 accent = palette.calories,
                 modifier = Modifier.weight(1f),

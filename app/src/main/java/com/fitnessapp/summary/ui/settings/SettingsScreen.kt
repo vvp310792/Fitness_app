@@ -1,5 +1,9 @@
 package com.fitnessapp.summary.ui.settings
 
+import com.fitnessapp.summary.ui.components.positiveTextColor
+import com.fitnessapp.summary.ui.components.warningTextColor
+import com.fitnessapp.summary.ui.components.ExpandableSection
+import com.fitnessapp.summary.ui.components.ConfirmAction
 import android.content.ActivityNotFoundException
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -91,20 +95,20 @@ fun SettingsScreen(app: FitnessSummaryApp) {
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item { ServerSnapshotPanel(app) }
+        item { Text("Я",style=MaterialTheme.typography.headlineMedium) }
         item { AccountSection(app) }
-        item { UpdateSection() }
-        item { HealthConnectSection(app) }
-        item { SyncSection(app) }
-        item { GarminSection(app) }
-        item { ScaleSection(app) }
-        item { HeartRateZoneSection(app) }
-        item { StrengthSection(app) }
-        item { StravaSection(app) }
-        item { GoogleFitSection(app) }
-        item { LogsSection() }
-        item { ExportSection(app) }
-        item { AboutSection() }
+        item { ServerSnapshotPanel(app) }
+        item(key="connections") { ExpandableSection("Источники данных","Health Connect, Garmin, весы и синхронизация") {
+            HealthConnectSection(app);SyncSection(app);GarminSection(app);ScaleSection(app)
+        } }
+        item(key="history") { ExpandableSection("Импорт истории","GymUp, Strava и Google Fit") {
+            StrengthSection(app);StravaSection(app);GoogleFitSection(app)
+        } }
+        item(key="zones") { ExpandableSection("Пульсовые зоны","Настройки интенсивности тренировок") { HeartRateZoneSection(app) } }
+        item(key="updates") { ExpandableSection("Обновления","Версия приложения и установка") { UpdateSection() } }
+        item(key="diagnostics") { ExpandableSection("Диагностика и экспорт","Логи, экспорт и сведения о приложении") {
+            LogsSection();ExportSection(app);AboutSection()
+        } }
     }
 }
 
@@ -309,7 +313,7 @@ private fun SyncSection(app: FitnessSummaryApp) {
                 Text(
                     text = "Обновлено дней: ${state.daysWritten}",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = palette.distance,
+                    color = positiveTextColor(),
                     modifier = Modifier.padding(top = 6.dp)
                 )
             }
@@ -338,7 +342,7 @@ private fun SyncSection(app: FitnessSummaryApp) {
                     "История прочитана до $oldest — следующее нажатие «Вся история» продолжит отсюда, а не с сегодняшнего дня."
                 },
                 style = MaterialTheme.typography.labelMedium,
-                color = palette.distance,
+                color = positiveTextColor(),
                 modifier = Modifier.padding(top = 6.dp)
             )
         }
@@ -393,14 +397,9 @@ private fun SyncSection(app: FitnessSummaryApp) {
         // or history the provider only started handing out later. Without it "глубже ничего
         // нет" would be a verdict nobody could ever ask the app to re-check.
         if (frontier.oldestCovered != null) {
-            TextButton(
-                onClick = {
-                    app.healthSync.forgetHistoryDepth()
-                    forgetKey++
-                },
-                enabled = !running
-            ) {
-                Text("Забыть глубину и пройти историю заново")
+            ConfirmAction("Перечитать историю с начала","Сбросить прогресс чтения?",
+                "Сохранённые измерения не удаляются. Следующая полная синхронизация снова проверит всю доступную историю.","Сбросить",enabled=!running) {
+                app.healthSync.forgetHistoryDepth();forgetKey++
             }
         }
     }
@@ -744,13 +743,9 @@ private fun LogsSection() {
             ) {
                 Text("Сохранить в Загрузки")
             }
-            TextButton(
-                onClick = {
-                    AppLog.clear()
-                    refreshKey++
-                }
-            ) {
-                Text("Очистить")
+            ConfirmAction("Очистить логи","Очистить журнал диагностики?",
+                "Записи диагностики будут удалены. Тренировки и измерения останутся.","Очистить") {
+                AppLog.clear();refreshKey++
             }
         }
     }
@@ -783,10 +778,7 @@ private fun AccountSection(app: FitnessSummaryApp) {
     InfoCard(title = "Аккаунт и облако") {
         if (!FirebaseSetup.isConfigured) {
             Text(
-                text = "Облачная синхронизация не настроена: в репозитории лежит " +
-                    "google-services.json-заглушка. Приложение полностью работает " +
-                    "офлайн — данные хранятся на устройстве. Чтобы синхронизировать " +
-                    "между устройствами, создайте проект Firebase (docs/SETUP_FIREBASE.md).",
+                text = "Облако недоступно в этой версии. Данные на устройстве остаются доступны офлайн.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1005,14 +997,14 @@ private fun AboutSection() {
     InfoCard(title = "О приложении") {
         Column {
             Text(
-                text = "Данные берутся из Health Connect, куда их пишет Garmin Connect. " +
-                    "Приложение не связано с Garmin и не использует Garmin Connect API.",
+                text = "Приложение объединяет локальные данные Health Connect, Garmin, Strava, GymUp, Google Fit и проверенную копию с ПК. " +
+                    "При совпадении исходные записи сохраняются, а тренировка учитывается один раз.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
-                text = "Фирменные метрики Garmin — Body Battery, Stress, Training Load — " +
-                    "в Health Connect не передаются, поэтому их здесь нет.",
+                text = "Оценка сна, Body Battery, стресс, готовность и нагрузка доступны при наличии соответствующих данных Garmin. " +
+                    "Прямое подключение Garmin неофициальное. Без сети используется последняя доступная локальная копия.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp)
@@ -1207,12 +1199,9 @@ private fun HeartRateZoneSection(app: FitnessSummaryApp) {
                 Text("Сохранить")
             }
             if (storedHrMax > 0) {
-                OutlinedButton(onClick = {
-                    app.heartRateZones.clear()
-                    input = ""
-                    error = null
-                }) {
-                    Text(if (fromGarmin != null) "Вернуться к зонам Garmin" else "Сбросить")
+                ConfirmAction(if(fromGarmin!=null)"Вернуться к зонам Garmin" else "Сбросить максимум",
+                    "Сбросить ручное значение?","Пульсовые зоны будут снова рассчитаны по доступным данным Garmin или оценке. История тренировок не изменится.","Сбросить") {
+                    app.heartRateZones.clear();input="";error=null
                 }
             } else if (suggested != null && fromGarmin == null) {
                 OutlinedButton(onClick = {
@@ -1231,7 +1220,7 @@ private fun HeartRateZoneSection(app: FitnessSummaryApp) {
                 text = "Сейчас используется ваш ручной максимум $storedHrMax, а не зоны Garmin. " +
                     "Кнопка выше вернёт гарминовские.",
                 style = MaterialTheme.typography.labelMedium,
-                color = palette.stress,
+                color = warningTextColor(),
                 modifier = Modifier.padding(top = 6.dp)
             )
         }
@@ -1253,7 +1242,7 @@ private fun HeartRateZoneSection(app: FitnessSummaryApp) {
                 text = "Заданный максимум ниже, чем 95-й процентиль ваших записей ($suggested). " +
                     "Значит часть тренировок проходила выше «максимума» — стоит перепроверить число.",
                 style = MaterialTheme.typography.labelMedium,
-                color = palette.stress,
+                color = warningTextColor(),
                 modifier = Modifier.padding(top = 6.dp)
             )
         }
@@ -1328,7 +1317,7 @@ private fun StravaSection(app: FitnessSummaryApp) {
                             "${formatDayMonth(from)} ${from.year} — ${formatDayMonth(to)} ${to.year} " +
                             "(${formatTime(state.atMillis)}).",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = palette.distance
+                        color = positiveTextColor()
                     )
                     Text(
                         text = "Новых для приложения: ${result.fresh}. " +
@@ -1413,8 +1402,9 @@ private fun StravaSection(app: FitnessSummaryApp) {
         }
 
         if (count > 0) {
-            TextButton(onClick = { app.launchPersistent { app.stravaImport.forget() } }) {
-                Text("Удалить импорт Strava")
+            ConfirmAction("Удалить импорт Strava","Удалить историю Strava?",
+                "Будут удалены импортированные записи Strava ($count). Для восстановления может понадобиться повторный импорт файла.") {
+                app.launchPersistent { app.stravaImport.forget() }
             }
         }
     }
@@ -1493,7 +1483,7 @@ private fun GoogleFitSection(app: FitnessSummaryApp) {
                             "${formatDayMonth(from)} ${from.year} — ${formatDayMonth(to)} ${to.year} " +
                             "(${formatTime(state.atMillis)}).",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = palette.steps
+                        color = warningTextColor()
                     )
                     Text(
                         text = FitImportManager.freshLine(result) + " — они не перекроют числа Garmin.",
@@ -1606,8 +1596,9 @@ private fun GoogleFitSection(app: FitnessSummaryApp) {
         }
 
         if (count > 0) {
-            TextButton(onClick = { app.launchPersistent { app.fitImport.forget() } }) {
-                Text("Удалить импорт Google Fit")
+            ConfirmAction("Удалить импорт Google Fit","Удалить историю Google Fit?",
+                "Будут удалены импортированные дневные данные Google Fit ($count дней). Для восстановления может понадобиться исходный архив.") {
+                app.launchPersistent { app.fitImport.forget() }
             }
         }
     }
@@ -1678,7 +1669,7 @@ private fun StrengthSection(app: FitnessSummaryApp) {
                         (if (state.skippedLines > 0) ", пропущено строк ${state.skippedLines}" else "") +
                         "$range (${formatTime(state.atMillis)}).\n${state.liftSummary}",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = palette.distance
+                    color = positiveTextColor()
                 )
                 // Named, not swallowed. The sets are in the totals either way; what is missing
                 // is only the name, and saying so is the difference between "this exercise was
@@ -1827,7 +1818,7 @@ private fun ScaleSection(app: FitnessSummaryApp) {
             }
             else -> {
                 Row(modifier = Modifier.padding(top = 10.dp)) {
-                    Chip(text = "Вес из Health Connect: читается", color = palette.distance)
+                    Chip(text = "Вес из Health Connect: читается", color = positiveTextColor())
                 }
                 val writers = weightWriters
                 if (writers != null) {
@@ -1890,7 +1881,7 @@ private fun ScaleSection(app: FitnessSummaryApp) {
                         append(" (${formatTime(state.atMillis)})")
                     },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = palette.distance,
+                    color = positiveTextColor(),
                     modifier = Modifier.padding(top = 6.dp)
                 )
                 state.note?.let {

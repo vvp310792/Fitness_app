@@ -1,5 +1,11 @@
 package com.fitnessapp.summary.ui.navigation
 
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarViewWeek
@@ -46,7 +52,7 @@ private val BOTTOM_TABS = listOf(
     BottomTab(Routes.DAY, "День", Icons.Filled.Today),
     BottomTab(Routes.WEEK, "Неделя", Icons.Filled.CalendarViewWeek),
     BottomTab(Routes.TRENDS, "Тренды", Icons.Filled.Insights),
-    BottomTab(Routes.WORKOUTS, "Тренировки", Icons.Filled.FitnessCenter),
+    BottomTab(Routes.WORKOUTS, "Занятия", Icons.Filled.FitnessCenter),
     BottomTab(Routes.SETTINGS, "Я", Icons.Filled.Person)
 )
 
@@ -62,24 +68,33 @@ private val BOTTOM_TABS = listOf(
 fun AppNavigation(app: FitnessSummaryApp) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
+    var requestedDay by rememberSaveable { mutableStateOf<Long?>(null) }
+    fun open(route:String) {
+        navController.navigate(route) {
+            popUpTo(navController.graph.startDestinationId) { saveState=true }
+            launchSingleTop=true
+            restoreState=true
+        }
+    }
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
+            NavigationBar(containerColor=MaterialTheme.colorScheme.surface,tonalElevation=2.dp) {
                 BOTTOM_TABS.forEach { tab ->
                     val selected = backStackEntry?.destination?.hierarchy
                         ?.any { it.route == tab.route } == true
                     NavigationBarItem(
                         selected = selected,
-                        onClick = {
-                            navController.navigate(tab.route) {
-                                popUpTo(navController.graph.startDestinationId) { saveState = true }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
-                        icon = { Icon(tab.icon, contentDescription = null) },
-                        label = { Text(tab.label) }
+                        onClick = { open(tab.route) },
+                        icon = { Icon(tab.icon, contentDescription = if(tab.route==Routes.WORKOUTS) "Тренировки" else null) },
+                        label = { Text(tab.label,maxLines=1,softWrap=false) },
+                        colors=NavigationBarItemDefaults.colors(
+                            selectedIconColor=MaterialTheme.colorScheme.onPrimaryContainer,
+                            selectedTextColor=MaterialTheme.colorScheme.primary,
+                            indicatorColor=MaterialTheme.colorScheme.primaryContainer,
+                            unselectedIconColor=MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor=MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     )
                 }
             }
@@ -90,9 +105,9 @@ fun AppNavigation(app: FitnessSummaryApp) {
             startDestination = Routes.DAY,
             modifier = Modifier.padding(bottom = padding.calculateBottomPadding())
         ) {
-            composable(Routes.DAY) { DayScreen(app = app) }
-            composable(Routes.WEEK) { WeekScreen(app = app) }
-            composable(Routes.TRENDS) { TrendsScreen(app = app) }
+            composable(Routes.DAY) { DayScreen(app=app,requestedDay=requestedDay,onDateConsumed={requestedDay=null},onSettings={open(Routes.SETTINGS)}) }
+            composable(Routes.WEEK) { WeekScreen(app=app,onOpenDay={day->requestedDay=day.toEpochDay();open(Routes.DAY)},onSettings={open(Routes.SETTINGS)}) }
+            composable(Routes.TRENDS) { TrendsScreen(app=app,onSettings={open(Routes.SETTINGS)}) }
             composable(Routes.WORKOUTS) { WorkoutsScreen(app = app) }
             composable(Routes.SETTINGS) { SettingsScreen(app = app) }
         }

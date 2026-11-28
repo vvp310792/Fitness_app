@@ -1,5 +1,18 @@
 package com.fitnessapp.summary.ui.trends
 
+import com.fitnessapp.summary.ui.components.readScreen
+import com.fitnessapp.summary.ui.components.ReadStatus
+import com.fitnessapp.summary.ui.components.rememberCurrentDate
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.runtime.mutableStateOf
 import com.fitnessapp.summary.analytics.ArchiveResult
 import com.fitnessapp.summary.analytics.WorkoutPeriod
 import com.fitnessapp.summary.data.DayView
@@ -106,9 +119,13 @@ private val WINDOWS = listOf(
 // it is the layout for the window chips: they must wrap, not scroll off the edge.
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun TrendsScreen(app: FitnessSummaryApp) {
-    val today = remember { LocalDate.now() }
-    var windowIndex by remember { mutableIntStateOf(0) }
+fun TrendsScreen(app:FitnessSummaryApp,onSettings:()->Unit={}) {
+    val today=rememberCurrentDate()
+    var windowIndex by rememberSaveable{mutableIntStateOf(0)}
+    var category by rememberSaveable{mutableStateOf("all")}
+    var periodMenu by remember{mutableStateOf(false)}
+    var retry by remember{mutableIntStateOf(0)}
+    fun show(name:String)=category=="all" || category==name
     val windowDays = WINDOWS[windowIndex].first
     val from = today.minusDays((windowDays - 1).toLong())
     val fromEpoch = from.toEpochDay()
@@ -116,21 +133,31 @@ fun TrendsScreen(app: FitnessSummaryApp) {
 
     val smoothWindow = LifestyleAnalytics.smoothWindowDaysFor(windowDays)
 
-    val summaries by remember(windowDays) { app.unifiedRead.observeGarminDays(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
-    val sleeps by remember(windowDays) { app.unifiedRead.observeGarminSleeps(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
-    val hrvs by remember(windowDays) { app.database.garminHrvDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
-    val readiness by remember(windowDays) { app.database.garminReadinessDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
-    val training by remember(windowDays) { app.database.garminTrainingDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
-    val bodyDays by remember(windowDays) { app.unifiedRead.observeBodyDays(fromEpoch,toEpoch) }.collectAsState(initial=emptyList())
+    val summariesRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.unifiedRead.observeGarminDays(fromEpoch, toEpoch) },retry)
+    val summaries=summariesRead.value.orEmpty()
+    val sleepsRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.unifiedRead.observeGarminSleeps(fromEpoch, toEpoch) },retry)
+    val sleeps=sleepsRead.value.orEmpty()
+    val hrvsRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.database.garminHrvDao().observeRange(fromEpoch, toEpoch) },retry)
+    val hrvs=hrvsRead.value.orEmpty()
+    val readinessRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.database.garminReadinessDao().observeRange(fromEpoch, toEpoch) },retry)
+    val readiness=readinessRead.value.orEmpty()
+    val trainingRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.database.garminTrainingDao().observeRange(fromEpoch, toEpoch) },retry)
+    val training=trainingRead.value.orEmpty()
+    val bodyDaysRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.unifiedRead.observeBodyDays(fromEpoch,toEpoch) },retry)
+    val bodyDays=bodyDaysRead.value.orEmpty()
     val weights=remember(bodyDays) { bodyDays.mapNotNull { it.garmin } }
     val scaleWeights=remember(bodyDays) { bodyDays.mapNotNull { it.scale } }
-    val archive: ArchiveResult? by remember(app) { app.unifiedRead.observeArchive() }.collectAsState(initial=null)
+    val archiveRead=readScreen(remember(app) { app.unifiedRead.observeArchive() },retry)
+    val archive=archiveRead.value
     val period=remember(archive,fromEpoch,toEpoch) { WorkoutPeriod.between(archive,fromEpoch,toEpoch) }
     val activities=period.garminActivities
-    val healthRows by remember(windowDays) { app.unifiedRead.observeHealthDays(fromEpoch,toEpoch) }.collectAsState(initial=emptyList())
+    val healthRowsRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.unifiedRead.observeHealthDays(fromEpoch,toEpoch) },retry)
+    val healthRows=healthRowsRead.value.orEmpty()
     val healthDays=remember(healthRows) { healthRows.map { it.summary } }
-    val strengthSets by remember(windowDays) { app.unifiedRead.observeStrengthSets(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
-    val fitDays by remember(windowDays) { app.database.fitDayDao().observeRange(fromEpoch, toEpoch) }.collectAsState(initial = emptyList())
+    val strengthSetsRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.unifiedRead.observeStrengthSets(fromEpoch, toEpoch) },retry)
+    val strengthSets=strengthSetsRead.value.orEmpty()
+    val fitDaysRead=readScreen(remember(windowDays,fromEpoch,toEpoch) { app.database.fitDayDao().observeRange(fromEpoch, toEpoch) },retry)
+    val fitDays=fitDaysRead.value.orEmpty()
 
     // Google Fit sits beneath Health Connect, which sits beneath Garmin - see
     // LifestyleAnalytics.withFitFallback. Only the charts get it: the insight rules are
@@ -143,8 +170,8 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     // counting, and how far the phone's count sits below it. Computed over everything and
     // deliberately not keyed to the chips - an estimate that moves when the axis moves is not
     // an estimate, which is the same reason HRmax is sampled over a fixed year.
-    val allGarminDays by remember { app.unifiedRead.observeGarminDays(0, toEpoch) }.collectAsState(initial = emptyList())
-    val allFitDays by remember { app.database.fitDayDao().observeRange(0, toEpoch) }.collectAsState(initial = emptyList())
+    val allGarminDays by remember(toEpoch) { app.unifiedRead.observeGarminDays(0, toEpoch) }.collectAsState(initial = emptyList())
+    val allFitDays by remember(toEpoch) { app.database.fitDayDao().observeRange(0, toEpoch) }.collectAsState(initial = emptyList())
     val stepGap = remember(allFitDays, allGarminDays) {
         LifestyleAnalytics.phoneStepGap(allFitDays, allGarminDays)
     }
@@ -177,7 +204,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     // The fallback estimate is computed over a FIXED year, not over the selected period.
     // Reading it off the chip window made every boundary move when the period changed, and
     // made this screen and the Я tab disagree about the same number.
-    val sampleFrom = remember { today.minusDays((IntensityAnalytics.HR_MAX_SAMPLE_DAYS - 1).toLong()) }
+    val sampleFrom = remember(today) { today.minusDays((IntensityAnalytics.HR_MAX_SAMPLE_DAYS - 1).toLong()) }
     val samplePeriod=remember(archive,sampleFrom,toEpoch) { WorkoutPeriod.between(archive,sampleFrom.toEpochDay(),toEpoch) }
     val suggestedHrMax=remember(samplePeriod) { IntensityAnalytics.suggestHrMax(samplePeriod.intensitySessions()) }
 
@@ -203,7 +230,8 @@ fun TrendsScreen(app: FitnessSummaryApp) {
     val insights = remember(inputs) { LifestyleAnalytics.insights(inputs) }
     val palette = metricPalette()
 
-    val nothingFromGarmin = mergedDays.isEmpty() && readiness.isEmpty() && hrvs.isEmpty() && bodyDays.isEmpty() && healthRows.isEmpty()
+    val nothingFromGarmin=mergedDays.isEmpty() && readiness.isEmpty() && hrvs.isEmpty() && bodyDays.isEmpty() && healthRows.isEmpty() && training.isEmpty()
+    val reads=listOf(summariesRead,sleepsRead,hrvsRead,readinessRead,trainingRead,bodyDaysRead,archiveRead,healthRowsRead,strengthSetsRead,fitDaysRead)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -211,38 +239,42 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            // Seven labels no longer fit one line on a phone - they wrap rather than
-            // scroll sideways, so the longest window is never hidden off the edge.
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                WINDOWS.forEachIndexed { index, (_, label) ->
-                    val selected = index == windowIndex
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .background(
-                                if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                RoundedCornerShape(16.dp)
-                            )
-                            .clickable { windowIndex = index }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    )
+            Text("Тренды",style=MaterialTheme.typography.headlineMedium)
+            Box {
+                OutlinedButton(onClick={periodMenu=true},modifier=Modifier.fillMaxWidth()){Text("Период: "+WINDOWS[windowIndex].second+" ▾")}
+                DropdownMenu(expanded=periodMenu,onDismissRequest={periodMenu=false}) {
+                    WINDOWS.forEachIndexed { i,(_,label)->DropdownMenuItem(text={Text(label)},onClick={windowIndex=i;periodMenu=false}) }
+                }
+            }
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)) {
+                listOf("all" to "Обзор","activity" to "Активность","recovery" to "Восстановление","body" to "Тело",
+                    "strength" to "Силовые","endurance" to "Выносливость").forEach{(key,label)->
+                    FilterChip(selected=category==key,onClick={category=key},label={Text(label)},modifier=Modifier.heightIn(min=48.dp))
                 }
             }
         }
+        if(reads.any{!it.loaded || it.failed})item { ReadStatus(reads,{retry++},onSettings) }
+        if(reads.all{it.loaded && !it.failed}) {
+            val absent=when(category) {
+                "body"->bodyDays.isEmpty()
+                "strength"->liftSessions.isEmpty()
+                "endurance"->sportWeeks.isEmpty() && intensitySessions.isEmpty() && training.isEmpty()
+                else->false
+            }
+            if(absent)item { InfoCard("Нет измерений в этой категории") {
+                Text("Выберите другой период или проверьте подключённые источники.")
+                TextButton(onClick=onSettings){Text("Источники данных")}
+            } }
+        }
 
-        if(archive!=null) item { InfoCard("Тренировки за период") { WorkoutTotals(period) } }
+        if(archive!=null && show("activity")) item { InfoCard("Тренировки за период") { WorkoutTotals(period,detailed=false) } }
         if (nothingFromGarmin) {
-            item {
+            if(reads.all{it.loaded && !it.failed})item {
                 EmptyState(
                     emoji = "📈",
                     // With an imported gym log on screen above, "нет трендов" would be a lie -
                     // it is the Garmin half specifically that is missing.
-                    title = if (liftSessions.isEmpty()) "Трендов пока нет" else "Данных Garmin пока нет",
+                    title = if (liftSessions.isEmpty() && period.episodes.isEmpty()) "Нет измерений за период" else "Нет дневных измерений за период",
                     message = if (app.garminAuth.isLoggedIn) {
                         "Данные Garmin ещё не загружены. Нажмите «Вся история» во вкладке «Я» — для трендов нужно хотя бы две недели."
                     } else {
@@ -252,13 +284,15 @@ fun TrendsScreen(app: FitnessSummaryApp) {
             }
             // All three of these have their own sources - Health Connect workouts and an
             // imported gym log - so no Garmin data is no reason to hide any of them.
-            intensitySection(intensity, suggestedHrMax, intensitySessions.size, palette)
-            sportDistanceSection(sportWeeks, unclassifiedSports, fromEpoch, toEpoch, smoothWindow, palette.distance, period.distanceReviewGroupCount)
-            strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
+            if(show("endurance")) {
+                intensitySection(intensity,suggestedHrMax,intensitySessions.size,palette)
+                sportDistanceSection(sportWeeks,unclassifiedSports,fromEpoch,toEpoch,smoothWindow,palette.distance,period.distanceReviewGroupCount)
+            }
+            if(show("strength"))strengthSection(liftSessions,fromEpoch,toEpoch,smoothWindow,palette.workout)
             return@LazyColumn
         }
 
-        if (insights.isNotEmpty()) {
+        if (category=="all" && insights.isNotEmpty()) {
             item { SectionHeader("Что видно за последнюю неделю") }
             insights.forEach { insight ->
                 item(key = insight.title) { InsightCard(insight, palette.readiness, palette.distance, palette.calories) }
@@ -268,16 +302,15 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         item { SectionHeader("Тренды за ${WINDOWS[windowIndex].second}") }
         item {
             Text(
-                text = "Плавная линия на графиках — скользящее среднее за ${formatDays(smoothWindow)}: " +
-                    "точки показывают, что было в конкретный день, линия — куда идёт дело. " +
-                    "Окно среднего растёт вместе с периодом.",
+                text = "Точки — измерения. Линия — среднее за ${formatDays(smoothWindow)}. Графики без измерений за период скрыты.",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
 
+        if(show("recovery")) {
         trendCard("Готовность к тренировке", LifestyleAnalytics.readinessTrend(readiness), fromEpoch, toEpoch, palette.readiness, smoothWindow, floorAtZero = true) { it.toInt().toString() }
-        trendCard("Sleep Score", LifestyleAnalytics.sleepScoreTrend(sleeps), fromEpoch, toEpoch, palette.sleep, smoothWindow, floorAtZero = true) { it.toInt().toString() }
+        trendCard("Оценка сна", LifestyleAnalytics.sleepScoreTrend(sleeps), fromEpoch, toEpoch, palette.sleep, smoothWindow, floorAtZero = true) { it.toInt().toString() }
         trendCard("Длительность сна", mergedDays.filter { it.sleepTotalMinutes>0 }.map { TrendPoint(it.dateEpochDay,it.sleepTotalMinutes.toFloat()) }, fromEpoch, toEpoch, palette.sleep, smoothWindow, goal = 480f) { formatSleepDuration(it.toInt()) }
 
         val latestHrv = hrvs.lastOrNull { it.hasBaseline }
@@ -309,6 +342,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
                 if (nothingVerified) rhrNoNight else rhrNights,
                 fromEpoch, toEpoch, palette.heart, smoothWindow,
                 secondary = if (nothingVerified) emptyList() else rhrNoNight,
+                secondaryLabel="Без ночной записи",
                 footnote = when {
                     nothingVerified ->
                         "За этот период часы не измерили ни одной ночи, поэтому весь график — " +
@@ -326,10 +360,12 @@ fun TrendsScreen(app: FitnessSummaryApp) {
             ) { it.toInt().toString() }
         }
         trendCard("Стресс, средний за день", LifestyleAnalytics.stressTrend(summaries), fromEpoch, toEpoch, palette.stress, smoothWindow, floorAtZero = true, goal = 50f, footnote = "Пунктир: 50 — граница зоны низкого стресса по Garmin") { it.toInt().toString() }
-        trendCard("Body Battery при пробуждении", LifestyleAnalytics.bodyBatteryWakeTrend(summaries), fromEpoch, toEpoch, palette.bodyBattery, smoothWindow, floorAtZero = true, goal = 50f) { it.toInt().toString() }
+        trendCard("Энергия при пробуждении", LifestyleAnalytics.bodyBatteryWakeTrend(summaries), fromEpoch, toEpoch, palette.bodyBattery, smoothWindow, floorAtZero = true, goal = 50f) { it.toInt().toString() }
         // The step chart is the one place where the imported years and the watch years sit on
         // the same axis, and the instrument changed between them. The size of that change is
         // measured on this person's own overlapping days, never assumed.
+        }
+        if(show("activity")) {
         val stepsNote = if (stepGap != null && watchFrom != null && fromEpoch < watchFrom) {
             "До ${formatDayMonth(java.time.LocalDate.ofEpochDay(watchFrom))} " +
                 "${java.time.LocalDate.ofEpochDay(watchFrom).year} шаги считал телефон из Google Fit — " +
@@ -352,6 +388,7 @@ fun TrendsScreen(app: FitnessSummaryApp) {
                 fromEpoch, toEpoch, palette.calories, smoothWindow,
                 floorAtZero = true,
                 secondary = if (totalCalories.isEmpty()) emptyList() else activeCalories,
+                secondaryLabel="Активные калории",
                 footnote = if (totalCalories.isNotEmpty() && activeCalories.isNotEmpty()) {
                     "Сплошная линия — всего за день, пунктир — активные. Расстояние между ними — расход в покое."
                 } else null
@@ -359,6 +396,8 @@ fun TrendsScreen(app: FitnessSummaryApp) {
         }
         trendCard("Интенсивные минуты за день", LifestyleAnalytics.intensityMinutesTrend(summaries), fromEpoch, toEpoch, palette.workout, smoothWindow, floorAtZero = true, footnote = "Интенсивные минуты считаются вдвое, как в Garmin. Недельная цель — на вкладке «Неделя».") { it.toInt().toString() }
 
+        }
+        if(show("endurance")) {
         val vo2 = LifestyleAnalytics.vo2MaxTrend(training)
         if (vo2.isNotEmpty()) trendCard("VO2max", vo2, fromEpoch, toEpoch, palette.training, smoothWindow) { formatDecimal(it) }
 
@@ -372,24 +411,31 @@ fun TrendsScreen(app: FitnessSummaryApp) {
             ) { it.toInt().toString() }
         }
 
-        val weightPoints = bodyDays.map { TrendPoint(it.day,it.weightGrams/1000f) }
+        }
+        if(show("activity")) {
         val floorsByDay=summaries.filter { it.floorsAscended>0 }.associate { it.dateEpochDay to it.floorsAscended.toFloat() }.toMutableMap()
         healthRows.forEach { r -> r.floors?.let { v -> floorsByDay.putIfAbsent(r.summary.dateEpochDay,v.toFloat()) } }
         trendCard("Этажи",floorsByDay.entries.sortedBy { it.key }.map { TrendPoint(it.key,it.value) },fromEpoch,toEpoch,palette.steps,smoothWindow,floorAtZero=true) { formatDecimal(it) }
         trendCard("Средний пульс за день",mergedDays.filter { it.avgHeartRate>0 }.map { TrendPoint(it.dateEpochDay,it.avgHeartRate.toFloat()) },fromEpoch,toEpoch,palette.heart,smoothWindow) { formatDecimal(it) }
         trendCard("Дневная дистанция",mergedDays.filter { it.distanceMeters>0 }.map { TrendPoint(it.dateEpochDay,it.distanceMeters/1000f) },fromEpoch,toEpoch,palette.distance,smoothWindow,floorAtZero=true) { "${formatDecimal(it)} км" }
+        }
+        if(show("body")) {
+        val weightPoints = bodyDays.map { TrendPoint(it.day,it.weightGrams/1000f) }
         for(source in listOf(BodyProjection.Z,BodyProjection.G,BodyProjection.H,BodyProjection.GH)) {
             val values=bodyDays.filter { it.source==source }
-            trendCard("Жир, % · $source",values.filter { it.fatPercent>0 }.map { TrendPoint(it.day,it.fatPercent) },fromEpoch,toEpoch,palette.weight,smoothWindow) { formatDecimal(it) }
-            trendCard("Вода, % · $source",values.filter { it.waterPercent>0 }.map { TrendPoint(it.day,it.waterPercent) },fromEpoch,toEpoch,palette.weight,smoothWindow) { formatDecimal(it) }
+            trendCard("Жир, % · $source",values.filter { it.fatPercent>0 }.map { TrendPoint(it.day,it.fatPercent) },fromEpoch,toEpoch,palette.weight,smoothWindow,maxGapDays=30) { formatDecimal(it) }
+            trendCard("Вода, % · $source",values.filter { it.waterPercent>0 }.map { TrendPoint(it.day,it.waterPercent) },fromEpoch,toEpoch,palette.weight,smoothWindow,maxGapDays=30) { formatDecimal(it) }
             val muscleTitle=if(source==BodyProjection.G) "Скелетная мышечная масса Garmin, кг" else "Мышечная масса, кг · $source"
-            trendCard(muscleTitle,values.filter { it.muscleGrams>0 }.map { TrendPoint(it.day,it.muscleGrams/1000f) },fromEpoch,toEpoch,palette.weight,smoothWindow) { formatDecimal(it) }
+            trendCard(muscleTitle,values.filter { it.muscleGrams>0 }.map { TrendPoint(it.day,it.muscleGrams/1000f) },fromEpoch,toEpoch,palette.weight,smoothWindow,maxGapDays=30) { formatDecimal(it) }
         }
-        if (weightPoints.isNotEmpty()) trendCard("Вес, кг", weightPoints, fromEpoch, toEpoch, palette.weight, smoothWindow) { formatDecimal(it) }
+        if (weightPoints.isNotEmpty()) trendCard("Вес, кг", weightPoints, fromEpoch, toEpoch, palette.weight, smoothWindow,maxGapDays=30) { formatDecimal(it) }
 
-        intensitySection(intensity, suggestedHrMax, intensitySessions.size, palette)
-        sportDistanceSection(sportWeeks, unclassifiedSports, fromEpoch, toEpoch, smoothWindow, palette.distance, period.distanceReviewGroupCount)
-        strengthSection(liftSessions, fromEpoch, toEpoch, smoothWindow, palette.workout)
+        }
+        if(show("endurance")) {
+            intensitySection(intensity,suggestedHrMax,intensitySessions.size,palette)
+            sportDistanceSection(sportWeeks,unclassifiedSports,fromEpoch,toEpoch,smoothWindow,palette.distance,period.distanceReviewGroupCount)
+        }
+        if(show("strength"))strengthSection(liftSessions,fromEpoch,toEpoch,smoothWindow,palette.workout)
 
         item {
             Text(
@@ -414,8 +460,11 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trendCard(
     band: ClosedFloatingPointRange<Float>? = null,
     secondary: List<TrendPoint> = emptyList(),
     footnote: String? = null,
+    maxGapDays:Long=1L,
+    secondaryLabel:String="Вторая серия",
     formatValue: (Float) -> String
 ) {
+    if(points.none{it.epochDay in fromEpoch..toEpoch} && secondary.none{it.epochDay in fromEpoch..toEpoch})return
     item(key = title) {
         InfoCard(title = title) {
             TrendChart(
@@ -429,6 +478,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trendCard(
                 goal = goal,
                 band = band,
                 secondary = secondary,
+                maxGapDays=maxGapDays,
+                secondaryLabel=secondaryLabel,
                 modifier = Modifier.padding(top = 4.dp)
             )
             if (footnote != null && points.isNotEmpty()) {
@@ -768,6 +819,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sportDistanceSection(
                 StatRow("Недель с тренировкой", "${active.size} из ${weeks.size}")
                 TrendChart(
                     points = SportDistanceAnalytics.trend(weeks),
+                    maxGapDays=7,
                     fromEpochDay = fromEpoch,
                     toEpochDay = toEpoch,
                     accent = accent,
@@ -847,6 +899,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.strengthSection(
                     )
                 }
                 TrendChart(
+                        maxGapDays=21,
+                        secondaryLabel="Рабочий вес",
                     points = StrengthAnalytics.oneRmTrend(inWindow),
                     fromEpochDay = fromEpoch,
                     toEpochDay = toEpoch,
