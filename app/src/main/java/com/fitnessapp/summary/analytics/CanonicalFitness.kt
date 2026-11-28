@@ -29,7 +29,11 @@ data class FitnessSession(
     /** Verified finish timestamps of performed journal sets; not inferred duration. */
     val setMarksMillis: List<Long> = emptyList(),
     /** Original source category; used only for explicit, verified export aliases. */
-    val rawSport: String? = null
+    val rawSport: String? = null,
+    /** Original positive measurements used only to corroborate a Garmin export. */
+    val copyCalories: Double? = null,
+    val copyAvgHr: Double? = null,
+    val copyMaxHr: Double? = null
 ) {
     init {
         require(nativeId.isNotBlank() && startMillis >= 0)
@@ -394,6 +398,32 @@ object CanonicalFitness {
         return abs(gt - st) <= 2L
     }
 
+    private fun corroboratedGarminCopy(g: FitnessSession, s: FitnessSession): Boolean {
+        val kind = copyKind(g,s)
+        val delta = abs(g.startMillis-s.startMillis)
+        val ge = g.elapsedSeconds ?: return false
+        val st = s.recordedSeconds ?: return false
+        val gt = g.recordedSeconds
+        if (ge < 60L || st < 60L || st > ge+10L) return false
+        val se = s.elapsedSeconds
+        if (se != null && abs(ge-se) > max(120.0,max(ge,se)*0.15)) return false
+        val gd = g.distanceMeters?.takeIf { it > 0 }
+        val sd = s.distanceMeters?.takeIf { it > 0 }
+        if (gd != null && sd != null && abs(gd-sd) > max(20.0,max(gd,sd)*0.015)) return false
+        fun near(a: Double?, b: Double?, tolerance: Double) =
+            a != null && b != null && a.isFinite() && b.isFinite() && a > 0 && b > 0 && abs(a-b) <= tolerance
+        if (!near(g.copyCalories,s.copyCalories,0.01)) return false
+        if (delta <= 2_000L && kind in setOf("STRENGTH","ROW","CYCLE","ELLIPTICAL") &&
+            abs(ge-st) <= 4L && near(g.copyMaxHr,s.copyMaxHr,1.0)) return true
+        if (delta <= 10_000L && kind == "SWIM" && gd != null && gd >= 100 &&
+            near(gd,sd,1.0) && gt != null && abs(gt-st) <= 10L) return true
+        val generic = kind == "GENERIC_WORKOUT" ||
+            (g.rawSport?.trim()?.lowercase() == "trail_running" && copySubtype(s) == "GENERIC_WORKOUT")
+        return delta <= 2_000L && generic && gd != null && gd >= 1000 && near(gd,sd,3.0) &&
+            near(g.copyMaxHr,s.copyMaxHr,2.0) && near(g.copyAvgHr,s.copyAvgHr,3.0) &&
+            gt != null && abs(gt-st) <= max(60.0,gt*0.15)
+    }
+
     private fun garminCopyLinks(input: List<FitnessSession>, cutoff: Long): Map<String, String> {
         val garmin = input.filter { it.source == FitnessSource.GARMIN && it.startMillis >= cutoff }
         val strava = input.filter { it.source == FitnessSource.STRAVA && it.startMillis >= cutoff &&
@@ -402,10 +432,23 @@ object CanonicalFitness {
             garmin.filter { g -> copyKind(g,s) != null && abs(g.startMillis - s.startMillis) <= 2_000L }
         }
         val counts = candidates.values.flatten().groupingBy { it.key }.eachCount()
-        return candidates.mapNotNull { (s, gs) ->
+        val links = candidates.mapNotNull { (s, gs) ->
             val g = gs.singleOrNull() ?: return@mapNotNull null
             if (counts[g.key] == 1 && garminCopyCompatible(g, s)) s.key to g.key else null
-        }.toMap()
+        }.toMap().toMutableMap()
+        // More permissive time matching needs a unique native ID of any sport on both sides.
+        val allStrava = input.filter { it.source == FitnessSource.STRAVA && it.startMillis >= cutoff }
+        val used = links.values.toMutableSet()
+        for (s in allStrava.sortedWith(compareBy<FitnessSession> { it.startMillis }.thenBy { it.key })) {
+            if (s.key in links) continue
+            val g = garmin.filter { abs(it.startMillis-s.startMillis) <= 10_000L }.singleOrNull() ?: continue
+            if (g.key in used || allStrava.count { abs(it.startMillis-g.startMillis) <= 10_000L } != 1) continue
+            if (corroboratedGarminCopy(g,s)) {
+                links[s.key] = g.key
+                used.add(g.key)
+            }
+        }
+        return links
     }
 
     fun episodes(input: List<FitnessSession>, garminStravaCutoffMillis: Long? = null): List<SessionEpisode> {

@@ -141,7 +141,8 @@ object ServerFitnessProjection {
             zone5Seconds = d.int("hrTimeInZone_5"), updatedAtMillis = 0
         )
         return ArchiveObservation(
-            FitnessSession(FitnessSource.GARMIN, id.toString(), LocalWorkoutArchive.garminSport(type), start, elapsed, distance,rawSport=type),
+            FitnessSession(FitnessSource.GARMIN, id.toString(), LocalWorkoutArchive.garminSport(type), start, elapsed, distance,rawSport=type,
+                copyCalories=d.positive("calories"),copyAvgHr=d.positive("averageHR"),copyMaxHr=d.positive("maxHR")),
             day, g.name.ifBlank { garminSportName(type) }, duration,
             g.avgHeartRate.takeIf { it > 0 }, g.maxHeartRate.takeIf { it > 0 }, garmin = g
         )

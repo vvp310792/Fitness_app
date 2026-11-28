@@ -143,7 +143,8 @@ object LocalWorkoutArchive {
             val elapsed = r.elapsedSeconds?.toLong()?.duration()
             // Legacy rows retained their display duration but lack separate provenance.
             val moving = r.movingSeconds?.toLong()?.duration() ?: if(elapsed == null) r.durationSeconds.toLong().duration() else null
-            val s=session(FitnessSource.STRAVA,r.activityId.toString(),stravaSport(r.typeRaw),r.startTimeMillis,elapsed,r.distanceMeters)?.copy(rawSport=r.typeRaw)
+            val s=session(FitnessSource.STRAVA,r.activityId.toString(),stravaSport(r.typeRaw),r.startTimeMillis,elapsed,r.distanceMeters)?.copy(rawSport=r.typeRaw,copyCalories=r.calories.positive()?.toDouble(),
+                    copyAvgHr=r.avgHeartRate.positive()?.toDouble(),copyMaxHr=r.maxHeartRate.positive()?.toDouble())
             if(s==null) { rejected++;continue }
             rows.add(ArchiveObservation(s,r.dateEpochDay,r.name.ifBlank { r.typeRaw.ifBlank { "Тренировка" } },
                 moving,r.avgHeartRate.positive(),r.maxHeartRate.positive()))
@@ -186,7 +187,10 @@ object LocalWorkoutArchive {
                     elapsedSeconds=remote.session.elapsedSeconds ?: local.session.elapsedSeconds,
                     distanceMeters=local.session.distanceMeters ?: remote.session.distanceMeters,
                     setMarksMillis=remote.session.setMarksMillis.ifEmpty { local.session.setMarksMillis },
-                    rawSport=local.session.rawSport?.takeIf { it.isNotBlank() } ?: remote.session.rawSport
+                    rawSport=local.session.rawSport?.takeIf { it.isNotBlank() } ?: remote.session.rawSport,
+                    copyCalories=remote.session.copyCalories ?: local.session.copyCalories,
+                    copyAvgHr=remote.session.copyAvgHr ?: local.session.copyAvgHr,
+                    copyMaxHr=remote.session.copyMaxHr ?: local.session.copyMaxHr
                 ),
                 trainingSeconds=local.trainingSeconds ?: remote.trainingSeconds,
                 averageHr=local.averageHr ?: remote.averageHr,
